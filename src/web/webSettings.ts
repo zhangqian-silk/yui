@@ -162,6 +162,10 @@ export function createWebSettings(store: TaskStore, options: {
       revision: createHash("sha256").update(JSON.stringify({ role, profile, binding })).digest("hex"),
       changes: Object.keys(after).filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
         .map(key => ({ key, before: before[key] ?? null, after: after[key] ?? null })),
+      // What the Role will read after applying: the template's copied text, or
+      // the Role's own value where the template copies nothing.
+      result: Object.fromEntries(["description", "systemPrompt", "constraints"].map(key =>
+        [key, (Object.hasOwn(after, key) ? after[key] : before[key]) ?? null])),
       notice: "Copies Agent runtime, access, description, instructions, Skills and access constraints once. Keeps Role name, workspace, enabled state, responsibilities and expected output. Existing Tasks and running Sessions are unchanged; later Profile edits do not propagate."
     };
   }

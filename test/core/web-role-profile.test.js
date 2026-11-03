@@ -41,6 +41,8 @@ test("role template preview is read-only; application is atomic and pins role, t
   assert.equal(catalogReads, 0, "preview must not start Agent discovery");
   assert.deepEqual(store.getGlobalRole("reviewer"), initial);
   assert.ok(preview.changes.some(change => change.key === "systemPrompt" && change.after === "Inspect without edits"));
+  assert.equal(preview.result.systemPrompt, "Inspect without edits", "the preview carries the instructions the Role will read");
+  assert.ok(Object.hasOwn(preview.result, "description") && Object.hasOwn(preview.result, "constraints"));
   const body = { id: "role/reviewer", profileId: "reader", revision: preview.revision, acknowledgeLive: false };
   store.saveAgentProfile(updateAgentProfile(store.getAgentProfile("reader"), { instructions: "New version" }, new Date()));
   await assert.rejects(settings.applyProfile(body), /changed/i);

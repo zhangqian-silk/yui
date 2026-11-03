@@ -640,6 +640,39 @@ function profileDiffRows(changes) {
   }
   return rows;
 }
+// Description, instructions and constraints decide whether a template fits:
+// they are shown in full (clamped, expandable) as the Role will read them.
+const PROFILE_TEXT_KEYS = ["description", "systemPrompt", "constraints"];
+function profileTextSection(value) {
+  const changed = new Set(value.changes.map(change => change.key));
+  const fromChanges = key => value.changes.find(change => change.key === key)?.after;
+  const blocks = PROFILE_TEXT_KEYS.map(key => {
+    const known = value.result && Object.hasOwn(value.result, key);
+    const content = known ? value.result[key] : changed.has(key) ? fromChanges(key) : undefined;
+    const empty = content === undefined || content === null || content === "" || (Array.isArray(content) && !content.length);
+    const body = content === undefined ? h("p.profile-text-empty", null, t("access.profileSame"))
+      : empty ? h("p.profile-text-empty", null, t("access.profileEmpty"))
+      : Array.isArray(content) ? h("ul.profile-text-body", null, content.map(item => h("li", null, typeof item === "string" ? item : JSON.stringify(item))))
+      : h("p.profile-text-body", null, typeof content === "string" ? content : JSON.stringify(content, null, 2));
+    const long = !empty && content !== undefined && (Array.isArray(content) ? content.length > 4 : String(content).length > 220 || String(content).split("\n").length > 4);
+    const block = h("div.profile-text", { dataset: { key, clamped: String(long) } },
+      h("div.profile-text-head", null, h("span", null, t("settings.field." + key, key)),
+        h("span.profile-text-tag", { dataset: { changed: String(changed.has(key)) } }, t(changed.has(key) ? "access.profileWillChange" : "access.profileUnchanged"))),
+      body);
+    if (long) {
+      const toggle = h("button.btn-link.profile-text-toggle", { type: "button", "aria-expanded": "false" }, t("access.profileExpand"));
+      toggle.addEventListener("click", () => {
+        const open = block.dataset.clamped === "true";
+        block.dataset.clamped = String(!open);
+        toggle.setAttribute?.("aria-expanded", String(open));
+        toggle.textContent = t(open ? "access.profileCollapse" : "access.profileExpand");
+      });
+      block.append(toggle);
+    }
+    return block;
+  });
+  return h("section.profile-texts", { "aria-label": t("access.profileContent") }, blocks);
+}
 // Role ← Profile template. A row in the detail opens one dialog: pick a
 // template card, read the exact change list, confirm. The copy is one-time;
 // the live-Session acknowledgement appears only when a Session may be live.
@@ -713,9 +746,11 @@ function roleProfileApplication(state, group) {
       if (value.id !== group.id || value.profileId !== profileId) throw Error(t("settings.profilePreviewInvalid"));
       preview = value;
       result.dataset.profileId = profileId;
-      const rows = profileDiffRows(value.changes);
+      const textChanges = value.changes.filter(change => PROFILE_TEXT_KEYS.includes(change.key));
+      const rows = profileDiffRows(value.changes.filter(change => !PROFILE_TEXT_KEYS.includes(change.key)));
       result.replaceChildren(
-        h("p.profile-status", null, t("access.profileChanges").replace("{count}", String(rows.length)).replace("{profile}", profileId)),
+        h("p.profile-status", null, t("access.profileChanges").replace("{count}", String(rows.length + textChanges.length)).replace("{profile}", profileId)),
+        profileTextSection(value),
         rows.length ? h("table.settings-profile-diff", null,
           h("thead", null, h("tr", null, ["settings.profileField", "settings.profileBefore", "settings.profileAfter"]
             .map(label => h("th", { scope: "col" }, t(label))))),
@@ -723,7 +758,7 @@ function roleProfileApplication(state, group) {
             h("th", { scope: "row" }, row.label),
             h("td", null, h("pre", null, row.before)),
             h("td", null, h("pre", null, row.after))))))
-          : h("p", null, t("access.profileNoChange")),
+          : textChanges.length ? null : h("p", null, t("access.profileNoChange")),
         h("p.profile-copy-note", null, t("settings.profileCopyHelp")));
       info.textContent = "";
     } catch (error) {

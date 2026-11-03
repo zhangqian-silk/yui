@@ -230,6 +230,18 @@ export const SETTINGS_STYLES = `
 .profile-dialog .settings-profile-diff th,.profile-dialog .settings-profile-diff td{padding:7px 10px}
 .profile-dialog .settings-profile-diff tr:last-child>*{border-bottom:0}
 .profile-dialog .settings-profile-diff pre{margin:0;font-size:var(--fs-2xs)}
+.profile-texts{display:grid;gap:0;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}
+.profile-text{display:grid;gap:5px;padding:10px 12px;border-bottom:1px solid var(--line);min-width:0}
+.profile-text:last-child{border-bottom:0}
+.profile-text-head{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--ink-3);font-size:var(--fs-2xs);font-weight:650;letter-spacing:.04em}
+.profile-text-tag{padding:1px 7px;border-radius:var(--r-pill);background:var(--surface-2);color:var(--ink-3);font-weight:500;letter-spacing:0}
+.profile-text-tag[data-changed=true]{background:var(--accent-soft);color:var(--accent)}
+.profile-text-body{margin:0;color:var(--ink);font-size:var(--fs-sm);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+ul.profile-text-body{padding-left:18px;white-space:normal}
+ul.profile-text-body li{margin:2px 0}
+.profile-text[data-clamped=true] .profile-text-body{max-height:6.3em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 60%,transparent)}
+.profile-text-empty{margin:0;color:var(--ink-4);font-size:var(--fs-xs)}
+.profile-text-toggle{justify-self:start;padding:0;border:0;background:none;color:var(--accent);font:inherit;font-size:var(--fs-xs);cursor:pointer}
 .profile-copy-note{margin:0;color:var(--ink-3);font-size:var(--fs-2xs)}
 .profile-dialog-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding-top:4px;border-top:1px solid var(--line)}
 .profile-dialog-foot .spacer{flex:1 1 auto}

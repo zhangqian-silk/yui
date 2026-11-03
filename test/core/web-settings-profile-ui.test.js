@@ -45,7 +45,8 @@ const control = (state, key) => walk(state.content).find(node => node.dataset.pr
 const option = (state, id) => walk(state.content).find(node => node.dataset.profileAction === "option" && node.dataset.profileId === id);
 const choose = (state, id) => option(state, id).handlers.click();
 const preview = profileId => ({ id: "role/worker", profileId, revision: "composite-" + profileId, agentId: "other",
-  changes: [{ key: "model", before: "current", after: "new" }], notice: "Copies once" });
+  changes: [{ key: "model", before: "current", after: "new" }, { key: "systemPrompt", before: "", after: "Inspect " + profileId }],
+  result: { description: "Template for " + profileId, systemPrompt: "Inspect " + profileId, constraints: ["No writes"] }, notice: "Copies once" });
 const role = () => ({ id: "role/worker", revision: "role-rev", agentId: "fixture",
   fields: [{ key: "model", label: "Model", kind: "text", value: "current" }],
   profiles: [{ id: "reader", available: true }, { id: "writer", available: true },
@@ -67,6 +68,9 @@ test("Role Profile application previews a single snapshot and shares guarded set
   assert.match(text(control(state, "preview")), /settings.profileCopyHelp/,
     "the localized one-time-copy contract replaces backend English prose in the preview");
   assert.doesNotMatch(text(control(state, "preview")), /Copies once/);
+  const previewText = text(control(state, "preview"));
+  for (const expected of [/settings.field.description.*Template for reader/, /settings.field.systemPrompt.*access.profileWillChange.*Inspect reader/, /settings.field.constraints.*No writes/])
+    assert.match(previewText, expected, "description, instructions and constraints are previewed as the Role will read them");
   assert.equal(control(state, "confirm").disabled, false);
   control(state, "acknowledge").checked = true;
   let finish;
