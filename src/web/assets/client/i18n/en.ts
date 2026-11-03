@@ -802,7 +802,6 @@ export const EN = {
   "access.short.permission": "Permission",
   "access.short.strategy": "Strategy",
   "access.short.adapterId": "Adapter",
-  "access.short.workspace": "Workspace",
   "access.profileTitle": "Apply a Profile template to {role}",
   "access.profilePick": "Pick a template to see which settings it changes.",
   "access.profileChanges": "Applying {profile} changes {count} settings:",

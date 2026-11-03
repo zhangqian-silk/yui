@@ -346,11 +346,12 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   context.renderGroup(state, roleGroup);
   const editorFor = key => state.editors.find(editor => editor.field.key === key);
   const roleView = nodeText(state.content);
-  for (const heading of ["settings.group.instructions", "access.groupHint.instructions", "access.short.workspace"]) {
+  assert.equal(editorFor("workspace"), undefined, "the Role workspace is not shown or written from the execution detail");
+  for (const heading of ["settings.group.instructions", "access.groupHint.instructions"]) {
     assert.match(roleView, new RegExp(heading), `the rebuilt inspector exposes ${heading}`);
   }
   assert.doesNotMatch(roleView, /settings.source.title|settings.group.workspace/,
-    "execution members show no diagnostic source block and keep the workspace in the compact block");
+    "execution members show no diagnostic source block or workspace group");
   assert.doesNotMatch(roleView, /settings.group.identity|settings.group.models/,
     "the short daily choices form one compact block without section headings");
   const compact = editorFor("model").row.parentNode;

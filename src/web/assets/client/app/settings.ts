@@ -648,20 +648,23 @@ function roleProfileApplication(state, group) {
   const generation = state.renderGeneration;
   const session = group.observation?.session;
   const mayBeLive = session !== "absent";
-  const profileFacts = id => {
-    const member = groups.find(item => item.meta?.id === "profile/" + id);
-    const e = member?.group ? effective(member) : null;
-    return e && !e.unavailable ? [e.agentId, (e.model || t("access.nativeDefault")) + " · " + (e.effort || t("access.nativeDefault"))].filter(Boolean).join(" · ") : "";
+  // A template is recognised by its name and what it is for; launch facts
+  // belong to the change list below, not to the choice itself.
+  const profileDescription = profile => {
+    if (profile.description) return profile.description;
+    const member = groups.find(item => item.meta?.id === "profile/" + profile.id);
+    const value = member?.group?.fields?.find(field => field.key === "description")?.value;
+    return typeof value === "string" ? value : "";
   };
   const options = group.profiles.map(profile => {
-    // Template facts come from the Profile list, which may load after this
-    // Role; they are filled each time the dialog opens.
-    const facts = h("code.profile-option-facts");
+    // The description may come from the Profile list, which can load after
+    // this Role; it is filled each time the dialog opens.
+    const facts = h("small.profile-option-desc");
     const option = h("button.profile-option", { type: "button", role: "radio", "aria-checked": "false",
       disabled: !profile.available, dataset: { profileAction: "option", profileId: profile.id } },
+      h("span.profile-option-mark", { "aria-hidden": "true" }),
       h("strong", null, profile.id),
-      profile.available ? facts : h("small.profile-option-reason", null, profile.reason || t("settings.profileUnavailable")),
-      profile.description ? h("small", null, profile.description) : null);
+      profile.available ? facts : h("small.profile-option-reason", null, profile.reason || t("settings.profileUnavailable")));
     option.addEventListener("click", () => choose(profile.id));
     return { profile, option, facts };
   });
@@ -768,7 +771,7 @@ function roleProfileApplication(state, group) {
   let opener = null;
   function open() {
     opener = trigger;
-    for (const item of options) item.facts.textContent = profileFacts(item.profile.id);
+    for (const item of options) item.facts.textContent = profileDescription(item.profile);
     invalidate();
     if (typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
     else dialog.open = true;
@@ -920,7 +923,10 @@ function renderGroup(state, group) {
   const native = nativeOverview(group);
   if (native) canvas.append(native);
   const grouped = new Map();
-  for (const field of [...group.fields].sort((a, b) => fieldOrder(a) - fieldOrder(b))) {
+  // The Role workspace is not a daily choice and is left out of execution
+  // members; it is never written from here.
+  const visibleFields = area === "server" ? group.fields : group.fields.filter(field => field.key !== "workspace");
+  for (const field of [...visibleFields].sort((a, b) => fieldOrder(a) - fieldOrder(b))) {
     const item = editor(field, group, state);
     state.editors.push(item);
     const key = fieldGroupKey(field, area);
