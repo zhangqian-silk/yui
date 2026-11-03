@@ -84,4 +84,21 @@ export const businessScenarios = {
     ],
   },
 };
+// A real changed fourth request, not another padded-text sum. Keep the existing
+// three-input originals/answers unchanged; the new chain must reconcile both a
+// signed enrolment correction and the user's removal of an earlier exclusion.
+businessScenarios["business-warm"] = {
+  ...businessScenarios["business-route"],
+  title: "Operator and Leader reconcile a fourth workshop revision in their existing Sessions",
+  stages: [...businessScenarios["business-route"].stages, {
+    materials: [document("final-enrolment",
+      "Signed final enrolment: Cedar now has nine attendees and Maple has six; both venues are ready. Warehouse revision 2 remains in force.",
+      { authority: "coordinator", revision: 2, sites: [
+        { site: "Cedar", attendees: 9, ready: true }, { site: "Maple", attendees: 6, ready: true },
+      ] })],
+    request: { ...request(2), note: "Discuss only. Include Maple again: the earlier exclusion is withdrawn. Keep two kits per attendee and the existing warehouse reserve. Do not activate, book, edit a Brief or save an artifact; carrier ETA remains unknown." },
+  }],
+  expected: [...businessScenarios["business-route"].expected,
+    answer([["Cedar", 18], ["Maple", 12]], [], 4)],
+};
 export const businessInstructions = "Only isolated planning discussion. Load current full Skills/profile and applicable references on first entry/recovery. Operator routes the exact request without computing the business result. Leader resolves the listed business originals and records the requested one planning Decision per effectKey. No activation, delivery, Brief/artifact writes, account/model changes or replay of uncertain effects. Keep missing carrier information unknown. Later input requires exact claim/handle/ACK.";

@@ -17,7 +17,13 @@ export function invocationCompletion(results) {
   const execution = failed ? "failed" : complete ? "completed" : "incomplete";
   const cleanup = results.length && results.every(r => r.cleanup?.status === "released") ? "released" : "unknown";
   const grading = grades.length === 1 ? grades[0] : grades.length ? "mixed" : "unknown";
+  // Explicitly frozen on new runs only. Historical receipts retain their exit
+  // interpretation; zero means completed collection, never semantic acceptance.
+  const agentAnalysis = results.length > 0 && results.every(r => r.decisionPolicy === "agent-analysis");
   return { execution, grading, cleanup,
-    exitCode: execution === "completed" && grading === "pass" && cleanup === "released" ? 0 : 1,
-    limit: "Execution completion is separate from unchanged original grading; nonpass and uncertain cleanup remain nonzero" };
+    exitCode: execution === "completed" && (agentAnalysis || grading === "pass") && cleanup === "released" ? 0 : 1,
+    ...(agentAnalysis ? { analysis: { owner: "agent", status: "not-assessed" } } : {}),
+    limit: agentAnalysis
+      ? "Exit describes collection and cleanup only. Recorded check failures/unknown remain; quality, causal benefit and adoption require Agent analysis."
+      : "Execution completion is separate from unchanged original grading; nonpass and uncertain cleanup remain nonzero" };
 }

@@ -84,6 +84,71 @@ export function frozenSources(invocation, productStores = []) {
 }
 const numBytes = s => Buffer.byteLength(typeof s === "string" ? s : JSON.stringify(s ?? null));
 const knownSum = (values, key) => values.reduce((n, x) => n + (Number.isFinite(x?.[key]) ? x[key] : 0), 0);
+// Wrapper observations only: one native command can launch several CLI
+// processes, while a direct node entry can bypass this wrapper entirely.
+// Never use these supplemental counts as read/authority/quality evidence.
+export function instrumentedCliCosts(receipts, owners, launcherSha256) {
+  const groups = new Map(), threads = new Map();
+  let unmatchedRecords = 0, ambiguousIds = 0;
+  for (const r of receipts) {
+    if (!r || typeof r !== "object") { unmatchedRecords++; continue; }
+    const owner = owners.find(o => r.entry === o.cli && r.product === o.product
+      && r.home === o.home && r.node === o.node && r.threadId === o.threadId
+      && r.cli === join(o.product, "output/dev/bin/yui"));
+    if (!owner || r.launcherSha256 !== launcherSha256 || !r.id
+      || !["started", "completed"].includes(r.phase) || !Number.isFinite(Date.parse(r.at))
+      || !Array.isArray(r.args) || r.args.some(a => typeof a !== "string")) { unmatchedRecords++; continue; }
+    if (!groups.has(r.id)) groups.set(r.id, { owner, records: new Map() });
+    groups.get(r.id).records.set(JSON.stringify(r), r);
+  }
+  for (const { owner, records } of groups.values()) {
+    const starts = [...records.values()].filter(r => r.phase === "started");
+    const ends = [...records.values()].filter(r => r.phase === "completed");
+    if (starts.length !== 1) { ambiguousIds++; continue; }
+    const start = starts[0], id = JSON.stringify([owner.roleName, owner.threadId]);
+    if (!threads.has(id)) threads.set(id, { role: owner.roleName, threadId: owner.threadId,
+      started: 0, completed: 0, failed: 0, unclosed: 0 });
+    const row = threads.get(id); row.started++;
+    const end = ends[0];
+    if (ends.length !== 1 || ["entry", "cli", "product", "home", "threadId", "cwd", "launcherSha256", "node"]
+      .some(k => start[k] !== end[k]) || JSON.stringify(start.args) !== JSON.stringify(end.args)
+      || start.at !== end.startedAt || Date.parse(end.at) < Date.parse(start.at)
+      || !(Number.isInteger(end.code) || end.code === null && (end.signal || end.error))) {
+      row.unclosed++; if (ends.length) ambiguousIds++; continue;
+    }
+    row.completed++;
+    if (end.code !== 0 || end.signal || end.error) row.failed++;
+  }
+  return { status: "partial", threads: [...threads.values()], unmatchedRecords, ambiguousIds,
+    limit: "Distinct matching wrapper process receipts by observed owned Thread, including failures. Not native tool/request counts, all CLI activity, per-Turn attribution, stdout visible to the model, source-reading or execution authority. Missing/bypassed receipts remain unmeasured." };
+}
+// Usage notifications are observations, not one-to-one provider request receipts.
+// Preserve gaps/resets and keep this supplemental projection bounded.
+export function usageObservations(events, baseline) {
+  const samples = [], seen = new Set();
+  let previous = baseline, duplicateUpdates = 0;
+  for (const e of events) {
+    const usage = e.message?.params?.tokenUsage;
+    if (!usage?.total) continue;
+    const fingerprint = JSON.stringify(Object.entries(usage.total).sort(([a], [b]) => a.localeCompare(b)));
+    if (seen.has(fingerprint)) { duplicateUpdates++; continue; }
+    seen.add(fingerprint);
+    const input = usage.total.inputTokens, prior = previous?.inputTokens;
+    const delta = Number.isFinite(input) && Number.isFinite(prior) && input >= prior ? input - prior : "unknown";
+    const last = usage.last?.inputTokens;
+    samples.push({ at: e.at ?? null, cumulative: usage.total, last: usage.last ?? "unknown",
+      inputDelta: delta, matchesLastInput: typeof delta === "number" && Number.isFinite(last) ? delta === last : "unknown" });
+    previous = usage.total;
+  }
+  const inputs = samples.map(s => s.last?.inputTokens).filter(Number.isFinite);
+  return { uniqueUpdates: samples.length, duplicateUpdates, requestCount: "unknown",
+    observedLastInputSum: inputs.length === samples.length && inputs.length ? inputs.reduce((a, b) => a + b, 0) : "unknown",
+    observedLastInputRange: inputs.length ? { first: inputs[0], last: inputs.at(-1),
+      min: inputs.reduce((a, b) => Math.min(a, b)), max: inputs.reduce((a, b) => Math.max(a, b)) } : "unknown",
+    samples: samples.length <= 64 ? samples : [...samples.slice(0, 32), ...samples.slice(-32)],
+    omittedSamples: Math.max(0, samples.length - 64),
+    coverage: "Observed cumulative usage updates only, deduplicated by total. Deltas may span hidden requests; last is not Turn total. A decrease is not proof of compaction. Matching input deltas do not prove complete request coverage." };
+}
 export function quantifyEvents(events, stageRows = [], sources = []) {
   const key = (thread, turn) => `${thread}/${turn}`;
   const stages = new Map(stageRows.filter(s => s.terminal).map(s => [key(s.terminal.threadId, s.terminal.turnId), s]));
@@ -168,12 +233,14 @@ export function quantifyEvents(events, stageRows = [], sources = []) {
       metadataHelpManifestOriginalOther: "Unclassified remainder stays unknown; command text alone is not output provenance",
     };
     row.totalContextUtf8 = "unknown"; row.billedCost = "unknown";
-    const usage = events.filter(e => e.direction === "native" && e.message?.method === "thread/tokenUsage/updated"
-      && e.message.params?.threadId === row.threadId && e.message.params?.turnId === row.turnId)
-      .at(-1)?.message.params.tokenUsage;
+    const usageEvents = events.filter(e => e.binding && e.direction === "native" && e.message?.method === "thread/tokenUsage/updated"
+      && e.message.params?.threadId === row.threadId && e.message.params?.turnId === row.turnId);
+    const usage = usageEvents.at(-1)?.message.params.tokenUsage;
     row.lastRequestTokens = usage?.last ?? "unknown";
     const baseline = priorTokens.has(row.threadId) ? priorTokens.get(row.threadId)
       : fresh.has(row.threadId) && ordinal === 1 ? {} : undefined;
+    row.usageObservations = usageObservations(usageEvents,
+      baseline && fresh.has(row.threadId) && ordinal === 1 ? { inputTokens: 0, ...baseline } : baseline);
     row.tokens = usage?.total && baseline ? Object.fromEntries(Object.entries(usage.total).map(([k, value]) => {
       const previous = baseline[k] ?? (fresh.has(row.threadId) && ordinal === 1 ? 0 : undefined);
       return [k, Number.isFinite(value) && Number.isFinite(previous) && value >= previous ? value - previous : "unknown"];
@@ -194,6 +261,16 @@ export function quantifyEvents(events, stageRows = [], sources = []) {
 }
 export function quantifyInvocation(invocation, sources) {
   const native = ownedHistory(invocation);
+  const processReceipts = [], receiptErrors = [];
+  for (const path of invocation.files.filter(p => p.endsWith("/cli-process-receipts.jsonl"))) {
+    try {
+      const { records, tail } = completeJsonLines(invocation.bytes(path).toString("utf8"));
+      processReceipts.push(...records);
+      if (tail) receiptErrors.push({ file: path, reason: "incomplete-jsonl-tail" });
+    } catch (e) { receiptErrors.push({ file: path, reason: String(e) }); }
+  }
+  const owners = native.events.filter(e => e.binding && e.message?.params?.threadId)
+    .map(e => ({ ...e.binding, threadId: e.message.params.threadId }));
   const stageRows = (invocation.ledger.results ?? []).flatMap(r => [
     ...(r.stages ?? []), ...(r.routes ?? [])]);
   return { identity: invocation.identity, versions: invocation.versions, analysisVersion: ANALYSIS_VERSION,
@@ -203,6 +280,8 @@ export function quantifyInvocation(invocation, sources) {
         completedStages: r.completedStages, error: r.error, originalCost: r.cost, originalTokens: r.tokens,
         originalAccount: r.account, cleanup: r.cleanup?.status })) },
     ...quantifyEvents(native.events, stageRows, sources.files),
+    instrumentedCli: { ...instrumentedCliCosts(processReceipts, owners, invocation.preflight.launcher),
+      errors: receiptErrors },
     sourceMissing: sources.missing, inventory: { errors: native.errors, rejected: native.rejected,
       scope: native.limit, totalEventInventory: "unknown" } };
 }

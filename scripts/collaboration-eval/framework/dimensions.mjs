@@ -60,7 +60,7 @@ export function compareObservedStages(a, b) {
     sameFreeze, sameScenario, stages,
     originalStatus: { A: a.result?.status ?? "unknown", B: b.result?.status ?? "unknown" },
     stageCounts: { A: A.size, B: B.size },
-    fullQualityComparable: false, savingsEstablished: false,
+    analysis: { owner: "agent", status: "not-assessed" },
     limit: "Descriptive recorded dimensions only, including failures. Product/model identity, route and cleanup require separate inspection; no causal, current-memory or lossless-effects claim.",
   };
 }

@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, existsSync, accessSync, constants } from "node
 import { fork, execFileSync } from "node:child_process";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseOptions, treeHashes, hash, save, now, groupStopFor, executionLimits, planningReferences, isSessionRecovery, recoveryContract, chainStages, routesStage, isBusinessScenario } from "./common.mjs";
+import { parseOptions, treeHashes, hash, save, now, groupStopFor, executionLimits, planningReferences, currentPlanningContract, isSessionRecovery, recoveryContract, chainStages, routesStage, isBusinessScenario } from "./common.mjs";
 import { businessScenarios, businessInstructions } from "./business-scenarios.mjs";
 import { fixturePermissionArguments } from "./isolation.mjs";
 import { invocationCompletion } from "./completion.mjs";
@@ -123,10 +123,12 @@ else {
     preflightIdentity: hash(readFileSync(join(output, "preflight.json"))),
     gradingContract: { originals: "Exact immutable source output may be reused in the same owner/Thread/context epoch; disposition originals remain current-Turn",
       instructions: "Full frozen bytes may be assembled from exact cat/sed slices; metadata is not loading",
-      mandatoryReferences: { leader: planningReferences("leader", preflight.skills, businessOnly), operator: planningReferences("operator", preflight.skills) },
+      mandatoryReferences: { leader: planningReferences("leader", preflight.skills), operator: planningReferences("operator", preflight.skills) },
       reportingCarrier: reportingCarrier(preflight.skills),
+      currentActionContract: currentPlanningContract(preflight.skills) ?? { status: "unmapped", note: "Historical mappings may still apply; never infer a current contract from VERSION alone" },
       conditionalReferences: { taskContext: "Any Role's recognized actual Task-fact read triggers task-context.md before exact command start; unsupported actions remain unknown.",
-        contextOrdering: "Only actual intent conflict, stage handoff or incremental maintenance; Session-recovery handoff explicitly adds it. A warm turn alone is not a trigger.",
+        contextExpansion: "For the reviewed current action contract, recognized context expansion triggers context-reads.md before its command start. Ordinary complete original reads and warm Turns alone do not. Unsupported/hidden paths remain unassessed.",
+        contextOrdering: "Only actual intent conflict, stage handoff or incremental maintenance; Session-recovery handoff explicitly adds it. Frozen business scenarios require Leader reconciliation of changed facts/requirements at stages 2 onward, not cold stage 1 or Operator forwarding. A warm turn alone is not a trigger.",
         reporting: "Declared exact carrier checked before native item/started of product-persisted Leader report or earlier durable Message command; Operator durable Message command start. No terminal-time fallback; missing/ambiguous start or equal-time ordering stays unknown. Actual Task-fact reads tighten task-context to their command start; other base files retain business-effect deadline." },
       applicability: "Fixed normal planning/dispatched-Run/incremental-source scenario; not all conditional product references. No delivery, recovery or identity anomaly is injected in normal.",
       availability: "Prior-Turn output coverage is distinct from present model memory, which remains unknown for real reuse" },
@@ -136,6 +138,7 @@ else {
       successor: "distinct connection and fresh Thread/start; full current recovery load before retained ACK",
       references: ["yui-runtime/references/recovery.md"], realExecution: "requires a separate new freeze/authority" } } : {}),
     historicalPerformanceConditions: 59, newRealConditions: 0, oracleAccess: "evaluator-only module; never in input/configuration" };
+  plan.decisionPolicy = "agent-analysis";
   const planFile = join(output, "plan.json"); save(planFile, plan);
   if (options.preflight === "true") console.log(JSON.stringify({ preflight: preflight.status, output, execution: "not-started" }));
   else {
@@ -172,7 +175,8 @@ else {
       realModelConditionsAdded: plan.mode === "fake" ? 0 : "unknown", stop, results,
       parallel: `at most ${plan.concurrency} isolated condition workers`,
       serial: "within each chain: sources → input → terminal → receipts/quality → next; cleanup/physical exit before root release",
-      comparison: { comparable: false, reason: "No complete lossless observation or real paired quality baseline; no performance benefit calculated" } };
+      analysis: { owner: "agent", status: "not-assessed",
+        scope: "Engineering records measurements and objective checks. Agent inspects trajectories, quality, confounders and combined-candidate benefit; no automatic adoption or model review." } };
     const completion = invocationCompletion(results);
     ledger.completion = completion;
     save(join(output, "ledger.json"), ledger);
@@ -180,9 +184,8 @@ else {
     save(join(output, "seal.json"), treeHashes(output));
     console.log(JSON.stringify({ output, results: results.map(r => ({ scenario: r.scenario, status: r.status,
       completedStages: r.completedStages, cleanup: r.cleanup?.status })), stop, completion }));
-    // Fault scenarios must visibly fail in their own result, not turn the
-    // maintained entry into an always-green oracle. check.mjs asserts expected
-    // rejection/detection explicitly.
+    // Exit is collection/lifecycle status, not a quality verdict. Fault and
+    // objective checks remain visible in results and asserted by wiring checks.
     process.exitCode = completion.exitCode;
   }
 }

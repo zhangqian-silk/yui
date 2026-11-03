@@ -2,9 +2,26 @@ import { fork, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, existsSync, readFileSync, rmSync, copyFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client, hash, save, now, ownedProcesses, alive, fixtureCliScript } from "./common.mjs";
 import { readNativeTransports, rejectedNativeCleanup, recordedStopControls } from "./native-ownership.mjs";
+
+export function waitForFixtureReady(child, label) {
+  return new Promise((resolve, reject) => {
+    const finish = (error, message) => {
+      clearTimeout(timer);
+      child.off("message", onMessage); child.off("error", onError); child.off("exit", onExit);
+      if (error) reject(error); else resolve(message);
+    };
+    const onMessage = message => finish(null, message);
+    const onError = error => finish(error);
+    const onExit = (code, signal) => finish(Error(`${label} exited before ready: code=${code}, signal=${signal}`));
+    const timer = setTimeout(() => finish(Error(`${label} ready timeout`)), 10000);
+    child.once("message", onMessage); child.once("error", onError); child.once("exit", onExit);
+  });
+}
+
 export class FrameworkFixture {
   constructor(product, evidence, mode, scenario, providerBin, permissionMode = "workspace-write", cliEntryMode = "absolute", originalToolFiles) {
     this.root = mkdtempSync(join(tmpdir(), "yui-eval-fw-"));
@@ -51,11 +68,7 @@ export class FrameworkFixture {
       this.owner = fork(new URL("./fake-provider.mjs", import.meta.url), [this.configPath],
         { env: this.environment, stdio: ["ignore", "ignore", "inherit", "ipc"] });
       this.ownerExit = new Promise(resolve => this.owner.once("exit", (code, signal) => resolve({ code, signal })));
-      config.endpoint = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(Error("Provider owner ready timeout")), 10000);
-        this.owner.once("message", m => { clearTimeout(timer); resolve(m); });
-        this.owner.once("error", reject);
-      });
+      config.endpoint = await waitForFixtureReady(this.owner, "Provider owner");
       // A descriptor is configuration, never a mutable runtime truth store.
       writeFileSync(this.configPath, JSON.stringify(config));
     } else save(this.configPath, config);
@@ -65,15 +78,15 @@ export class FrameworkFixture {
     // Absolute subject entry also pins Node/PATH after a login shell has
     // replaced PATH. It delegates to the selected product's normal launcher.
     writeFileSync(join(this.root, "bin/yui"),
-      fixtureCliScript(this.cli, process.execPath, join(this.root, "bin")), { mode: 0o755 });
+      fixtureCliScript(this.cli, process.execPath, join(this.root, "bin"), {
+        module: fileURLToPath(new URL("./cli-receipt.mjs", import.meta.url)),
+        audit: join(this.evidence, "cli-process-receipts.jsonl"), product: this.product
+      }), { mode: 0o755 });
     this.collector = fork(new URL("../shared-collector.mjs", import.meta.url),
       [this.product, this.root, join(this.evidence, "collector.json.gz")],
       { env: this.environment, stdio: ["ignore", "ignore", "inherit", "ipc"] });
     this.collectorExit = new Promise(resolve => this.collector.once("exit", (code, signal) => resolve({ code, signal })));
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error("Collector ready timeout")), 10000);
-      this.collector.once("message", () => { clearTimeout(timer); resolve(); }); this.collector.once("error", reject);
-    });
+    await waitForFixtureReady(this.collector, "Collector");
     if (this.scenario === "partial-setup") throw Error("Injected partial setup failure before CLI");
     this.environment.YUI_SETUP_INTERACTIVE = "1";
     this.client.call(["setup"], "setup", { json: false, input: "codex\n" });

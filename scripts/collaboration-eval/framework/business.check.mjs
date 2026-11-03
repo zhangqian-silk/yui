@@ -10,10 +10,10 @@ import { observedDimensions } from "./dimensions.mjs";
 test("business chains resolve distributed signed revisions and request changes against independent literal answers", () => {
   for (const [name, scene] of Object.entries(businessScenarios)) {
     const originals = [];
-    assert.equal(chainStages(name), 3);
+    assert.equal(chainStages(name), scene.stages.length);
     assert.equal(parseOptions(["--mode", "fake", "--product", "/product", "--out", "/new",
       "--scenarios", name]).scenarios[0], name);
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < scene.stages.length; i++) {
       originals.push(...scene.stages[i].materials.map(JSON.parse));
       const actual = allocationPlan(originals, scene.stages[i].request);
       assert.deepEqual(actual, scene.expected[i], `${name} stage ${i + 1}`);
@@ -28,6 +28,16 @@ test("business chains resolve distributed signed revisions and request changes a
   }
   assert.deepEqual([1, 2, 3].filter(n => routesStage("business-route", n)), [1, 2, 3]);
   assert.equal(isSessionRecovery("business-recovery"), true);
+  const warm = businessScenarios["business-warm"];
+  assert.equal(chainStages("business-warm"), 4);
+  assert.deepEqual([1, 2, 3, 4].filter(n => routesStage("business-warm", n)), [1, 2, 3, 4]);
+  assert.deepEqual(warm.stages.slice(0, 3), businessScenarios["business-route"].stages);
+  const prior = warm.stages.slice(0, 3).flatMap(s => s.materials.map(JSON.parse));
+  const fourth = [...prior, ...warm.stages[3].materials.map(JSON.parse)];
+  assert.notDeepEqual(allocationPlan(prior, warm.stages[3].request), warm.expected[3],
+    "Ignoring the new signed enrolment must not satisfy the fourth input");
+  assert.notDeepEqual(allocationPlan(fourth, warm.stages[2].request), warm.expected[3],
+    "Retaining the superseded exclusion must not satisfy the fourth input");
 });
 
 test("missing source and newer draft do not become effective allocation authority", () => {

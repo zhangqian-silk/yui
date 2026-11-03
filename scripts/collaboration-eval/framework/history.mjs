@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { hash } from "./common.mjs";
 import { openEvidence, readSavedInvocation, ANALYSIS_VERSION } from "./saved-evidence.mjs";
 import { frozenSources, quantifyInvocation } from "./quantify.mjs";
-import { exportReviewCase, exportReadableReview, validateReview, compareReviews, REVIEW_VERSION } from "./semantic-review.mjs";
+import { exportReviewCase, exportReadableReview, validateReview, diagnoseReview, compareReviews, REVIEW_VERSION } from "./semantic-review.mjs";
 import { readReviewPage } from "./readable-review.mjs";
 const json = file => JSON.parse(readFileSync(file, "utf8"));
 const put = (file, value) => writeFileSync(file, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
@@ -88,7 +88,12 @@ export function analyzeHistory(index, destination, selection) {
         originalResults: measured.run.originalResults, totals: measured.totals,
         rows: measured.rows.map(r => ({ role: r.role, stage: r.stage, phase: r.phase, threadId: r.threadId,
           turnId: r.turnId, toolCount: r.toolCount, failedToolCount: r.failedToolCount,
-          outputUtf8: r.toolOutputUtf8, bodies: r.recognizedBodies, tokens: r.tokens, wallMs: r.wallMs })),
+          outputUtf8: r.toolOutputUtf8, bodies: r.recognizedBodies, tokens: r.tokens, wallMs: r.wallMs,
+          usageObservations: {
+            uniqueUpdates: r.usageObservations.uniqueUpdates, duplicateUpdates: r.usageObservations.duplicateUpdates,
+            observedLastInputRange: r.usageObservations.observedLastInputRange,
+            requestCount: r.usageObservations.requestCount, detail: `${label}-quant.json`,
+          } })),
         review: publicReview, semanticReview: "not-run" });
     } catch (e) { errors.push({ archive: entry.archive, prefix: entry.prefix, error: String(e) }); }
     finally {
@@ -132,11 +137,16 @@ if (main) {
     // Metadata header followed by literal decoded text, not another escaped
     // JSON string envelope that would recreate the citation mismatch.
     process.stdout.write(JSON.stringify(page) + "\n" + text);
+  } else if (command === "diagnose" && input && output) {
+    const result = diagnoseReview(input, json(output), [process.env.CODEX_THREAD_ID].filter(Boolean),
+      option ? { ...json(option), reviewFile: resolve(output) } : undefined);
+    console.log(JSON.stringify(result, null, 2));
+    if (result.status === "rejected") process.exitCode = 1;
   } else if (command === "import" && input && output && option) {
     const checked = validateReview(input, json(output), [process.env.CODEX_THREAD_ID].filter(Boolean),
       receipts ? { ...json(receipts), reviewFile: resolve(output) } : undefined);
     checked.sourceReviewFileSha256 = hash(readFileSync(output));
     put(option, checked); console.log(JSON.stringify({ status: checked.status, executionIndependence: checked.executionIndependence }));
   } else if (command === "compare" && input && output && option) put(option, compareReviews(json(input), json(output)));
-  else throw Error("Usage: history.mjs index <evidence-root> <NEW-index.json> | analyze <index> <NEW-out> [batch,batch] | view <sealed-case> <NEW-case> | read <case> <V-id> [offset,limit] | import <case> <review.json> <NEW-checked.json> [receipt-paths.json] | compare <checked-A> <checked-B> <NEW-comparison.json>");
+  else throw Error("Usage: history.mjs index <evidence-root> <NEW-index.json> | analyze <index> <NEW-out> [batch,batch] | view <sealed-case> <NEW-case> | read <case> <V-id> [offset,limit] | diagnose <case> <review.json> [receipt-paths.json] | import <case> <review.json> <NEW-checked.json> [receipt-paths.json] | compare <checked-A> <checked-B> <NEW-comparison.json>");
 }

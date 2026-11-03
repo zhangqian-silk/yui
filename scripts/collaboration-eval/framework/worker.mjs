@@ -4,12 +4,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { gunzipSync } from "node:zlib";
 import { FrameworkFixture } from "./fixture.mjs";
 import { fixturePermissionArguments } from "./isolation.mjs";
-import { save, now, hash, Failure, subjectInstructions, environmentInstructions, planningReferences, lifecycleWorkingSet, isSessionRecovery, chainStages, routesStage, isBusinessScenario } from "./common.mjs";
+import { save, now, hash, completeJsonLines, Failure, subjectInstructions, environmentInstructions, planningReferences, lifecycleWorkingSet, currentPlanningContract, isSessionRecovery, chainStages, routesStage, isBusinessScenario } from "./common.mjs";
 import { ReplayObserver } from "../replay-observer.mjs";
 import { gradeHandling, initialPlanningBinding, gradeBusiness, gradeGlobal, gradeLoads, gradeReads, instructionLoadCosts, tokenTotals, outcome, forbiddenFileChanges, stageVerdict, stageAllowsContinuation, subjectFailure, controllerAccessFailure, protocolApplicable, gradeDecisionChanges, gradeSkillBinding, gradeRoutedInput, gradeRecoveryStop, gradeRecoverySuccessor, gradeRecoveryPreservation, gradeRecoveryInspection, gradeRecoveryCheckpoint } from "./judge.mjs";
 import { epochAt, nativeEvidence, selectTerminal, selectHandlingTerminal, nativeCommandFailures, reportingAction, nativeContinuationProof, gradeCliExecution } from "./native-evidence.mjs";
 import { attributeNativeEvents, readNativeTransports } from "./native-ownership.mjs";
-import { reportingCarrier, taskFactsCarrier, taskFactsAction, gradeInstructionObligations, gradeHostSkillCheck } from "./obligations.mjs";
+import { reportingCarrier, taskFactsCarrier, taskFactsAction, contextExpansionAction, gradeInstructionObligations, gradeHostSkillCheck } from "./obligations.mjs";
 const [planFile, scenario, output] = process.argv.slice(2);
 const plan = JSON.parse(readFileSync(planFile));
 const preflightBytes = readFileSync(join(dirname(planFile), "preflight.json"));
@@ -26,6 +26,7 @@ const f = new FrameworkFixture(plan.product, output, plan.mode, scenario, plan.p
   plan.originalToolAvailability === "available" ? plan.originalToolFiles : undefined);
 f.client.deadline = Date.now() + plan.limits.cliBudgetMs;
 const report = { scenario, plannedStages: chainStages(scenario), startedAt: now(), completedStages: 0, stages: [], routes: [], status: "not-run",
+  decisionPolicy: plan.decisionPolicy,
   permissionMode: plan.permissionMode ?? "workspace-write", osIsolation: plan.osIsolation ?? "unproven",
   mode: plan.mode, actualModelCalls: plan.mode === "fake" ? 0 : "unknown",
   historicalPerformanceConditions: 59, frameworkScenario: true, inputIdentity: plan.inputIdentity,
@@ -50,11 +51,19 @@ function checkControllerPrerequisite(terminal, stage) {
 const traces = () => existsSync(join(output, "participant")) ? readdirSync(join(output, "participant"))
   .map(n => JSON.parse(readFileSync(join(output, "participant", n)))) : [];
 const expectedSources = new Map();
+function cliProcessEvidence() {
+  const path = join(output, "cli-process-receipts.jsonl");
+  if (!existsSync(path)) return undefined;
+  try {
+    const { records, tail } = completeJsonLines(readFileSync(path, "utf8"));
+    return { receipts: records, incomplete: Boolean(tail), launcherSha256: preflight.launcher };
+  } catch { return { receipts: [], incomplete: true, launcherSha256: preflight.launcher }; }
+}
 const skillBinding = (bundles, roleName, scope) => gradeSkillBinding(bundles, expectedSkillSources(roleName), scope,
   gradeHostSkillCheck(transports(), expectedSkillSources(roleName), scope, [...sourceFiles.values()]));
 const cliIdentity = (terminal, scope, effect) => nativeAdapter
   ? gradeCliExecution(transports(), terminal.binding, preflight.actualCli["--json version"],
-    { ...scope, throughAt: terminal.at, effect }, [...sourceFiles.values()])
+    { ...scope, nativeStartAt: terminal.startedAt, throughAt: terminal.at, effect }, [...sourceFiles.values()], cliProcessEvidence())
   : { status: "pass", scope: "deterministic parent-spawned fixture entry only; not native Subject execution" };
 const originalOptions = () => ({ originalAudits: existsSync(join(output, "original-tool-audit.jsonl"))
   ? readFileSync(join(output, "original-tool-audit.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [] });
@@ -153,15 +162,15 @@ async function nativeTerminal(since, originalId, roleName, taskId, expectedThrea
     return false;
   });
 }
-function instructionFiles(terminal, recovery = false) {
+function instructionFiles(terminal, recovery = false, stage) {
   const path = terminal.binding?.manifestPath;
   if (!path?.startsWith(f.home + "/runtime/session-manifests/"))
     throw new Failure("framework-invalid", "Missing exact Host-owned Manifest binding");
   const manifest = JSON.parse(readFileSync(path));
   const files = [...manifest.skills.map(s => ({ path: join(s.path, "SKILL.md"), kind: "core" })),
     { path: manifest.roleProfileRef.path, kind: "profile" },
-    ...[...planningReferences(terminal.binding.roleName, preflight.skills, recovery || !!scene && terminal.binding.roleName === "leader",
-        { inspectExisting: recovery }),
+    ...[...planningReferences(terminal.binding.roleName, preflight.skills, recovery,
+        { inspectExisting: recovery, businessStage: scene ? stage : undefined }),
       ...(recovery ? ["yui-runtime/references/recovery.md",
         ...(lifecycleWorkingSet(preflight.skills) ? ["yui-runtime/references/inbox-recovery.md"] : [])] : [])]
       .map(p => ({ path: join(plan.product, "skills", p), kind: "topic" }))];
@@ -176,7 +185,7 @@ function instructionFiles(terminal, recovery = false) {
     return { ...file, body, bytes: Buffer.byteLength(body), sha256: hash(body) };
   });
 }
-function evidenceFor(terminal, beforeAt, afterAt, recovery = false) {
+function evidenceFor(terminal, beforeAt, afterAt, recovery = false, stage) {
   const events = transports();
   const reporting = nativeAdapter ? reportingAction(events, terminal) : undefined;
   const business = { status: Number.isFinite(Date.parse(beforeAt)) ? "observed" : "unknown",
@@ -191,7 +200,7 @@ function evidenceFor(terminal, beforeAt, afterAt, recovery = false) {
     ...(nativeAdapter ? { loadActions: {
       business: firstBusiness, reporting,
     } } : {}) };
-  const files = instructionFiles(terminal, recovery);
+  const files = instructionFiles(terminal, recovery, stage);
   for (const file of files) sourceFiles.set(file.path, file);
   const manifestPath = terminal.binding.manifestPath, manifestBody = readFileSync(manifestPath, "utf8");
   sourceFiles.set(manifestPath, { path: manifestPath, body: manifestBody, bytes: Buffer.byteLength(manifestBody),
@@ -212,6 +221,14 @@ function evidenceFor(terminal, beforeAt, afterAt, recovery = false) {
   }
   const bundles = nativeAdapter ? nativeEvidence(transports(), [...sourceFiles.values()], originalOptions()) : traces();
   if (nativeAdapter) {
+    if (currentPlanningContract(preflight.skills)) {
+      const expansion = contextExpansionAction(bundles, events, scope);
+      scope.contextExpansionAction = expansion;
+      if (expansion.status !== "not-observed") {
+        const file = sourceFiles.get(join(plan.product, "skills/yui-runtime/references/context-reads.md"));
+        files.push({ ...file, kind: "topic", action: expansion });
+      }
+    }
     const action = taskFactsAction(bundles, events, scope);
     scope.taskFactsAction = action;
     if (action.status !== "not-observed") {
@@ -330,7 +347,7 @@ try {
         } : undefined);
       routeOriginal = values(observer.readState(), "global_role_messages").find(m => m.id === route.message.id);
       submitted = { message: values(observer.readState(), "messages").find(m => m.taskId === task && m.submissionKey === key) };
-      const op = evidenceFor(routeTerminal, submitted.message?.createdAt ?? routeTerminal.at, route.message.createdAt);
+      const op = evidenceFor(routeTerminal, submitted.message?.createdAt ?? routeTerminal.at, route.message.createdAt, false, stage);
       routeObservation = { stage, evidenceScope: op.scope, terminal: routeTerminal, original: routeOriginal,
         input: gradeRoutedInput(submitted.message, { taskId: task, requestId: key, input }),
         grade: submitted.message ? gradeGlobal(routeOriginal, { id: route.message.id, body: routeBody,
@@ -373,7 +390,7 @@ try {
         report.recovery = { kind: "session-replacement", checkpoint: preserved, predecessor: terminal,
           simulatedProvider: plan.mode === "fake", nativeCompaction: "not-covered",
           stop: { status: "unknown", reason: "not yet confirmed" }, replacementRequested: false };
-        const ev = evidenceFor(terminal, effect?.createdAt, original?.createdAt);
+        const ev = evidenceFor(terminal, effect?.createdAt, original?.createdAt, false, stage);
         report.recovery.predecessorChecks = {
           predecessorCheckpoint: gradeRecoveryCheckpoint({ taskId: task, terminal, original, wake: retained[0], effect }),
           predecessorBusiness: gradeBusiness(decisions, input.effectKey, stage, scene?.expected[stage - 1]),
@@ -381,7 +398,8 @@ try {
           predecessorInputReads: gradeReads(ev.bundles, [{ taskId: task, id: original?.id, body: original?.body }], ev.scope),
           predecessorBinding: skillBinding(ev.bundles, "leader", ev.scope),
           predecessorCliIdentity: cliIdentity(terminal, ev.scope, { kind: "decision", taskId: task,
-            id: effect?.id, title: effect?.title, at: effect?.createdAt }),
+            id: effect?.id, title: effect?.title, at: effect?.createdAt,
+            digest: effect ? hash(JSON.stringify(effect)) : undefined }),
           predecessorLoads: instructionGrade(ev),
         };
         report.recovery.predecessorVerdict = stageVerdict(report.recovery.predecessorChecks);
@@ -475,14 +493,15 @@ try {
     // already committed effect must read before its own ACK, never rewrite it.
     const cutoff = predecessor ? wake?.inbox?.ack?.at : effect?.createdAt;
     const ev = evidenceFor(terminal, cutoff, predecessor ? terminal.startedAt : original.createdAt,
-      !!predecessor && isSessionRecovery(scenario));
+      !!predecessor && isSessionRecovery(scenario), stage);
     const required = sources.map(s => ({ ...s }));
     const reads = gradeReads(ev.bundles, required, ev.scope, { reuse: true });
     const inputReads = gradeReads(ev.bundles, [{ taskId: task, id: original.id, body: original.body }], ev.scope);
     const binding = skillBinding(ev.bundles, "leader", ev.scope);
     const actualCli = cliIdentity(terminal, ev.scope, predecessor
       ? { kind: "ack", id: wake?.id, at: wake?.inbox?.ack?.at }
-      : { kind: "decision", taskId: task, id: effect?.id, title: effect?.title, at: effect?.createdAt });
+      : { kind: "decision", taskId: task, id: effect?.id, title: effect?.title, at: effect?.createdAt,
+        digest: effect ? hash(JSON.stringify(effect)) : undefined });
     const loads = instructionGrade(ev);
     const recoveryInspection = predecessor && isSessionRecovery(scenario)
       ? gradeRecoveryInspection(ev.bundles, { effect, wake }, ev.scope) : undefined;
@@ -533,8 +552,16 @@ try {
       if (proofs.some(p => p.status !== "pass" && !p.pending)) return proofs;
       return proofs.some(p => p.pending) ? false : proofs;
     }) : [{ status: "pass", scope: "deterministic fake fixture only" }];
+    const identityProof = g => g?.version?.status === "pass" && g?.effectIdentity?.status === "pass"
+      && !g.commands?.some(c => c.status !== "pass");
     row.continuation = { status: nativeSafety.every(p => p.status === "pass") ? "pass" : "unknown", proofs: nativeSafety,
-      policy: "Only observation/read/Skill metadata coverage unknown may continue; identity/effect/authority/protocol/quality/pending execution fences next input. Unknown grades remain unknown." };
+      analyzeReadingFailures: plan.decisionPolicy === "agent-analysis" && isBusinessScenario(scenario)
+        && !isSessionRecovery(scenario) && protocol.status === "pass" && legal.status === "pass",
+      planningOnlyAnswer: scenario === "business-warm" && protocol.status === "pass" && legal.status === "pass",
+      exactEffectIdentities: {
+        cliIdentity: identityProof(actualCli), operatorCliIdentity: identityProof(routeObservation?.cliIdentity)
+      },
+      policy: "Exact native endpoints and existing authority/protocol/effect fences remain required. In agent-analysis non-recovery business runs, reading/load findings are retained for Agent analysis without censoring later inputs. Only business-warm permits the existing known single-Decision planning-answer mismatch. No retry, correction, or promotion of earlier grades." };
     checkpoint();
     if (!stageAllowsContinuation(row.verdict, row.continuation))
       throw new Failure(row.verdict.status === "pass" ? "observation-unknown" : row.verdict.status,
@@ -542,8 +569,10 @@ try {
     // before is saved inside observation; do not infer no write from equality.
     void before;
   }
-  report.executionChecks = report.stages.every(row => row.verdict.status === "pass") ? "pass" : "observation-unknown";
-  report.status = outcome({ framework: "pass", quality: "pass", observation: "unknown" });
+  const qualityFailed = report.stages.some(row => row.verdict.status === "quality-fail");
+  report.executionChecks = qualityFailed ? "quality-fail"
+    : report.stages.every(row => row.verdict.status === "pass") ? "pass" : "observation-unknown";
+  report.status = outcome({ framework: "pass", quality: qualityFailed ? "fail" : "pass", observation: "unknown" });
 } catch (e) {
   report.status = e.kind ?? "infrastructure-failed"; report.error = String(e);
   report.stop = { at: now(), kind: report.status, scope: e.scope ?? "condition", noReplay: true };

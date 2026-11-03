@@ -2,7 +2,7 @@
 // observer, scorer, runner or a Store. All business mutations use the real CLI.
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { Client, hash, save, now, shellQuote, treeHashes, planningReferences, lifecycleWorkingSet, isSessionRecovery, isBusinessScenario } from "./common.mjs";
+import { Client, hash, save, now, shellQuote, treeHashes, planningReferences, lifecycleWorkingSet, currentPlanningContract, isSessionRecovery, isBusinessScenario } from "./common.mjs";
 import { allocationPlan } from "./business-participant.mjs";
 import { TurnOriginalReader, waitForGlobalAcceptance } from "../turn-reader.mjs";
 import { setTimeout as delay } from "node:timers/promises";
@@ -94,12 +94,15 @@ export async function handleTurn({ threadId, turnId, environment, input, config,
     const manifestBody = readFileSync(environment.YUI_SESSION_MANIFEST, "utf8");
     const manifest = JSON.parse(manifestBody);
     result.manifest = { body: manifestBody, bytes: Buffer.byteLength(manifestBody), sha256: hash(manifestBody) };
+    const inventory = treeHashes(join(config.product, "skills"));
     const files = [...skills.skills.map(s => ({ path: join(s.path, "SKILL.md"), kind: "core", version: s.version })),
       { path: manifest.roleProfileRef.path, kind: "profile" },
-      ...[...planningReferences(environment.YUI_ROLE, treeHashes(join(config.product, "skills")),
+      ...[...planningReferences(environment.YUI_ROLE, inventory,
         (isSessionRecovery(config.scenario) || isBusinessScenario(config.scenario)) && environment.YUI_ROLE === "leader"), ...(isSessionRecovery(config.scenario)
         && environment.YUI_ROLE === "leader" ? ["yui-runtime/references/recovery.md",
-          ...(lifecycleWorkingSet(treeHashes(join(config.product, "skills"))) ? ["yui-runtime/references/inbox-recovery.md"] : [])] : [])]
+          ...(lifecycleWorkingSet(inventory) ? ["yui-runtime/references/inbox-recovery.md"] : [])] : []),
+        ...(currentPlanningContract(inventory) && environment.YUI_ROLE === "leader"
+          ? ["yui-runtime/references/context-reads.md"] : [])]
         .map(p => ({ path: join(config.product, "skills", p), kind: "topic" }))];
     for (const f of files) {
       const body = readFileSync(f.path, "utf8"), identity = hash(body);
@@ -209,15 +212,26 @@ export async function handleTurn({ threadId, turnId, environment, input, config,
         if (!entry.inbox?.claim)
           entry = client.call(["inbox", "claim", entry.id, "--request-id", `claim-${entry.id}`], "write");
         // Exercise the product's direct inbox wake, not only task-wake's wrapper.
-        const window = isSessionRecovery(config.scenario) && shown.id === entry.id && shown.refs
-          ? { wake: shown } : client.detail(["task", "wake", "show", task, entry.id]);
+        const window = shown.originalContext?.view === "focus" && shown.id === entry.id
+          ? { ...shown.originalContext, wake: shown }
+          : isSessionRecovery(config.scenario) && shown.id === entry.id && shown.refs
+            ? { wake: shown } : client.detail(["task", "wake", "show", task, entry.id]);
         if (window.wake.taskId !== task || window.wake.id !== entry.id) throw Error("Wrong exact wake");
         const inventory = reader.references("task-message");
         let found = false;
         for (const ref of window.wake.refs) {
           if (ref.taskId !== task) throw Error("Cross-Task window original");
           if (ref.type === "event") { client.detail(["task", "event", "show", task, ref.id]); continue; }
-          const original = reader.message(ref.id, inventory);
+          const inline = window.messages?.find(message => message.id === ref.id && message.contentOmitted === false);
+          let original;
+          if (inline) {
+            const current = inventory.find(item => item.ref.refId === ref.id)?.ref;
+            if (inline.ref?.store !== "task-message" || inline.ref.refId !== ref.id
+              || inline.ref.digest !== current?.digest || inline.value?.taskId !== task
+              || inline.value.id !== ref.id || hash(JSON.stringify(inline.value)) !== inline.ref.digest)
+              throw Error("Focused inbox original identity changed");
+            original = { ref: inline.ref, value: inline.value };
+          } else original = reader.message(ref.id, inventory);
           if (config.originalTool && helperOriginal({ kind: "task-message", messageId: ref.id }).body !== original.value.body)
             throw Error("Actual current Task Message helper mismatch");
           let body; try { body = JSON.parse(original.value.body); } catch { continue; }

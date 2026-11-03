@@ -274,6 +274,57 @@ test("short owned CLI paths require their actual command cwd even when JSON outp
   assert.equal(read("/changed", "../fixture/" + command), "pass");
   assert.equal(read(undefined, "/fixture/" + command), "pass");
 });
+test("focused wake originals need exact own output, complete value and matching digest", () => {
+  const original = { taskId: "task-1", id: "message-1", body: "完整 ordinary original" };
+  const detail = { id: original.id, contentOmitted: false,
+    ref: { store: "task-message", refId: original.id, digest: hash(JSON.stringify(original)) },
+    value: original };
+  const data = { taskId: "task-1", wake: { id: "wake-1", taskId: "task-1" },
+    view: "focus", messages: [detail] };
+  const read = (d = data, command = "/fixture/bin/yui task wake show task-1 wake-1 --json") =>
+    gradeReads(nativeEvidence([item(command, JSON.stringify({ ok: true, data: d }), [])]),
+      [original], scope).status;
+  assert.equal(read(), "pass");
+  for (const change of [
+    { contentOmitted: true }, { value: undefined },
+    { value: { ...original, body: "summary" } },
+    { ref: { ...detail.ref, digest: "0".repeat(64) } },
+    { ref: { ...detail.ref, refId: "message-2" } }
+  ]) assert.notEqual(read({ ...data, messages: [{ ...detail, ...change }] }), "pass");
+  assert.notEqual(read({ ...data, view: "history" }), "pass");
+  assert.notEqual(read(data, "/foreign/yui task wake show task-1 wake-1 --json"), "pass");
+  assert.notEqual(read(data, "/fixture/bin/yui task wake show task-1 wake-2 --json"), "pass");
+  const inbox = { ...data.wake, fromCursor: "2026-01-01T00:00:00Z",
+    toCursor: "2026-01-01T00:01:00Z",
+    originalContext: { taskId: "task-1", view: "focus", messages: [detail] } };
+  const inboxCommand = "/fixture/bin/yui inbox show wake-1 --json";
+  assert.equal(read(inbox, inboxCommand), "pass", "Own inbox exposes the same complete focused original");
+  assert.equal(read(inbox, "/fixture/bin/yui --json inbox show wake-1"), "pass",
+    "Global JSON flag position does not hide complete originals");
+  assert.equal(read(data, "/fixture/bin/yui --json task wake show task-1 wake-1"), "pass");
+  for (const altered of [
+    { ...inbox, taskId: "other-task" },
+    { ...inbox, id: "wake-2" },
+    { ...inbox, originalContext: { ...inbox.originalContext, taskId: "other-task" } },
+    { ...inbox, originalContext: { ...inbox.originalContext, messages: [{ ...detail, contentOmitted: true }] } },
+    { ...inbox, originalContext: { ...inbox.originalContext, messages: [{ ...detail,
+      value: { ...original, body: "summary" } }] } }
+  ]) assert.notEqual(read(altered, inboxCommand), "pass");
+  const text = JSON.stringify(inbox), source = "inbox:task:task-1:leader/wake-1";
+  const cursor = Buffer.from(JSON.stringify({ source, digest: hash(text), offset: 40 })).toString("base64url");
+  const page = (offset, end) => ({ source, digest: hash(text), encoding: "json", offset,
+    totalCharacters: text.length, totalBytes: Buffer.byteLength(text), text: text.slice(offset, end),
+    complete: end === text.length, nextCursor: end === text.length ? null : cursor });
+  const first = item(inboxCommand, JSON.stringify({ ok: true, data: { contentPage: page(0, 40) } }), [], 1);
+  const last = item(`${inboxCommand} --cursor ${cursor}`,
+    JSON.stringify({ ok: true, data: { contentPage: page(40, text.length) } }), [], 2);
+  assert.equal(gradeReads(nativeEvidence([first, last]), [original], scope).status, "pass");
+  assert.notEqual(gradeReads(nativeEvidence([first]), [original], scope).status, "pass");
+  const foreignPage = structuredClone(last);
+  foreignPage.message.params.item.aggregatedOutput = JSON.stringify({ ok: true,
+    data: { contentPage: { ...page(40, text.length), source: "inbox:task:other:leader/wake-1" } } });
+  assert.notEqual(gradeReads(nativeEvidence([first, foreignPage]), [original], scope).status, "pass");
+});
 test("plain CLI content pages retain actual JSON bytes and require the full same-Turn digest", () => {
   const original = { taskId: "task-1", id: "message-1", body: "完整\noriginal" };
   const text = JSON.stringify({ ref: { store: "task-message", refId: original.id }, value: original });
@@ -769,6 +820,22 @@ test("version provenance cannot launder the actual business entry, including war
       '{"ok":true,"data":{"taskId":"task-1","message":{"id":"message-2"}}}\n', 6);
     assert.equal(grade([version, start(route), route], { ...s, effect: {
       kind: "route", taskId: "task-1", id: "message-2", requestId: "input-2", at: scope.beforeAt } }).status, expected);
+    const submit = make(`${entry} operator submit '{}' --task task-1 --request-id input-2 --json`,
+      JSON.stringify({ ok: true, output: "Saved message message-2 to task-1.\nPhase: Draft, in planning.\nPlanning: continued; the Leader is queued.\n" }) + "\n", 6);
+    const routeScope = { ...s, effect: {
+      kind: "route", taskId: "task-1", id: "message-2", requestId: "input-2", at: scope.beforeAt } };
+    assert.equal(grade([version, start(submit), submit], routeScope).status, expected,
+      "Operator submission returns the product's text feedback inside its JSON envelope");
+    if (expected === "pass") {
+      for (const changed of [{ id: "message-3" }, { taskId: "task-2" }, { requestId: "other" }])
+        assert.equal(grade([version, start(submit), submit], {
+          ...routeScope, effect: { ...routeScope.effect, ...changed }
+        }).status, "unknown", "A saved-message line cannot bind another effect or request");
+      const failed = structuredClone(submit);
+      failed.message.params.item.aggregatedOutput = JSON.stringify({ ok: false,
+        output: "Saved message message-2 to task-1.\n" });
+      assert.equal(grade([version, start(failed), failed], routeScope).status, "unknown");
+    }
     const ack = make(`${entry} inbox ack wake-2 --request-id ack-wake-2 --reason done --json`,
       JSON.stringify({ ok: true, data: { id: "wake-2", inbox: { ack: { at: scope.beforeAt,
         actor: { taskId: "task-1", roleName: "leader", nativeSessionId: "ld" } } } } }) + "\n", 6);
@@ -880,6 +947,29 @@ test("static Skill/context pair consumes two ordered JSON documents in the exact
   const failed = make(); failed.message.params.item.exitCode = 1;
   assert.equal(nativeEvidence([failed])[0].trace.length, 0);
 });
+test("current Global context originals require exact native context and complete matching bodies", () => {
+  const b = { ...binding, taskId: undefined, roleName: "operator", home: "/fixture/state",
+    manifestPath: "/fixture/state/manifest.json" };
+  const source = { schemaVersion: 1, id: "global-message-1", roleName: "operator", body: "complete original" };
+  const context = { protocol: "yui-managed-context/v1", identity: { scope: "global",
+    roleName: "operator", nativeSessionId: "op", workspace: "/fixture" },
+    nativeTurn: { nativeTurnId: "turn-2" }, sessionManifestPath: b.manifestPath,
+    currentOriginals: [source] };
+  const s = { ...scope, taskId: undefined, roleName: "operator", threadId: "op" };
+  const grade = d => {
+    const e = item(`${b.cli} session context operator --json`, JSON.stringify({ ok: true, data: d }), []);
+    e.binding = b; e.message.params.threadId = "op"; e.message.params.item.cwd = "/fixture";
+    return gradeReads(nativeEvidence([e]), [{ ...source, store: "global-role-message" }], s).status;
+  };
+  assert.equal(grade(context), "pass");
+  for (const d of [
+    { ...context, currentOriginals: [], pending: { items: [source] } },
+    { ...context, currentOriginals: [{ ...source, body: "summary" }] },
+    { ...context, currentOriginals: [{ ...source, roleName: "foreign" }] },
+    { ...context, nativeTurn: { nativeTurnId: "other" } },
+    { ...context, identity: { ...context.identity, nativeSessionId: "other" } },
+  ]) assert.notEqual(grade(d), "pass");
+});
 test("static compound reporting uses the unique enclosing tool start, not save time or shell guesses", () => {
   const command = "yui task message send task-1 hello --to leader --json && yui inbox ack message-1 --request-id ack";
   const send = item(command, "{}", [], 4), start = event("item/started", {
@@ -920,6 +1010,17 @@ test("file-backed Operator routing has a conservative enclosing start, not scrip
   assert.equal(grade().at, start.at);
   assert.equal(grade().boundary, "enclosing-file-backed-route-start");
   assert.equal(nativeEvidence([send])[0].loads.length, 0);
+  const structured = structuredClone(send);
+  structured.message.params.item.aggregatedOutput = JSON.stringify({ ok: true, data: {
+    taskId: "task-1", message: { id: "message-4", taskId: "task-1", submissionKey: "input-2" },
+    submission: { saved: { messageId: "message-4", taskId: "task-1" } },
+  } }) + "\n";
+  assert.equal(grade(structured).status, "observed");
+  assert.equal(nativeEvidence([structured])[0].loads.length, 0);
+  const wrongRequest = structuredClone(structured);
+  wrongRequest.message.params.item.aggregatedOutput =
+    structured.message.params.item.aggregatedOutput.replace("input-2", "input-3");
+  assert.equal(grade(wrongRequest).status, "unknown");
   const footer = structuredClone(send);
   footer.message.params.item.command = wrap(command + ` && node -e 'process.stdout.write(process.argv[1])' "$route_scratch"`);
   footer.message.params.item.aggregatedOutput += "/fixture/tmp/yui-route.ABCDef12";
@@ -1011,8 +1112,8 @@ test("plain expanded originals and help boundaries retain exact output, ownershi
   const source = { taskId: "task-1", id: "message-1", body: "完整原件" };
   const value = { ref: { store: "task-message", refId: source.id }, value: source, digest: hash("fixture") };
   const command = `${b.cli} task run context expand task-1/run-1 message-1 --store task-message --mode full`;
-  const make = (cmd, output) => {
-    const e = item(cmd, output, []); e.binding = b; e.message.params.item.cwd = "/fixture"; return e;
+  const make = (cmd, output, second = 1) => {
+    const e = item(cmd, output, [], second); e.binding = b; e.message.params.item.cwd = "/fixture"; return e;
   };
   const stdout = JSON.stringify(value, null, 2) + "\n";
   const grade = (e, overrides = {}) => gradeReads(nativeEvidence([e]), [source], { ...scope, ...overrides });
@@ -1022,6 +1123,60 @@ test("plain expanded originals and help boundaries retain exact output, ownershi
     make(command + " && touch /fixture/write", stdout)]) assert.notEqual(grade(e).status, "pass");
   assert.notEqual(grade(make(command, stdout), { threadId: "other" }).status, "pass");
   assert.notEqual(grade(make(command, stdout), { beforeAt: "2026-10-24T00:00:00Z" }).status, "pass");
+  const original = { ref: { store: "task-message", refId: source.id, digest: hash(JSON.stringify(source)) }, value: source };
+  original.digest = hash(JSON.stringify(original));
+  const other = { ref: { store: "task-brief", refId: "task-1",
+    digest: hash(JSON.stringify({ objective: "unchanged" })) }, value: { objective: "unchanged" } };
+  other.digest = hash(JSON.stringify(other));
+  const batchValue = { taskId: "task-1", runId: "run-1", items: [other, original] };
+  const batchCommand = `${b.cli} task run context expand task-1/run-1 --context-ref task-brief/task-1 --context-ref task-message/message-1`;
+  assert.equal(grade(make(batchCommand, JSON.stringify(batchValue))).status, "pass");
+  assert.equal(grade(make(`${batchCommand}@${original.ref.digest} --json`,
+    JSON.stringify({ ok: true, data: { context: batchValue } }))).status, "pass");
+  for (const altered of [
+    { ...batchValue, runId: "run-other" },
+    { ...batchValue, items: [other, { ...original, value: { ...source, body: "changed" } }] },
+    { ...batchValue, items: [original, other] },
+    { ...batchValue, items: [other] },
+  ]) assert.notEqual(grade(make(batchCommand, JSON.stringify(altered))).status, "pass");
+  assert.notEqual(grade(make(`${batchCommand}@${"0".repeat(64)}`, JSON.stringify(batchValue))).status, "pass");
+  const batchSource = `run:task-1/run-1/context-batch:${hash(JSON.stringify([
+    { store: "task-brief", refId: "task-1" }, { store: "task-message", refId: source.id }]))}`;
+  const batchText = JSON.stringify(batchValue), middle = 100, digest = hash(batchText);
+  const cursor = Buffer.from(JSON.stringify({ source: batchSource, digest, offset: middle })).toString("base64url");
+  const pageEvents = [0, middle].map((offset, i) => make(`${batchCommand}${i ? ` --cursor ${cursor}` : ""}`,
+    JSON.stringify({ contentPage: { source: batchSource, digest, offset, encoding: "json",
+      totalCharacters: batchText.length, totalBytes: Buffer.byteLength(batchText),
+      text: batchText.slice(offset, i ? undefined : middle), complete: Boolean(i),
+      nextCursor: i ? null : cursor } }), i + 1));
+  assert.equal(gradeReads(nativeEvidence(pageEvents), [source], scope).status, "pass");
+  assert.notEqual(gradeReads(nativeEvidence(pageEvents.slice(1)), [source], scope).status, "pass");
+  const taskRefs = [other.ref, original.ref];
+  const taskValue = { taskId: "task-1", items: [other, original].map(({ ref, value }) => ({ ref, value })) };
+  const taskCommand = `${b.cli} task context inspect task-1 ${taskRefs.map(r =>
+    `--context-ref ${r.store}/${r.refId}@${r.digest}`).join(" ")}`;
+  assert.equal(grade(make(taskCommand, JSON.stringify(taskValue))).status, "pass");
+  assert.equal(grade(make(`${b.cli} task context inspect task-1 --refs '${JSON.stringify(taskRefs)}' --json`,
+    JSON.stringify({ ok: true, data: taskValue }))).status, "pass");
+  for (const altered of [{ ...taskValue, taskId: "task-other" },
+    { ...taskValue, items: taskValue.items.toReversed() },
+    { ...taskValue, items: [taskValue.items[0], { ...taskValue.items[1], value: { ...source, body: "changed" } }] }])
+    assert.notEqual(grade(make(taskCommand, JSON.stringify(altered))).status, "pass");
+  assert.notEqual(grade(make(taskCommand.replace(`@${original.ref.digest}`, ""), JSON.stringify(taskValue))).status, "pass");
+  const taskText = JSON.stringify(taskValue), taskDigest = hash(taskText);
+  const taskSource = `task:task-1/context-batch:${hash(JSON.stringify(taskRefs))}`;
+  const taskCursor = Buffer.from(JSON.stringify({ source: taskSource, digest: taskDigest, offset: middle })).toString("base64url");
+  const taskPages = [0, middle].map((offset, i) => make(`${taskCommand}${i ? ` --cursor ${taskCursor}` : ""}`,
+    JSON.stringify({ contentPage: { source: taskSource, digest: taskDigest, offset, encoding: "json",
+      totalCharacters: taskText.length, totalBytes: Buffer.byteLength(taskText),
+      text: taskText.slice(offset, i ? undefined : middle), complete: Boolean(i),
+      nextCursor: i ? null : taskCursor } }), i + 1));
+  assert.equal(gradeReads(nativeEvidence(taskPages), [source], scope).status, "pass");
+  assert.notEqual(gradeReads(nativeEvidence(taskPages.slice(1)), [source], scope).status, "pass");
+  const unrelated = { ...source, id: "message-unrelated", body: "not an original in this selection" };
+  const withProjection = structuredClone(taskValue); withProjection.items[1].result = unrelated;
+  assert.notEqual(gradeReads(nativeEvidence([make(taskCommand, JSON.stringify(withProjection))]),
+    [unrelated], scope).status, "pass", "derived result projection is not another digest-pinned original");
   const help = "Yui inbox claim\n\nReserve exact entries.\n\nUsage:\n  yui inbox claim <entry> --request-id <id>\n\nOptions:\n  --request-id  Set request id.\n\nExamples:\n  yui inbox claim message-1 --request-id example\n";
   const global = { id: "global-message-1", roleName: "operator", body: "原件" };
   const ob = { ...b, taskId: undefined, roleName: "operator" };

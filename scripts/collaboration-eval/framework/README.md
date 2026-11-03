@@ -1,28 +1,86 @@
 # Maintained collaboration framework
 
+## Engineering measurements, Agent analysis
+
+New runs freeze `decisionPolicy: "agent-analysis"` in `plan.json`. Engineering
+collects immutable evidence, counts costs and reports objective checks. The
+executing Agent owns trajectory interpretation, semantic quality, comparability,
+causal attribution and the keep/revise/drop decision. Neither process exit nor
+a program grade is an adoption decision. No model review starts automatically.
+Historical plans, receipts, grades and seals retain their original meanings.
+
+Default experiment workflow:
+
+1. Assemble a coherent candidate containing related interface, Skill and
+   notification changes; record the baseline/candidate commits, changed mechanisms,
+   affected Roles and the question that would change the adoption decision.
+   Do not start a full A/B for each wording change or a few KB of abbreviation.
+   Use deterministic same-input output/contract checks for those changes.
+2. Validate the assembled candidate offline, then select only representative
+   scenarios needed for the remaining question. Freeze both arms on the same
+   harness, business inputs and model configuration. Shared framework fixes
+   belong in both arms, not the treatment. Bundle results do not establish each
+   component's individual effect.
+3. Before any separately authorized model execution, state a bounded number of
+   invocations, wall/token spending allowance (including any optional review),
+   and stopping rule. Do not automatically replace failed samples, expand the
+   matrix or rerun to eliminate every unknown. Current runtime time/idle and
+   concurrency limits remain; there is no automatic combined token cap yet.
+4. Run `npm run eval:analyze -- <sealed-A> [sealed-B]`. The report includes
+   attributed Role/Thread/Turn/stage usage, tool calls, observed output bytes,
+   wrapper CLI counts, objective checks, failures and coverage gaps. Missing
+   data is not zero. No frozen source bundle is supplied by this command, so
+   instruction/body classification and repeat-body bytes are explicitly not
+   measured; the existing `history.mjs analyze` indexed-archive flow resolves
+   exact frozen source bundles when that additional measurement is needed.
+5. The current Agent reads the relevant actual commands, outputs and business
+   originals, then writes a separate analysis: mechanisms actually used; quality
+   differences; cold/warm and fourth-turn history; additional discovery/confirmation
+   rounds; model variation, compaction and infrastructure confounders; recommendation
+   and limits. Retain unfavorable and incomplete samples. Independent model review
+   is optional and targeted to material unresolved questions, not a default extra
+   four-turn chain. Analysis never overwrites raw evidence or old grades.
+
+For new runs, exit zero means collection completed and cleanup is released,
+not that the Subject passed every check. A known reading/loading failure in a
+non-recovery business scenario remains a failure but may permit later observation
+after exact native quiescence and the existing protocol/authority/effect fences.
+Binding, wrong CLI, unknown/missing effects, handling, forbidden writes and recovery
+boundaries are not relaxed. The existing narrow `business-warm` planning-answer
+exception remains; this is not permission to continue arbitrary failed actions.
+Historical completion projections keep their legacy nonpass exit behavior.
+
 ## Representative business chains
 
-The opt-in `business-route,business-conflict,business-recovery` freeze uses the
+The opt-in business scenarios below use the
 same runner, native adapter, CLI, lifecycle, cost accounting and anonymous review
 export as the existing scenarios. Freeze it separately from legacy arithmetic
 scenarios. It has no padding, tail markers, memory attestations or new service.
 
-| Scenario | Three business inputs / expected observable result |
+| Scenario | Business inputs / expected observable result |
 | --- | --- |
 | `business-route` | Operator routes a workshop kit request and two revisions to the same Task/Leader, unchanged and with claim/ACK. The plan changes from Cedar 12 + Maple 8, to Maple 16 only, to Cedar 24 only. Both Roles receive cold + two later inputs. |
 | `business-conflict` | Leader combines enrolment, warehouse reserve, signed corrections and venue clearance. A newer unapproved logistics draft cannot override signed facts or authorize dispatch. Cedar allocation changes 12 → 10 → 10; Maple is first venue-blocked, then stock-blocked. |
 | `business-recovery` | The stage-2 plan is committed before a deliberately retained claim. Existing exact-stop/replacement wiring starts a fresh successor, which reloads instructions/originals, inspects the preserved effect and ACKs without rewriting/replaying it. A later enrolment correction yields Cedar 12 with Maple stock-blocked. |
+| `business-warm` | Four routed inputs in the same Sessions. The first three preserve `business-route` exactly. The fourth supplies signed final enrolment and withdraws Maple's earlier exclusion; the existing stock and two-kit requirement still apply. Correct output is Cedar 18 + Maple 12, reserve untouched and 4 kits remaining. Ignoring either new facts or the changed request is wrong. |
+
+`business-warm` complements the padded `normal-warm` transport diagnostic with
+a substantive fourth-turn decision. It is not a large-document workload or
+proof of native context compaction. Run it as an explicit new freeze, not an
+extension or replacement of a previous chain's missing outcomes.
 
 All materials are synthetic. Decisions are planning-only; carrier ETA remains
 unknown. Whole cohorts, per-person kits, reserve, request exclusions and signed
 source precedence determine the answers across multiple originals. An unrelated
 prior-season archive is discoverable but not a required source. Scripts compare
 literal objective answers and exact effects/ownership/handling only; semantic
-quality still requires new independent LLM review. Full-original/read/load
+quality requires Agent analysis of the originals, with independent review only
+when it resolves a material uncertainty. Full-original/read/load
 obligations are retained. An unreviewed Task-context carrier limits instruction
 observation to unknown, not the independently observed business dimension;
-known violations and unknown effects still stop their chain. Completion and
-nonpassing observation grading remain separate, including a nonzero exit.
+unsafe violations and unknown effects still stop their chain. Reading/loading
+findings follow the bounded policy above. Completion and nonpassing observation
+grading remain separate; new runs use collection-only exit status.
 
 ```sh
 node scripts/collaboration-eval/framework/run.mjs --mode fake \
@@ -43,6 +101,22 @@ not an estimate or zero. Exporting a package does not run a reviewer.
 
 New review packages include a sealed dependency-free `read.mjs`: run
 `node ./read.mjs V000001 0,12000` inside the case and continue at `nextOffset`.
+New packages also support an optional bounded directory
+(`node ./read.mjs --catalog '{"role":"leader","limit":8}'`) and explicitly
+selected whole-document batches
+(`node ./read.mjs --batch '[{"id":"V000001"},{"id":"V000002"}]' 12000`).
+The directory's `next` object retains filters and the sealed index hash.
+The batch's `next` selections retain each source hash and exact offset.
+Each batch has 1–8 selections and a 2–24000 UTF-16 **text** budget; headers are
+additional, so leave room in the caller's output budget. Inspect each result:
+an invalid source produces an error, while other selected originals remain
+readable. The CLI exits nonzero if any selection fails. Literal text and
+single-field citation boundaries are unchanged. Body pages include title,
+recorded time and Role/Thread/Turn to avoid a follow-up metadata read.
+Recorded time is not source edit time or authority; unavailable edit time
+remains null. Directory excerpts are literal navigation, never summaries that
+replace originals. Known IDs can bypass discovery. These are review-material
+interfaces, not new product Task-message CLI operations or loading receipts.
 No repository/helper discovery outside the case is needed. `READING.md` and
 `view-index.json.stageNavigation` link actual saved producer calls and their
 timestamps to each stage's effect observations. A frozen future material is
@@ -55,7 +129,21 @@ Role/Thread/context epoch executing the frozen absolute/cwd-relative CLI entry
 with `--json version`, before the effect. This proves the probe only. Stage
 identity also requires the actual Decision, routed Message or successor ACK
 receipt in its exact native command start/completion interval and Turn, with
-the owned executable. All visible completed handling-window CLI commands through that
+the owned executable. Addressed `operator submit` binds its structured
+Task/Message, submission key and saved-submission identities together.
+Historical frozen products' exact `Saved message <id> to <task>.` JSON text
+receipt remains readable for audit; malformed structured data never falls back
+to text. `task message send` uses its structured Task/Message receipt.
+Both still require the exact command target/request key and native interval.
+For future captures, the owned process observer also retains complete ordinary
+non-JSON stdout up to 32 KiB as `stdoutText`, separately from a JSON envelope.
+Only the exact ordinary `operator submit` saved-message identity line can bind
+a routed effect, with matching byte count/hash, successful process exit,
+target/request key, durable identity and existing native interval checks.
+Malformed JSON, conflicting structured data, oversize text or another effect
+remain unknown. Captured output is not proof that the model saw or read it.
+This does not reconstruct missing text or regrade historical invocations.
+All visible completed handling-window CLI commands through that
 Turn's terminal are checked, including failed commands and commands completing
 after the effect timestamp: an observed foreign entry fails, bare lookup or
 unsupported shell shape stays unknown. A warm Turn may reuse its same-epoch
@@ -112,6 +200,8 @@ node scripts/collaboration-eval/framework/history.mjs analyze /new/index.json /n
   run77-host,run82-struct,run91-pair,run95-pages,run102-runtime-pair
 node scripts/collaboration-eval/framework/history.mjs view /old-sealed-case /new/readable-case
 node scripts/collaboration-eval/framework/history.mjs read /new/readable-case V000001 0,6000
+node scripts/collaboration-eval/framework/history.mjs diagnose \
+  /new/readable-case /review.json /receipt-paths.json
 node scripts/collaboration-eval/framework/history.mjs import \
   /new/readable-case /review.json /new/validated.json /receipt-paths.json
 node scripts/collaboration-eval/framework/history.mjs compare /validated-A /validated-B /new/comparison.json
@@ -121,6 +211,40 @@ All output paths must be new. Archive links/path escapes are rejected before
 extraction; only owned temporary extraction directories are removed. No source
 Home, Provider, saved commands or historical Subject is executed by analysis.
 Retired security diagnostics are inventoried but not reopened.
+
+`diagnose` is read-only and uses the same package, identity and citation
+validation as `import`. It reports all criterion-local structural failures in
+one response; a rejected review exits nonzero. Identity/package failures do not
+credit individual criteria. Valid sibling criteria are not partially imported,
+and structural validity is not semantic correctness or independent acceptance.
+No quotations, old reviews or program grades are repaired.
+
+The current planning obligation mapping is bound to reviewed complete
+Runtime/Leader/Operator tree hashes in `currentPlanningContract`, not VERSION
+alone. These include the Runtime31/Leader14/Operator16 tree from `4b63ab62`
+and its reviewed Runtime32–37 optional batch-read/manual clarifications.
+Runtime35 (`513d7d42`) only clarifies alternative complete-result reads and
+mutually exclusive batch forms; it does not remove action-reading obligations.
+Runtime36 additionally documents same-frozen-Run batch expansion; it retains
+those obligations and does not grant unsupported native reads observation credit.
+Runtime37 makes the caller digest optional for that already-pinned Run only;
+current Task selectors still require digests, and observation credit is unchanged.
+Runtime38 names the complete original-result view as an alternative report read,
+without changing action prerequisites, required originals or pagination duties.
+Runtime39 clarifies input/refs/full as alternative discovery views; its reviewed
+exact tree retains the same action, original and full-body obligations.
+This carrier mapping does not grant native evidence credit to unsupported commands.
+`plan.gradingContract.currentActionContract` exposes that identity. Current
+Task-fact and reporting duties remain in the Runtime core; submission/body
+transport manuals remain applicable to their actions. Leader14's Decision rule
+is carried by `task-progress.md`. The exact reviewed Leader15 tree moves that
+same rule into the required Leader core, so a Decision-only action no longer
+requires the Brief/Milestone/Knowledge manual. This is carrier mapping, not
+permission to omit the rule or perform those separately prohibited writes.
+For recognized native context-expansion commands, `context-reads.md` must be
+loaded before the command starts. Ordinary complete originals or a warm turn
+alone do not trigger it. Changed/unreviewed trees and unsupported actions do
+not inherit a proof of coverage; old sealed runs are never regraded.
 
 Per-Role/Thread/Turn measurements distinguish cold/warm observed input order
 from actual memory availability. Native cumulative tokens count once per
@@ -132,6 +256,11 @@ denominator; Host input JSON has a separate denominator, never total context.
 Categories can overlap. Missing/unclassified/private usage, retries not
 visible in the native stream, inventory completeness and billing stay unknown.
 Repeated full-body outputs are facts, not automatic evidence of wasted reads.
+For cost attribution, inspect consecutive request inputs as well as Turn totals.
+A sharp input decrease without an observed compaction event does not establish
+compression, tool-schema removal or cache savings. Visible output bytes do not
+reconstruct the Provider's complete request. Retain the original usage; never
+subtract an assumed fixed overhead to make two arms look comparable.
 
 Cases keep all owned visible frames (including partial/delta output); rejected
 broadcasts are missing-ownership metadata, not borrowed evidence. Frozen
@@ -141,7 +270,31 @@ require every rubric criterion and exact evidence quotes; semantic conclusions
 may be supported even when interface checks are unknown. Hard authority,
 data-integrity and unknown-effect boundaries remain.
 
-`trajectory-review/2` adds `readable-trajectory/2` without replacing raw E IDs.
+`trajectory-review/2` adds a readable trajectory without replacing raw E IDs.
+Current `readable-trajectory/3` preserves the complete directory and its order,
+listing consecutive identical Role/Thread/Turn metadata once per group instead
+of once per row. Body pages retain their own source identity. Nothing is omitted,
+and applicable reading obligations and stage/effect navigation are unchanged.
+
+`history-quant/2` adds observed usage-update profiles to each Turn, alongside
+the unchanged cumulative-total difference. Repeated cumulative totals are
+deduplicated. The first/last 32 samples expose cumulative input increments and
+reported last-request input; aggregates cover every retained unique update.
+Missing baselines and decreasing counters stay unknown. A delta that differs
+from reported last input flags incomplete or non-one-to-one observation, not a
+model error. Even matching updates do not prove complete request coverage.
+Tool count, usage-update count and provider-request count are distinct; the last
+remains unknown. Billing, actual compaction and which text was retained cannot
+be inferred from these numbers alone. Summary reports link to full quant detail.
+`history-quant/3` additionally reports `instrumentedCli` counts per observed owned
+Thread from exact wrapper start/completion pairs. This distinguishes a native
+shell tool from the several CLI processes it may launch. Identical receipt
+duplicates count once; failures, unclosed starts, conflicting IDs, unmatched
+scope and incomplete logs remain explicit. Coverage is always partial: direct
+CLI entrypoints can bypass the wrapper. These are not per-Turn attributions,
+model-visible output totals, source-read receipts or execution-authority evidence;
+missing receipts never establish that no CLI call occurred. Original grades
+and seals remain unchanged.
 `READING.md` orders the contract, historical instructions, Role/Thread/Turn
 trajectory and effects. `view-index.json` maps each V document/decoded field
 to original E IDs, SHA256, logical reassembly and exact JSON pointers.
@@ -272,10 +425,13 @@ Forbidden writes are business-contract negatives, not proof of an OS sandbox.
 The runner saves `completion.json` and the same `ledger.completion` projection:
 `execution` (`completed`, `incomplete`, `failed`), unchanged `grading`,
 `cleanup`, and `exitCode`. A full chain with `observation-unknown` is
-`execution: completed`, `grading: observation-unknown`, and still exits **1**.
+`execution: completed`, `grading: observation-unknown`. Legacy runs exit **1**;
+new `agent-analysis` runs exit **0** only with released cleanup and successful
+worker terminals, even when recorded objective checks fail.
 Batch callers inspect this receipt and the actual process terminal separately;
-they must not assert every nonzero exit is an execution exception or turn unknown
-green. A signal, missing receipt, inconsistent exit or failed worker remains an
+they must not assert every historical nonzero exit is an execution exception or
+turn unknown green. New exit zero is not quality acceptance. A signal, missing
+receipt, inconsistent exit or failed worker remains an
 execution problem. Preflight-only execution has no completion receipt; startup
 exceptions remain exceptions. Saved-evidence analysis derives the same projection
 without altering historical ledgers, grades, exits or seals.
@@ -621,6 +777,10 @@ The fixed normal planning scenario requires Leader planning/dispatched-Run
 references in addition to full entries/profile. Context-ordering is conditional
 on an actual intent conflict, stage handoff or incremental maintenance, never a
 warm-turn number alone; the explicit Session-recovery handoff adds it. Leader
+business stages 2 onward reconcile actual changed facts/requirements in the
+frozen scenarios; their cold stage 1 does not inherit that requirement merely
+because it is a business scenario. Operator forwarding does not reconcile them.
+Leader
 managed final reporting and Operator durable routed Messages make reporting
 applicable, not the arrival of another Turn. Historical frozen oracle/results
 are not rewritten by this new-freeze applicability correction. Operator has no
@@ -669,6 +829,19 @@ commands/results do not reset that idle clock. Fake limits remain 45 seconds.
 Neither limit authorizes replay or changes resource ownership. Missing read/load
 attribution alone may continue to the next normal input, with the unknown grade
 retained; unknown protocol/effects, business or authority checks still stop it.
+For `business-warm` only, a known single committed JSON planning answer that
+differs from the business truth may continue to the next independent input if
+it is the sole failed check, protocol/legal checks pass and the same native
+endpoint/identity conditions hold. This preserves observation of the fourth
+input instead of censoring it for an earlier answer omission. It never repairs
+or replays that Decision: per-stage and whole-chain quality remain failed,
+completion grading is `quality-fail`; new `agent-analysis` runs use the
+collection-only exit contract above. With that policy, reading/load failures in
+non-recovery business scenarios are retained for Agent analysis and can coexist
+with the known planning-answer exception. Missing/duplicate effects, malformed
+answers, wrong routing, forbidden writes and unresolved execution still stop.
+Other scenarios retain their previous reading/load fences. Costs from such a chain are observations,
+not a same-quality savings claim; all historical frozen grades remain unchanged.
 
 ## Evidence and interpretation
 
@@ -850,3 +1023,50 @@ metadata credit and is metered separately; strings mentioning `session skills`
 inside help are not calls. Noise, truncated values, mismatched help paths and
 non-read tails stay unsupported. Arbitrary body-file scripts do not acquire
 Reporting-action attribution from this output grammar.
+
+Frozen Run batch expansion is recognized in new freezes for the exact repeated
+`--context-ref store/refId[@digest]` grammar, with 1–8 unique ordered selections.
+Plain and JSON-enveloped complete outputs must bind Task/Run and every selected
+store/refId, optional supplied digest, actual value hash and entry hash.
+Paged outputs additionally retain the exact ordered-selector source, returned
+cursor chain and complete-document hash before any item receives read credit.
+Directory headers or arbitrary `items` arrays do not prove original reads.
+The same native owner/Thread/epoch/deadline checks apply; no historical grades
+are changed.
+
+Current Task `context inspect` batches are also recognized for exact repeated
+`--context-ref store/refId@digest` or the mutually exclusive `--refs` JSON array.
+Every mutable original still needs its digest; optional revision is metadata.
+Task, ordered selectors and each actual value hash must match. Pagination uses
+the normalized selector source and the same complete-response checks. Only the
+selected `{ref,value}` originals receive credit: derived `result`/`execution`
+projections are not authenticated by the original's digest and are not flattened
+into additional evidence. This observes the existing independently pinned reads,
+not a new cross-record snapshot or a change to authorization or historical grades.
+
+### Exact CLI process receipts
+
+New fixtures instrument their existing absolute CLI wrapper with
+`cli-process-receipts.jsonl`. It records invocation start/terminal identity,
+arguments, launcher hash, stdout hash and a bounded JSON envelope, while forwarding
+the actual stdout and exit code. No product installation or authority changes.
+These records are evaluator telemetry, **not model-visible read or Skill credit**:
+shell redirection can hide captured output from the Subject.
+
+A single successful effect receipt can be correlated to the exact owned
+Home/Thread, frozen launcher, native command interval and durable effect
+ID/request ID/time. Missing, partial, duplicate or mismatched evidence remains
+unknown. The original CLI inventory grade stays unknown when shell commands
+cannot be parsed; the receipt does not prove all commands or OS isolation.
+For future runs only, that exact effect identity plus a matching native version
+probe, no observed wrong/unresolved CLI entry, known-good business/handling/
+authority checks and settled native endpoints permits observing the next input.
+It does not upgrade the grade or replay the previous effect. Old seals and
+grades are unchanged.
+
+`item/started` is a native notification, not an OS spawn timestamp. The complete
+process receipt must remain inside the selected native Turn; the exact durable
+effect must fall inside one command's start/completion interval with matching
+cwd. The receipt may begin before that command notification. No arbitrary
+clock tolerance is added; an effect before notification, missing Turn start,
+ambiguous interval or different cwd still supplies no continuation proof.

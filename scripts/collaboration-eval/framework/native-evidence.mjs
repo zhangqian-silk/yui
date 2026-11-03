@@ -1,7 +1,7 @@
 // Evidence adapter, not a command executor. Only native completed tool items
 // with trusted Host binding and exact output bytes can prove a read.
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { hash, cliOutputData } from "./common.mjs";
+import { hash, cliOutputData, runBatchRead, matchesRunBatch, taskBatchRead, matchesTaskBatch } from "./common.mjs";
 export { completeJsonLines } from "./common.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { attributeNativeEvents } from "./native-ownership.mjs";
@@ -167,9 +167,16 @@ function cliDocumentMatches(envelope, argv, binding, threadId, turnId) {
     if (observedTask && observedTask !== target?.split("/")[0]) return false;
     if (args[1] === "run" && args[2] === "context") {
       if (args[3] === "expand") {
-        expectedId = args[5]; observedId = d.ref?.refId;
-        source = `run:${target}/${option("--store")}/${expectedId}`;
-        if (!page && d.ref?.store !== option("--store")) return false;
+        if (args.includes("--context-ref")) {
+          const batch = runBatchRead(args);
+          if (!batch) return false;
+          if (!page) return matchesRunBatch(d, batch);
+          source = batch.source;
+        } else {
+          expectedId = args[5]; observedId = d.ref?.refId;
+          source = `run:${target}/${option("--store")}/${expectedId}`;
+          if (!page && d.ref?.store !== option("--store")) return false;
+        }
       } else {
         if (option("--view") === "refs") return typeof d.source === "string"
           && d.source.startsWith(`run:${target}/refs/`)
@@ -189,8 +196,15 @@ function cliDocumentMatches(envelope, argv, binding, threadId, turnId) {
     } else if (args[1] === "decision" && args[2] === "show") {
       expectedId = args[4]; observedId = d.decision?.id;
     } else if (args[1] === "context" && args[2] === "inspect") {
-      expectedId = option("--ref"); observedId = d.ref?.refId;
-      source = `task:${target}/${option("--store")}/${expectedId}`;
+      if (args.includes("--context-ref") || args.includes("--refs")) {
+        const batch = taskBatchRead(args);
+        if (!batch) return false;
+        if (!page) return matchesTaskBatch(d, batch);
+        source = batch.source;
+      } else {
+        expectedId = option("--ref"); observedId = d.ref?.refId;
+        source = `task:${target}/${option("--store")}/${expectedId}`;
+      }
     }
   }
   if (args[0] === "inbox" && args[1] === "list" && data.identity) {
@@ -205,7 +219,11 @@ function cliDocumentMatches(envelope, argv, binding, threadId, turnId) {
   if (args[0] === "task" && args[1] === "context"
     && !["inspect", "list", "delta"].includes(args[2]))
     return d.taskId === args[2] && typeof d.coreCursor === "string" && Array.isArray(d.collections);
-  if (args[0] === "inbox" && args[1] === "show") { expectedId = args[2]; observedId = data.id; }
+  if (args[0] === "inbox" && args[1] === "show") {
+    expectedId = args[2]; observedId = data.id;
+    if (data.taskId !== undefined && data.taskId !== binding.taskId) return false;
+    source = `inbox:${binding.taskId ? "task" : "global"}:${binding.taskId ?? ""}:${binding.roleName}/${expectedId}`;
+  }
   if (args[0] === "role" && args[1] === "message" && args[2] === "show") {
     if (args[3] !== binding.roleName) return false;
     expectedId = args[4]; observedId = d.id;
@@ -567,9 +585,8 @@ function fileBackedRoute(item, binding) {
     || !/^task-[1-9]\d*$/.test(s[5]) || s[6] !== "--intent" || s[7] !== "discuss"
     || s[8] !== "--request-id" || !/^[\w.-]+$/.test(s[9]) || s[10] !== "--json") return null;
   const receipt = typeof item.aggregatedOutput === "string" && jsonPrefix(item.aggregatedOutput, 0);
-  if (!receipt || receipt.value.ok !== true || typeof receipt.value.output !== "string"
-    || !receipt.value.output.startsWith(`Saved message `)
-    || !new RegExp(`^Saved message message-[1-9]\\d* to ${s[5]}\\.\\n`).test(receipt.value.output)) return null;
+  const receiptMessageId = operatorSubmissionMessage(receipt?.value, s[5], s[9]);
+  if (!receiptMessageId) return null;
   const tail = item.aggregatedOutput.slice(receipt.end);
   const prefix = m.template.replace(/X+$/, "");
   const count = m.template.length - prefix.length;
@@ -577,7 +594,7 @@ function fileBackedRoute(item, binding) {
   if (m.footer ? !tail.startsWith(expectedPrefix)
     || !new RegExp(`^[A-Za-z0-9]{${count}}$`).test(tail.slice(expectedPrefix.length)) : tail !== "") return null;
   return { boundary: "enclosing-file-backed-route-start", taskId: s[5], requestId: s[9],
-    receiptMessageId: /^Saved message (message-[1-9]\d*) /.exec(receipt.value.output)[1],
+    receiptMessageId,
     bodyFile: "opaque; no read/fidelity/load credit" };
 }
 // The product persists the last nonempty agentMessage as its managed report.
@@ -812,6 +829,10 @@ export function nativeEvidence(events, files = [], originalOptions = {}) {
       if (!data || envelope.ok === false) {
         group.unsupported.push({ id: item.id, reason: "missing successful CLI data" }); continue;
       }
+      if (args.filter(a => a !== "--json").slice(0, 2).join(" ") === "session context"
+        && !cliDocumentMatches(envelope, args, b, p.threadId, turnId)) {
+        group.unsupported.push({ id: item.id, reason: "Global context lacks exact native owner/Turn binding" }); continue;
+      }
       const page = data.contentPage ?? data.context?.contentPage;
       if (page) {
         const pageKey = `${key}/${page.source}/${page.digest}`, previous = pages.get(pageKey) ?? "";
@@ -905,17 +926,49 @@ function cliInvocation(command, binding, cwd) {
     reason: status === "fail" ? "Observed foreign CLI entry or Home"
       : status === "unknown" ? "Unresolved executable lookup" : "Exact frozen owned entry" };
 }
+// Known product receipt shapes only. Structured identities must all agree;
+// a malformed data receipt cannot fall back to a text success assertion.
+function operatorSubmissionMessage(envelope, taskId, requestId) {
+  if (envelope?.ok !== true) return undefined;
+  if (envelope.data !== undefined) {
+    const { message, submission } = envelope.data ?? {};
+    return envelope.data?.taskId === taskId && message?.taskId === taskId
+      && /^message-[1-9]\d*$/.test(message?.id ?? "")
+      && message.submissionKey === requestId
+      && submission?.saved?.taskId === taskId && submission.saved.messageId === message.id
+      ? message.id : undefined;
+  }
+  const match = typeof envelope.output === "string"
+    && /^Saved message (message-[1-9]\d*) to (task-[1-9]\d*)\.\n/.exec(envelope.output);
+  return match && match[2] === taskId ? match[1] : undefined;
+}
 function cliEffectMatches(envelope, args, effect, scope) {
   if (!effect || envelope?.ok !== true) return false;
   args = args.filter(a => a !== "--json");
   const option = name => args[args.indexOf(name) + 1];
-  if (effect.kind === "decision") return args.slice(0, 4).join(" ") === `task decision record ${effect.taskId}`
-    && option("--title") === effect.title
-    && envelope.output === `Recorded decision ${effect.id} for ${effect.taskId}`;
-  if (effect.kind === "route") return (args.slice(0, 4).join(" ") === `task message send ${effect.taskId}`
-      || args.slice(0, 2).join(" ") === "operator submit" && option("--task") === effect.taskId)
-    && option("--request-id") === effect.requestId
-    && envelope.data?.taskId === effect.taskId && envelope.data.message?.id === effect.id;
+  if (effect.kind === "decision") {
+    if (args.slice(0, 4).join(" ") !== `task decision record ${effect.taskId}`
+      || option("--title") !== effect.title) return false;
+    if (envelope.data !== undefined) {
+      const saved = envelope.data?.decision;
+      return envelope.data?.taskId === effect.taskId && saved?.taskId === effect.taskId
+        && saved.id === effect.id && saved.status === "active"
+        && saved.createdAt === effect.at && saved.updatedAt === effect.at
+        && typeof effect.digest === "string" && saved.digest === effect.digest;
+    }
+    // Historical frozen products emitted text only. Structured receipts must
+    // match the actual durable record; neither representation proves reading.
+    return envelope.output === `Recorded decision ${effect.id} for ${effect.taskId}`;
+  }
+  if (effect.kind === "route") {
+    if (option("--request-id") !== effect.requestId) return false;
+    if (args.slice(0, 4).join(" ") === `task message send ${effect.taskId}`)
+      return envelope.data?.taskId === effect.taskId && envelope.data.message?.id === effect.id;
+    // Bind the exact saved identity, not a generic "Saved" substring or the
+    // later planning/delivery description. Historical text remains audit input.
+    return args.slice(0, 2).join(" ") === "operator submit" && option("--task") === effect.taskId
+      && operatorSubmissionMessage(envelope, effect.taskId, effect.requestId) === effect.id;
+  }
   const ack = envelope.data?.inbox?.ack;
   return effect.kind === "ack" && args.slice(0, 3).join(" ") === `inbox ack ${effect.id}`
     && envelope.data?.id === effect.id && ack?.at === effect.at
@@ -925,7 +978,63 @@ function cliEffectMatches(envelope, args, effect, scope) {
 // Version output proves only the probe. Stage identity additionally requires
 // the actual effect command, and no observed wrong/ambiguous entry in the
 // handling window. This bounded parser never executes captured shell text.
-export function gradeCliExecution(events, binding, expectedOutput, scope, files = []) {
+function recordedEffectMatches(receipt, scope) {
+  if (receipt.envelope !== undefined)
+    return cliEffectMatches(receipt.envelope, receipt.args ?? [], scope.effect, scope);
+  const { stdoutText, stdoutBytes, stdoutSha256, args = [] } = receipt;
+  if (typeof stdoutText !== "string" || args.includes("--json")
+    || Buffer.byteLength(stdoutText) > 32768
+    || Buffer.byteLength(stdoutText) !== stdoutBytes || hash(stdoutText) !== stdoutSha256) return false;
+  // Only the existing ordinary operator-submit identity line is recognized.
+  // Exit status, request key, durable identity and native interval are still
+  // required; text never grants read/load credit or repairs a malformed JSON result.
+  const effect = scope.effect;
+  const option = name => args[args.indexOf(name) + 1];
+  const saved = /^Saved message (message-[1-9]\d*) to (task-[1-9]\d*)\.\n/.exec(stdoutText);
+  return effect?.kind === "route" && args.slice(0, 2).join(" ") === "operator submit"
+    && option("--task") === effect.taskId && option("--request-id") === effect.requestId
+    && saved?.[1] === effect.id && saved[2] === effect.taskId;
+}
+export function gradeRecordedCliEffect(events, binding, scope, receipts, launcherSha256) {
+  const completed = events.filter(e => e.direction === "native" && sameOwner(e.binding, binding)
+    && e.binding.home === binding.home && e.binding.cli === binding.cli && e.binding.product === binding.product
+    && e.message?.params?.threadId === scope.threadId && e.message.params.turnId === scope.turnId
+    && e.message.method === "item/completed" && e.message.params.item?.type === "commandExecution");
+  const matches = [];
+  for (const r of receipts) {
+    if (r.phase !== "completed" || r.code !== 0 || r.signal || r.error
+      || r.entry !== binding.cli || r.home !== binding.home || r.product !== binding.product
+      || r.cli !== join(binding.product, "output/dev/bin/yui") || r.node !== binding.node
+      || r.threadId !== scope.threadId || r.launcherSha256 !== launcherSha256
+      || !recordedEffectMatches(r, scope)) continue;
+    const starts = receipts.filter(s => s.phase === "started" && s.id === r.id);
+    if (starts.length !== 1 || ["entry", "cli", "product", "home", "threadId", "cwd", "launcherSha256", "node"]
+      .some(k => starts[0][k] !== r[k]) || JSON.stringify(starts[0].args) !== JSON.stringify(r.args)
+      || starts[0].at !== r.startedAt) continue;
+    const start = Date.parse(r.startedAt), end = Date.parse(r.at), effectAt = Date.parse(scope.effect?.at);
+    if (!(start <= effectAt && effectAt <= end && start >= Date.parse(scope.afterAt)
+      && start >= Date.parse(scope.nativeStartAt)
+      && end <= Date.parse(scope.throughAt) && epochAt(events, scope.threadId, r.startedAt) === scope.epoch)) continue;
+    const intervals = completed.filter(e => {
+      const i = e.message.params.item;
+      const begins = events.filter(b => b.direction === "native" && b.sourceConnection === e.sourceConnection
+        && b.message?.method === "item/started" && b.message.params.threadId === scope.threadId
+        && b.message.params.turnId === scope.turnId && b.message.params.item?.id === i.id
+        && b.message.params.item.command === i.command && b.message.params.item.cwd === i.cwd);
+      // item/started can arrive after the OS child has started. Bind the
+      // durable effect, not process spawn, to the native interval. The whole
+      // process still belongs to the selected Turn; no timing tolerance is
+      // guessed and a pre-notification effect remains unproven.
+      return begins.length === 1 && i.cwd === r.cwd
+        && Date.parse(begins[0].at) <= effectAt && end <= Date.parse(e.at);
+    });
+    if (intervals.length === 1) matches.push({ receiptId: r.id, nativeItemId: intervals[0].message.params.item.id,
+      startedAt: r.startedAt, completedAt: r.at, effect: scope.effect });
+  }
+  return { status: matches.length === 1 ? "pass" : "unknown", matches,
+    limit: "Owned entry process within selected Turn, with exact durable effect inside one native command interval. Not process-spawn ordering, all-command coverage, visible original/Skill reading, hidden effects, or OS isolation." };
+}
+export function gradeCliExecution(events, binding, expectedOutput, scope, files = [], processEvidence) {
   const owned = events.filter(e => e.direction === "native" && sameOwner(e.binding, binding)
     && e.binding.home === binding.home && e.binding.cli === binding.cli && e.binding.product === binding.product
     && e.message?.params?.threadId === scope.threadId);
@@ -995,10 +1104,13 @@ export function gradeCliExecution(events, binding, expectedOutput, scope, files 
   }
   if (events.some(e => e.invalidFrame)) unsupported.push({ reason: "Transport inventory incomplete" });
   const version = { status: candidates.some(c => !c.matches) ? "fail" : candidates.length ? "pass" : "unknown" };
+  const effectIdentity = processEvidence && !processEvidence.incomplete
+    ? gradeRecordedCliEffect(events, binding, scope, processEvidence.receipts, processEvidence.launcherSha256)
+    : { status: "unknown", reason: "No complete owned process receipt inventory" };
   return { status: version.status === "fail" || commands.some(c => c.status === "fail") ? "fail"
       : version.status === "pass" && effects.length === 1 && !unsupported.length
         && !commands.some(c => c.status === "unknown") ? "pass" : "unknown",
-    version, commands, effects, unsupported,
+    version, commands, effects, unsupported, effectIdentity,
     proofs: candidates, expectedVersionSha256: typeof expectedOutput === "string" ? hash(expectedOutput) : "unknown",
     scope: { taskId: scope.taskId, roleName: scope.roleName, threadId: scope.threadId, epoch: scope.epoch },
     limit: "Observed probe plus exact effect receipt in its native command interval; only supported visible commands. Not OS isolation, daemon PATH inheritance, billing or hidden-command completeness." };

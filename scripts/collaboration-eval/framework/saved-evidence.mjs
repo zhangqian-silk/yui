@@ -4,7 +4,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, mkdtempSync, rmSync }
 import { join, resolve, relative, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
 import { hash } from "./common.mjs";
-export const ANALYSIS_VERSION = "history-quant/1";
+export const ANALYSIS_VERSION = "history-quant/4";
 export function safeMember(name) {
   if (typeof name !== "string" || isAbsolute(name) || name.includes("\\") || /[\0\r\n]/.test(name)
     || name.split("/").some(p => p === "..")) throw Error(`Unsafe evidence member ${JSON.stringify(name)}`);

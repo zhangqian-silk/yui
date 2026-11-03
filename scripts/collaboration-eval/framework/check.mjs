@@ -3,17 +3,43 @@ import test from "node:test";
 import "./original-reader.check.mjs";
 import "./original-evidence.check.mjs";
 import "./business.check.mjs";
+import "./cli-receipt.check.mjs";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { gradeHandling, gradeBusiness, gradeLoads, gradeReads, instructionLoadCosts, tokenTotals, outcome, comparable, forbiddenFileChanges, stageAllowsContinuation, stageVerdict, gradeRoutedInput } from "./judge.mjs";
-import { parseOptions, hash, redactTransport, planningReferences, chainStages, routesStage } from "./common.mjs";
+import { parseOptions, hash, treeHashes, currentPlanningContract, redactTransport, planningReferences, chainStages, routesStage } from "./common.mjs";
 import { observedDimensions, compareObservedStages } from "./dimensions.mjs";
 import * as dimensions from "./dimensions.mjs";
 import * as judge from "./judge.mjs";
 import { reportingCarrier, taskFactsAction, gradeInstructionObligations } from "./obligations.mjs";
 import * as obligations from "./obligations.mjs";
+import { instrumentedCliCosts } from "./quantify.mjs";
+test("CLI cost counts owned process receipts, not shell words or native tool items", () => {
+  const binding = { roleName: "leader", cli: "/f/bin/yui", product: "/p", home: "/f/state", node: "/node" };
+  const owner = { ...binding, threadId: "thread-1" };
+  const start = { id: "p1", phase: "started", entry: binding.cli, cli: "/p/output/dev/bin/yui",
+    product: "/p", home: "/f/state", node: "/node", threadId: "thread-1", cwd: "/f",
+    launcherSha256: "launcher", at: "2026-11-03T00:00:00.000Z", args: ["inbox", "show", "wake-1"] };
+  const end = { ...start, phase: "completed", startedAt: start.at,
+    at: "2026-11-03T00:00:00.100Z", code: 0, signal: null };
+  const second = { ...start, id: "p2" }, failed = { ...end, id: "p2", code: 1 };
+  const pending = { ...start, id: "p3" };
+  const foreign = { ...start, id: "foreign", home: "/foreign" };
+  const result = instrumentedCliCosts([start, end, end, second, failed, pending, foreign], [owner], "launcher");
+  assert.equal(result.status, "partial");
+  assert.deepEqual(result.threads, [{ role: "leader", threadId: "thread-1", started: 3, completed: 2, failed: 1, unclosed: 1 }]);
+  assert.equal(result.unmatchedRecords, 1);
+  const conflict = instrumentedCliCosts([start, end, { ...end, code: 1 }], [owner], "launcher");
+  assert.equal(conflict.ambiguousIds, 1);
+  assert.equal(conflict.threads[0].unclosed, 1);
+  assert.equal(instrumentedCliCosts([start, { ...end, args: ["inbox", "ack", "wake-1"] }],
+    [owner], "launcher").threads[0].completed, 0);
+  assert.deepEqual(instrumentedCliCosts([start, end], [owner], "wrong-launcher").threads, []);
+  assert.equal(instrumentedCliCosts([], [owner], "launcher").status, "partial", "Missing receipts do not prove no CLI calls");
+});
 test("initial planning dispatch is captured while routing is active, never guessed after it clears", () => {
   const run = { id: "run-1", taskId: "task-1", roleName: "leader", purpose: "planning", effective: { agentId: "codex" } };
   const dispatch = { owner: "planning:run-1", batchId: "turn:task-1/run-1",
@@ -120,6 +146,31 @@ test("owned accepted Host notices can establish metadata, never instruction bodi
 });
 const proofScope = { taskId: "task-1", roleName: "leader", threadId: "thread", turnId: "turn",
   epoch: 0, beforeAt: "2026-10-24T00:00:05Z" };
+test("context manual applicability follows owned expansion, not ordinary reads or warm turns", () => {
+  const scope = { ...proofScope, loadActions: { business: { status: "observed", at: proofScope.beforeAt } } };
+  const trace = args => [{ scope, trace: [{ args, nativeItemId: "cmd" }] }];
+  const events = [{ at: "2026-10-24T00:00:02Z", message: { method: "item/started",
+    params: { threadId: "thread", turnId: "turn", item: { id: "cmd" } } } }];
+  const grade = args => obligations.contextExpansionAction(trace(args), events, scope);
+  for (const args of [
+    ["task", "run", "context", "expand", "task-1/run-1", "message-1", "--store", "task-message"],
+    ["task", "run", "context", "task-1/run-1", "--view", "full"],
+    ["task", "context", "list", "task-1", "--store", "task-message"],
+    ["task", "message", "show", "task-1/message-1", "--cursor", "next"],
+  ]) assert.equal(grade(args).status, "observed");
+  for (const args of [
+    ["task", "context", "task-1"], ["task", "message", "show", "task-1/message-1"],
+    ["session", "skills"], ["inbox", "ack", "wake-1", "--reason", "done"],
+  ]) assert.equal(grade(args).status, "not-observed");
+  const args = ["task", "context", "inspect", "task-1"];
+  assert.equal(obligations.contextExpansionAction(trace(args), [], scope).status, "unknown");
+  assert.equal(obligations.contextExpansionAction(trace(args), events, { ...scope, threadId: "other" }).status, "not-observed");
+  const action = grade(args), body = "complete manual";
+  const file = { path: "/skills/context-reads.md", body, bytes: body.length, sha256: hash(body), kind: "topic", action };
+  const load = at => [{ scope, loads: [{ ...file, complete: true, at }], trace: [] }];
+  assert.equal(gradeLoads(load("2026-10-24T00:00:01Z"), [file], scope).status, "pass");
+  assert.notEqual(gradeLoads(load("2026-10-24T00:00:03Z"), [file], scope).status, "pass");
+});
 test("reporting carrier migration preserves action-timed full-byte obligation and unknown versions", () => {
   for (const [version, sha256] of [
     ["20", "ce8967bb8d0cbfabf42204ffa93889989c13834eec75d17199ba0e08e615379a"],
@@ -256,6 +307,38 @@ test("saved warm coverage exposes all Operator routes and planned counts without
   assert.equal(comparable({ ...full, plannedStages: 3 }, full), false);
   assert.equal(comparable({ ...full, plannedStages: 0, completedStages: 0 }, full), false);
 });
+test("agent-analysis completion reports recorded quality without turning it into an execution exit", () => {
+  const complete = { decisionPolicy: "agent-analysis", plannedStages: 1, completedStages: 1,
+    stages: [{ stage: 1, terminal: { status: "completed" } }], routes: [],
+    status: "quality-fail", executionChecks: "quality-fail", cleanup: { status: "released" },
+    processTerminal: { code: 0, signal: null } };
+  const before = JSON.stringify(complete);
+  const view = dimensions.invocationCompletion([complete]);
+  assert.equal(view.execution, "completed");
+  assert.equal(view.grading, "quality-fail");
+  assert.equal(view.exitCode, 0);
+  assert.equal(view.analysis.owner, "agent");
+  assert.equal(view.analysis.status, "not-assessed");
+  assert.equal(JSON.stringify(complete), before);
+  for (const change of [{ error: "unsafe" }, { completedStages: 0 },
+    { cleanup: { status: "unknown" } }, { processTerminal: { code: 1 } },
+    { decisionPolicy: undefined }])
+    assert.equal(dimensions.invocationCompletion([{ ...complete, ...change }]).exitCode, 1);
+});
+test("safe business observation retains reading failures for Agent analysis, never weakens effect fences", () => {
+  const safe = { protocol: { status: "pass" }, legal: { status: "pass" }, business: { status: "pass" } };
+  const verdict = stageVerdict({ ...safe, reads: { status: "fail" }, loads: { status: "fail" } });
+  const before = JSON.stringify(verdict);
+  const safety = { status: "pass", analyzeReadingFailures: true };
+  assert.equal(stageAllowsContinuation(verdict, safety), true);
+  assert.equal(JSON.stringify(verdict), before);
+  assert.equal(stageAllowsContinuation(verdict, { status: "pass" }), false);
+  assert.equal(stageAllowsContinuation(verdict, { ...safety, status: "unknown" }), false);
+  for (const check of ["protocol", "legal", "route", "routedInput", "binding", "cliIdentity", "recoveryInspection"])
+    assert.equal(stageAllowsContinuation(stageVerdict({ ...safe, reads: { status: "fail" },
+      [check]: { status: "fail" } }), safety), false, check);
+  assert.equal(stageAllowsContinuation(stageVerdict({ ...safe, business: { status: "unknown" } }), safety), false);
+});
 test("typed unsent Controller access failure is infrastructure, not absent business quality", () => {
   const diagnostic = { operation: "yui session skills", controller: {
     code: "CONTROLLER_ACCESS_DENIED", delivery: "not-sent",
@@ -298,6 +381,11 @@ test("extracted route and reporting obligations stay in the applicable load orac
     assert.deepEqual(expected.filter(p => !(p in inventory)), planningReferences(role));
     assert.ok(!expected.includes("yui-runtime/references/context-ordering.md"), "Warm input alone is no handoff/maintenance trigger");
     assert.ok(planningReferences(role, inventory, true).includes("yui-runtime/references/context-ordering.md"));
+    assert.ok(!planningReferences(role, inventory, false, { businessStage: 1 })
+      .includes("yui-runtime/references/context-ordering.md"), "Cold business input is not a changed requirement");
+    assert.equal(planningReferences(role, inventory, false, { businessStage: 2 })
+      .includes("yui-runtime/references/context-ordering.md"), role === "leader",
+      "Frozen business revisions require Leader reconciliation; Operator only routes the unchanged original");
   }
 });
 test("reviewed lifecycle candidate selects action manuals, not a file-existence bundle", () => {
@@ -322,6 +410,20 @@ test("reviewed lifecycle candidate selects action manuals, not a file-existence 
   assert.equal(reportingCarrier(inventory).kind, "reviewed-inline-runtime29",
     "Reviewed action core carries reporting; selected action manuals remain independent obligations");
   assert.equal(reportingCarrier({ ...inventory, "yui-runtime/SKILL.md": { sha256: "unreviewed" } }).status, "unknown");
+  // Reviewed source inventory at 75f86747, independent of the product checkout
+  // hosting this framework. New/unreviewed product trees must stay unmapped.
+  const current = Object.fromEntries(Object.entries(JSON.parse(readFileSync(
+    new URL("./fixtures/planning-skill-inventory.json", import.meta.url), "utf8")))
+    .map(([path, sha256]) => [path, { sha256 }]));
+  assert.equal(currentPlanningContract(current)?.id, "action-working-set-2026-11-01");
+  assert.equal(currentPlanningContract(current)?.decisionInCore, true);
+  assert.ok(!planningReferences("leader", current).includes("yui-leader/references/task-progress.md"),
+    "Reviewed Leader15 carries the Decision rules in its required core; no Brief update occurs in this scenario");
+  for (const path of ["yui-runtime/VERSION", "yui-runtime/SKILL.md", "yui-runtime/references/context-reads.md",
+    "yui-leader/VERSION", "yui-leader/SKILL.md", "yui-leader/references/task-progress.md"]) {
+    assert.equal(currentPlanningContract({ ...current, [path]: { sha256: hash("unreviewed change") } }), undefined,
+      "An unreviewed body or version must not inherit the current obligation mapping");
+  }
 });
 test("product preparation never shares mutable dependency installation with its source", () => {
   const root = mkdtempSync(join(tmpdir(), "eval-product-isolation-"));
@@ -363,8 +465,8 @@ test("partial stage comparisons require matching freezes, never full-quality or 
   const result = compareObservedStages(side, side);
   assert.equal(result.stages[0].dimensions.business.comparable, true);
   assert.equal(result.stages[0].dimensions.reuseAvailability.comparable, false);
-  assert.equal(result.fullQualityComparable, false);
-  assert.equal(result.savingsEstablished, false);
+  assert.deepEqual(result.analysis, { owner: "agent", status: "not-assessed" });
+  assert.equal(Object.hasOwn(result, "savingsEstablished"), false);
   assert.equal(compareObservedStages(side, { ...side, plan: { ...plan, harnessIdentity: "other" } }).sameFreeze, false);
   assert.equal(compareObservedStages({ ...side, plan: {} }, { ...side, plan: {} }).sameFreeze, false);
   assert.equal(compareObservedStages(side, { ...side, result: { ...side.result, scenario: "recovery" } }).stages.length, 0);
@@ -615,6 +717,34 @@ test("missing observation permits the next bounded input without promoting its g
   assert.equal(stageAllowsContinuation(observationOnly, { status: "pass" }), true);
   assert.equal(observationOnly.status, "observation-unknown");
   assert.equal(stageAllowsContinuation(observationOnly, { status: "unknown" }), false);
+  const answer = gradeBusiness([{ id: "decision-1", title: "plan-3",
+    rationale: JSON.stringify({ allocations: [{ site: "Cedar", kits: 24 }], deferred: [],
+      remainingKits: 10, carrierEta: "unknown", mode: "plan-only" }) }], "plan-3", 3,
+    { allocations: [{ site: "Cedar", kits: 24 }], deferred: [{ site: "Maple", reason: "excluded" }],
+      remainingKits: 10, carrierEta: "unknown", mode: "plan-only" });
+  const answerFailure = stageVerdict({ ...safe, business: answer, reads: { status: "unknown" } });
+  const planningSafety = { status: "pass", planningOnlyAnswer: true };
+  assert.equal(stageAllowsContinuation(answerFailure, planningSafety), true,
+    "A known single planning-answer mismatch need not censor later independent inputs");
+  const answerAndReading = stageVerdict({ ...safe, business: answer, reads: { status: "fail" } });
+  assert.equal(stageAllowsContinuation(answerAndReading,
+    { ...planningSafety, analyzeReadingFailures: true }), true);
+  assert.equal(answerAndReading.status, "quality-fail", "Neither objective finding is erased");
+  assert.equal(answerFailure.status, "quality-fail", "Continuation never upgrades the failed answer");
+  for (const actual of [{}, { ...answer.actual, mode: "execute" }, { ...answer.actual, allocations: [null] }]) {
+    assert.equal(stageAllowsContinuation(stageVerdict({ ...safe, business: { ...answer, actual } }),
+      planningSafety), false, "Incomplete/non-planning answer shapes still stop");
+  }
+  assert.equal(stageAllowsContinuation(answerFailure, { status: "pass" }), false);
+  assert.equal(stageAllowsContinuation(answerFailure, { ...planningSafety, status: "unknown" }), false);
+  const missing = stageVerdict({ ...safe, business: gradeBusiness([], "plan-3", 3) });
+  assert.equal(stageAllowsContinuation(missing, planningSafety), false, "Missing/duplicate effect is not an answer-only error");
+  for (const check of ["protocol", "legal", "route", "reads", "loads", "cliIdentity"])
+    assert.equal(stageAllowsContinuation(stageVerdict({ ...safe, business: answer, [check]: { status: "fail" } }),
+      planningSafety), false, `A ${check} failure still fences the chain`);
+  for (const check of ["protocol", "legal", "route"])
+    assert.equal(stageAllowsContinuation(stageVerdict({ ...safe, business: answer, [check]: { status: "unknown" } }),
+      planningSafety), false, `Unknown ${check} cannot be hidden by an answer-only failure`);
 });
 test("Operator routed-input changes are subject failures; JSON formatting is not a content change", () => {
   const input = { kind: "input", stage: 2, contract: "literal string 'unknown'" };

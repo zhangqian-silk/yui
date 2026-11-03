@@ -259,32 +259,65 @@ export function validateReview(directory, review, excludedSessionIds = [], recei
     || !binding && (r.fresh !== true || placeholder)
     || typeof sessionId !== "string" || !sessionId.trim()
     || [...manifest.subjectThreadIds, ...excludedSessionIds].includes(sessionId)) throw Error("Not a declared fresh authorized reviewer");
-  if (!Array.isArray(review.criteria) || review.criteria.length !== rubric.criteria.length) throw Error("Missing rubric criteria");
+  if (!Array.isArray(review.criteria)) throw Error("Missing rubric criteria");
   const view = manifest.readableView ? verifyViewMappings(directory, manifest) : { index: [] };
+  const diagnostics = [], globalErrors = review.criteria.length === rubric.criteria.length ? [] : ["Missing rubric criteria"];
   for (const criterion of rubric.criteria) {
-    const rows = review.criteria.filter(c => c.id === criterion.id);
-    if (rows.length !== 1) throw Error("Duplicate/missing criterion");
+    const rows = review.criteria.filter(c => c?.id === criterion.id), errors = [];
+    const diagnostic = { id: criterion.id, status: "structurally-valid", errors };
+    diagnostics.push(diagnostic);
+    const invalid = (code, message, citationIndex) => {
+      diagnostic.status = "rejected";
+      errors.push({ code, message, ...(citationIndex === undefined ? {} : { citationIndex }) });
+    };
+    if (rows.length !== 1) {
+      invalid("criterion-count", "Duplicate/missing criterion");
+      continue;
+    }
     const c = rows[0];
     if (!VERDICTS.includes(c.verdict) || !["applicable", "not-applicable", "unknown"].includes(c.applicability)
       || typeof c.rationale !== "string" || !c.rationale.trim() || !Array.isArray(c.citations)
-      || c.verdict !== "insufficient-evidence" && !c.citations.length) throw Error("Unsubstantiated criterion");
-    for (const cite of c.citations) {
-      const evidence = [...manifest.index, ...view.index].find(e => e.id === cite.evidenceId);
-      if (!evidence || typeof cite.quote !== "string" || !cite.quote.length
-        || !readFileSync(join(directory, evidence.file), "utf8").includes(cite.quote)) throw Error("Invalid evidence citation");
+      || c.verdict !== "insufficient-evidence" && !c.citations.length)
+      invalid("criterion-shape", "Unsubstantiated criterion");
+    for (const [citationIndex, cite] of (Array.isArray(c.citations) ? c.citations : []).entries()) {
+      const evidence = [...manifest.index, ...view.index].find(e => e.id === cite?.evidenceId);
+      if (!evidence || typeof cite?.quote !== "string" || !cite.quote.length
+        || !readFileSync(join(directory, evidence.file), "utf8").includes(cite.quote)) {
+        invalid("citation-source", "Invalid evidence citation", citationIndex);
+        continue;
+      }
       if (evidence.fields?.length) {
         const text = readFileSync(join(directory, evidence.file), "utf8");
         if (!evidence.fields.some(f => text.slice(f.startUtf16, f.endUtf16).includes(cite.quote)))
-          throw Error("Citation must be contiguous original field text, not generated labels or stitched fields");
+          invalid("citation-field", "Citation must be contiguous original field text, not generated labels or stitched fields", citationIndex);
       }
     }
   }
+  if (globalErrors.length || diagnostics.some(c => c.errors.length)) {
+    const error = Error(globalErrors[0] ?? diagnostics.find(c => c.errors.length).errors[0].message);
+    error.diagnostics = { criteria: diagnostics, globalErrors };
+    throw error;
+  }
   return { version: REVIEW_VERSION, caseId: review.caseId, review, reviewSha256: hash(JSON.stringify(review)),
+    criterionDiagnostics: diagnostics,
     reviewerIdentityBinding: binding ?? null, effectiveReviewerSessionId: sessionId,
     status: binding ? "validated-receipt-bound-review" : "validated-declared-review",
     executionIndependence: binding ? "native-session-bound; Leader-verifies-ownership-and-case-isolation" : "unknown-until-Leader-verifies-native-receipt",
     costs: review.costs ?? { tokens: "unknown", wallMs: "unknown", billedCost: "unknown" },
     originalProgramGrades: "unchanged; parallel semantic assessment only" };
+}
+// Diagnostic view only: never repair quotations, import partial criteria or
+// confuse structural validity with semantic correctness/independence.
+export function diagnoseReview(directory, review, excludedSessionIds = [], receiptPaths) {
+  const scope = "Structural diagnostics only; no semantic acceptance, partial import, output repair or original grade changes";
+  try {
+    const checked = validateReview(directory, review, excludedSessionIds, receiptPaths);
+    return { status: "structurally-valid", scope, criteria: checked.criterionDiagnostics, globalErrors: [],
+      executionIndependence: checked.executionIndependence };
+  } catch (error) {
+    return { status: "rejected", scope, criteria: error.diagnostics?.criteria ?? [],
+      globalErrors: error.diagnostics?.globalErrors ?? [error.message] };
+  }
 }
 export function compareReviews(a, b) {
   if (a.review.rubricDigest !== b.review.rubricDigest) throw Error("Comparison requires the same frozen rubric");

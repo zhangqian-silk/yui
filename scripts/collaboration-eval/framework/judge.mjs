@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { hash, cliOutputData } from "./common.mjs";
+import { hash, cliOutputData, runBatchRead, matchesRunBatch, taskBatchRead, matchesTaskBatch } from "./common.mjs";
 import { judgeInputHandling } from "../reuse-fixture/handling.mjs";
 export const expectedAnswers = [
   { count: 2, total: 11, unknown: "unknown" },
@@ -114,7 +114,50 @@ export function gradeRoutedInput(original, expected) {
 // that an autonomous real model chose a read or understood it.
 function completeValues(trace) {
   const values = [], partial = new Map();
-  const append = data => { if (data && typeof data === "object") values.push(data.context ?? data); };
+  const append = (data, args) => {
+    if (!data || typeof data !== "object") return;
+    const value = data.context ?? data, batch = runBatchRead(args);
+    if (batch) {
+      if (matchesRunBatch(value, batch)) values.push(...value.items);
+    } else if (taskBatchRead(args)) {
+      if (matchesTaskBatch(value, taskBatchRead(args)))
+        // Result/execution projections are not covered by each original hash.
+        values.push(...value.items.map(({ ref, value }) => ({ ref, value })));
+    } else {
+      values.push(value);
+      // A focused wake can carry whole ordinary originals. Credit only its
+      // exact returned value, not summaries, omitted bodies or result notices.
+      // Native command ownership/deadline checks and the independent original
+      // comparison still apply; no claim/ACK or Skill credit is inferred here.
+      const commandArgs = args?.filter(arg => arg !== "--json");
+      if (commandArgs?.slice(0, 2).join(" ") === "session context"
+        && value.protocol === "yui-managed-context/v1" && value.identity?.scope === "global"
+        && value.identity.roleName === commandArgs[2] && Array.isArray(value.currentOriginals)) {
+        // The native adapter still checks exact Thread/Turn/Manifest ownership.
+        // Only the explicit whole-original carrier counts, never pending summaries.
+        for (const original of value.currentOriginals) if (original.schemaVersion === 1
+          && original.roleName === value.identity.roleName && original.taskId === undefined
+          && typeof original.id === "string" && typeof original.body === "string")
+          values.push(original);
+      }
+      const focused = commandArgs?.slice(0, 3).join(" ") === "task wake show"
+        && value.view === "focus" && value.taskId === commandArgs[3]
+        && value.wake?.taskId === commandArgs[3] && value.wake?.id === commandArgs[4]
+        ? value : commandArgs?.[0] === "inbox" && commandArgs[1] === "show" && value.id === commandArgs[2]
+          && typeof value.fromCursor === "string" && typeof value.toCursor === "string"
+          && typeof value.taskId === "string" && value.originalContext?.taskId === value.taskId
+          && value.originalContext.view === "focus" ? value.originalContext : null;
+      if (Array.isArray(focused?.messages)) {
+        for (const m of focused.messages) if (m.contentOmitted === false
+          && m.ref?.store === "task-message" && m.ref.refId === m.id
+          && m.value?.id === m.id && m.value.taskId === focused.taskId
+          && m.value.resultRef === undefined && typeof m.value.body === "string"
+          && m.ref.digest === hash(JSON.stringify(m.value))) {
+          values.push({ ref: m.ref, value: m.value });
+        }
+      }
+    }
+  };
   for (const e of trace) {
     if (e.code !== 0) continue;
     let envelope; try { envelope = JSON.parse(e.stdout); } catch { continue; }
@@ -135,7 +178,7 @@ function completeValues(trace) {
       : cliOutputData(envelope, e.args);
     if (!d) continue;
     d = d.context ?? d;
-    if (!d?.contentPage) { append(d); continue; }
+    if (!d?.contentPage) { append(d, e.args); continue; }
     const p = d.contentPage, key = `${p.source}/${p.digest}`, previous = partial.get(key), prior = previous?.text ?? "";
     if (typeof p.source !== "string" || typeof p.digest !== "string" || typeof p.text !== "string"
       || p.offset !== prior.length || p.encoding !== "json") { partial.delete(key); continue; }
@@ -152,7 +195,7 @@ function completeValues(trace) {
       totalCharacters: p.totalCharacters, identity: JSON.stringify(ci < 0 ? e.args : e.args.slice(0, ci)) });
     if (p.complete === true && text.length === p.totalCharacters && hash(text) === p.digest
       && (!e.originalTool || Buffer.byteLength(text) === p.totalBytes && p.nextCursor === null)) {
-      try { append(JSON.parse(text)); } catch { /* bad original */ }
+      try { append(JSON.parse(text), e.args); } catch { /* bad original */ }
       partial.delete(key);
     }
   }
@@ -314,10 +357,35 @@ export function stageVerdict(checks) {
 }
 // Observation gaps are not passes, but do not prevent observing a later warm
 // input when all known business/protocol/authority checks permit it.
-export const stageAllowsContinuation = (verdict, safety) => safety?.status === "pass"
-  && (verdict.status === "pass" || verdict.status === "observation-unknown"
-    && verdict.unknown.every(check => ["reads", "inputReads", "loads", "operatorReads", "operatorLoads", "reuseAvailability",
-      "binding", "operatorBinding", "predecessorReads", "predecessorInputReads", "predecessorLoads"].includes(check)));
+export function stageAllowsContinuation(verdict, safety) {
+  if (safety?.status !== "pass") return false;
+  if (safety.analyzeReadingFailures === true && verdict.status === "quality-fail") {
+    const reading = new Set(["reads", "inputReads", "loads", "operatorReads", "operatorLoads", "reuseAvailability"]);
+    const failed = (verdict.failed ?? []).filter(row => !reading.has(row.check));
+    if (failed.length < (verdict.failed ?? []).length)
+      return stageAllowsContinuation({ ...verdict, failed,
+        status: failed.length ? "quality-fail" : verdict.unknown?.length ? "observation-unknown" : "pass" },
+      { ...safety, analyzeReadingFailures: false });
+  }
+  const failed = verdict.failed ?? [], answer = failed[0]?.grade;
+  // Only the explicitly planning-only warm scenario may observe later inputs
+  // after one known, committed JSON answer mismatch. No replay/correction and
+  // no grade promotion; missing/duplicate effects and every other failure stop.
+  const answerOnly = safety.planningOnlyAnswer === true && failed.length === 1
+    && failed[0].check === "business" && answer?.status === "fail"
+    && typeof answer.effect === "string" && answer.actual !== null
+    && typeof answer.actual === "object" && !Array.isArray(answer.actual)
+    && Array.isArray(answer.actual.allocations) && Array.isArray(answer.actual.deferred)
+    && Number.isFinite(answer.actual.remainingKits)
+    && typeof answer.actual.carrierEta === "string" && answer.actual.mode === "plan-only"
+    && answer.actual.allocations.every(row => row && typeof row.site === "string" && Number.isFinite(row.kits))
+    && answer.actual.deferred.every(row => row && typeof row.site === "string" && typeof row.reason === "string");
+  return (verdict.status === "pass" || verdict.status === "observation-unknown"
+    || verdict.status === "quality-fail" && answerOnly)
+    && (verdict.unknown ?? []).every(check => ["reads", "inputReads", "loads", "operatorReads", "operatorLoads", "reuseAvailability",
+      "binding", "operatorBinding", "predecessorReads", "predecessorInputReads", "predecessorLoads"].includes(check)
+      || ["cliIdentity", "operatorCliIdentity"].includes(check) && safety.exactEffectIdentities?.[check] === true);
+}
 export function controllerAccessFailure(commands) {
   for (const entry of commands.filter(c => Number.isInteger(c.code) && c.code !== 0
     && c.observation?.cli === "observed")) for (const output of [entry.stderr, entry.stdout]) {

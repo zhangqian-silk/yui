@@ -1,9 +1,12 @@
 // Evaluator-only carriers for explicitly reviewed frozen products.
 // A removed file never removes its semantic obligation. Unknown carriers fail closed.
-import { hash } from "./common.mjs";
+import { hash, currentPlanningContract } from "./common.mjs";
 import { gradeLoads } from "./judge.mjs";
 const main = "yui-runtime/SKILL.md", separate = "yui-runtime/references/reporting.md";
 export function reportingCarrier(inventory) {
+  const contract = currentPlanningContract(inventory);
+  if (contract) return { status: "observed", kind: "reviewed-inline-action-core",
+    path: main, sha256: inventory[main].sha256, contract };
   if (inventory["yui-runtime/VERSION"]?.sha256 === hash("22\n")
     && inventory[main]?.sha256 === "edc7752aca413ae3b3937f004d35a3ca5bb0b174d823c246eb06947f7b3c81b9"
     && inventory[separate]?.sha256 === "a70bf140464d883a58208018d7f743455fe9ea1ea2569ebf4b9bcf5cb73fb8f4")
@@ -36,7 +39,7 @@ export function taskFactsCarrier(inventory) {
   const path = "yui-runtime/references/task-context.md";
   if (inventory[path]) return { status: "observed", path, sha256: inventory[path].sha256 };
   const inline = reportingCarrier(inventory);
-  return ["reviewed-inline-runtime20", "reviewed-inline-runtime25", "reviewed-inline-runtime26", "reviewed-inline-runtime29"].includes(inline.kind) ? inline
+  return ["reviewed-inline-action-core", "reviewed-inline-runtime20", "reviewed-inline-runtime25", "reviewed-inline-runtime26", "reviewed-inline-runtime29"].includes(inline.kind) ? inline
     : { status: "unknown", reason: "No reviewed exact Task-context carrier" };
 }
 // Only captured, owned, accepted Host inputs; never a model's asserted receipt.
@@ -116,16 +119,14 @@ export function gradeHostSkillCheck(events, expected, scope, sources = []) {
   }
   return { status: "unknown", reason: "Host metadata continuity unavailable" };
 }
-export function taskFactsAction(bundles, events, scope) {
+function cliAction(bundles, events, scope, predicate, kind) {
   const traces = bundles.filter(b => ["taskId", "roleName", "threadId", "turnId", "epoch"]
     .every(k => b.scope[k] === scope[k])).flatMap(b => b.trace).filter(t => {
     const a = t.args.filter(x => x !== "--json");
-    return a[0] === "task" && (a[1] === "context"
-      || a[1] === "run" && a[2] === "context"
-      || ["message", "decision", "brief", "input"].includes(a[1]) && ["show", "list"].includes(a[2]));
+    return predicate(a);
   });
   if (!traces.length) return { status: "not-observed",
-    limit: "No recognized Task-fact read in current Turn; unsupported/hidden actions remain unknown, not universally unnecessary" };
+    limit: `No recognized ${kind} in current Turn; unsupported/hidden actions remain unknown, not universally unnecessary` };
   const actions = traces.map(t => {
     const id = t.compound?.nativeItemId ?? t.nativeItemId;
     const starts = events.filter(e => e.message?.method === "item/started"
@@ -133,11 +134,29 @@ export function taskFactsAction(bundles, events, scope) {
       && e.message.params.item?.id === id);
     return { status: starts.length === 1 ? "observed" : "unknown",
       at: starts.length === 1 ? starts[0].at : undefined, nativeItemId: id, args: t.args,
-      kind: "task-facts-read", boundary: "enclosing-native-command-start" };
+      kind, boundary: "enclosing-native-command-start" };
   });
   if (actions.some(a => a.status !== "observed")) return { status: "unknown", actions,
-    reason: "Task-fact read observed but exact command start unavailable" };
+    reason: `${kind} observed but exact command start unavailable` };
   return { ...actions.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))[0], actions };
+}
+export function taskFactsAction(bundles, events, scope) {
+  return cliAction(bundles, events, scope, a => a[0] === "task" && (a[1] === "context"
+    || a[1] === "run" && a[2] === "context"
+    || ["message", "decision", "brief", "input"].includes(a[1]) && ["show", "list"].includes(a[2])), "task-facts-read");
+}
+// The current core triggers this manual on expansion, not every warm Turn or
+// ordinary complete original read. These are recognized CLI paths only; this
+// is not universal semantic applicability inference.
+export function contextExpansionAction(bundles, events, scope) {
+  return cliAction(bundles, events, scope, a =>
+    a[0] === "task" && (
+      a[1] === "context" && ["list", "inspect"].includes(a[2])
+      || a[1] === "wake" && a[2] === "show"
+      || a[1] === "run" && (a[2] === "show"
+        || a[2] === "context" && (a[3] === "expand" || a.includes("--view") || a.includes("--cursor"))))
+    || ["task", "inbox", "role", "session"].includes(a[0]) && a.includes("--cursor"),
+  "context-expansion");
 }
 export function gradeInstructionObligations(bundles, files, scope, carrier) {
   const base = gradeLoads(bundles, files, scope);

@@ -92,6 +92,22 @@ a blacklist of retired field names.
 
 ## Collaboration framework checks
 
+The framework produces engineering measurements and objective check evidence;
+the executing Agent interprets actual trajectories, semantic quality, model
+variation and optimization benefit. Assemble related changes before a bounded
+representative experiment. Wording-only or small byte reductions normally need
+deterministic checks, not their own full A/B and model-review chains. Record the
+decision question and spending bounds in the experiment plan; independent model
+review is optional for material disputes, never automatic. This does not grant
+real-resource authorization.
+
+New runs freeze `decisionPolicy: agent-analysis`: process exit describes complete
+collection and released cleanup, not quality acceptance. Original check failures
+and unknowns remain in reports. Only bounded non-recovery business reading/load
+findings cease to censor later safe inputs; authority, effects, handling, identity,
+native execution and recovery fences remain. Historical exits and seals are not
+rewritten. See the framework README for exact boundaries and Agent handoff.
+
 `npm run eval:check` checks evaluation contracts without starting a Home.
 The explicit `npm run eval:wiring -- --product <absolute-checkout> --out <new-dir>`
 uses the [maintained framework](../../scripts/collaboration-eval/framework/README.md)
