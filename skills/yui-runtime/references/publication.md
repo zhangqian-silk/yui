@@ -6,15 +6,20 @@ to push, publish, merge, query an external provider or archive.
 
 ## Post-completion routing boundary
 
-An explicit user request to continue implementation or delivery of the same
-completed, unarchived result authorizes its necessary reopening within that
-request's scope. The current matching Leader may call `task reopen <task>` for
-its own Task and continue that request; an Operator handoff is not mandatory,
-and neither Role needs the user to additionally say “reopen.” Read the original
+A user's same-result follow-up or an existing explicit unfulfilled commitment
+may require tracked diagnosis, evidence handoff, necessary authority coordination,
+implementation or delivery after completion. The current matching Leader judges
+whether that continued handling needs `task reopen <task>` for its own completed,
+unarchived Task; an Operator handoff and another “reopen” confirmation are not
+mandatory. A simple question, explanation or permitted evidence read stays
+completed. Do not reopen a source Task just to read it, or request permission
+already held. Read the original
 completion, fixed heads/reports, Publication, new request and current authority
 first. Inspect the reopen result and current Context before executing; delivery
 still requires the current Session's delivery authority, legal workspace and an
-enabled execution gate.
+enabled execution gate. A diagnosis-only request stays read-only even after
+reopening. Use the existing reopen then InputRequest path only for a genuinely
+missing decision, authority or external fact, never for routine reads.
 
 If the Leader already received the request, use its original durable input and
 continue after reopening; do not resend it or create a self-wake. Preserve a
@@ -25,7 +30,7 @@ new input, use the existing two operations:
 ```sh
 yui task reopen <task>
 yui operator submit "<new request, authority, boundaries and prior evidence>" \
-  --task <task> --intent develop --request-id <id>
+  --task <task> --intent <discuss|develop> --request-id <id>
 ```
 
 Unaddressed `task message send` with the same intent/key options is an alternative
@@ -39,8 +44,10 @@ original completion events, fixed commits/artifacts and Publication history stay
 intact. The Leader must assess the new request and separately accept any new
 result, not pretend old validation proves changed work. Reopen does not replay
 historical Messages/Runs, change the Role's Agent/model/permissions, or lift an
-independent execution stop. Queries, ordinary record/discussion input and Session
-recovery do not authorize resumption. Cancelled intent needs explicit
+independent execution stop. Choose `discuss` for diagnosis/explanation and
+`develop` only with implementation authority. Ordinary notifications, Session
+recovery or an opportunity for improvement do not supply a follow-up mandate.
+New goals need their own Task rather than an expanded old result. Cancelled intent needs explicit
 user/Operator restoration authority and cannot be restored by the Leader;
 archived Tasks cannot reopen. A stopped gate still needs
 the separately authorized start/cleanup path.

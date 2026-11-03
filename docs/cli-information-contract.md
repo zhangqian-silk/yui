@@ -88,6 +88,23 @@ use family discovery when a broader requirement/history audit is needed.
   decision/milestone/event, Role show/status/Session inspection, wake detail,
   InputRequest, Run context and frozen expansion use bounded detail reads.
 
+Ordinary Task reads authenticate the original caller but do not restrict data
+by its Task or Assignment ID. This single-user local product relies on local
+filesystem permissions and authenticated service transports, not Task ownership
+as a tenant boundary. Foreign current context identifies the caller's own Task
+and labels its authority `reference-only`. Search, records, artifacts and native
+conversation evidence do not switch identity, adopt another Run's instructions,
+or grant writes, inbox handling, dispatch or external effects. Explicit resource
+and Job-owned Role restrictions still apply. Native conversation tools need no
+Yui gateway or Task mapping; actual resource access and relevant scope suffice.
+
+Completed results remain readable. Simple questions need no reopen; the current
+Leader may reopen its own unarchived result when a same-result request or explicit
+unfulfilled commitment needs tracked diagnosis, evidence handoff, authority
+coordination or authorized delivery. Diagnosis stays read-only; reopening retains
+historical completion evidence and never lifts a stop, restores cancelled intent,
+promotes a planning Session or grants external effects.
+
 Use `--json` and read the top-level `data`. Run context and expansion use
 `data.context`; Run Context delta uses `data.contextDelta`. For a long detail, repeat that same read with
 `--cursor <contentPage.nextCursor>`. Concatenate `text` in offset order, checking

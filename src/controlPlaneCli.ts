@@ -23,7 +23,7 @@ import {
 import { describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
 import { discoveryCommandTree } from "./cli/commandDiscovery.js";
 import { callerDiscoveryAudience } from "./cli/callerDiscovery.js";
-import { contextRecordReader } from "./context/taskContext.js";
+import { assertTaskReadable } from "./context/taskContext.js";
 import { renderCompletion } from "./cli/completion.js";
 import { runCompletionWizard } from "./cli/completionWizard.js";
 import { resolveCompletionCandidates } from "./cli/dynamicCompletion.js";
@@ -34,7 +34,7 @@ import {
   type SelectionIo
 } from "./cli/interactiveSelection.js";
 import { routeInvocation } from "./cli/invocationRouter.js";
-import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagnostics.js";
+import { operatorOfflineCommand, isTaskReadCommand } from "./cli/managedDiagnostics.js";
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
 import { requireManagedGlobalCaller, requireManagedGlobalReader, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
 import { assertJobAgentCommand } from "./job/agentRoleScope.js";
@@ -1358,7 +1358,7 @@ export async function main(): Promise<void> {
         if (taskId === undefined || action === undefined || !["list", "read", "save"].includes(action)) {
           throw usageError(usage);
         }
-        if (process.env.YUI_SESSION_SCOPE === "task" && process.env.YUI_TASK_ID !== taskId) {
+        if (action === "save" && process.env.YUI_SESSION_SCOPE === "task" && process.env.YUI_TASK_ID !== taskId) {
           throw usageError("Artifact is outside the managed Task scope.");
         }
         if (store.getTask(taskId) === null) throw usageError(`Task not found: ${taskId}.`);
@@ -2509,12 +2509,7 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
     && ["agent-host", "session-notify", "runtime-hook"].includes(args[1] ?? "");
   const home = resolveYuiHome(process.env);
   assertManagedSessionManifest(home, "task");
-  const diagnosticTarget = taskDiagnosticTarget(args);
-  const diagnostic = diagnosticTarget !== undefined
-    && diagnosticTarget === process.env.YUI_TASK_ID;
-  if (diagnosticTarget !== undefined && !diagnostic) {
-    throw usageError("Diagnostics must remain within this Session's Task.");
-  }
+  const diagnostic = isTaskReadCommand(args);
   // One gate for every managed command: the current CLI, Home, and Controller
   // must agree. Internal callbacks must still be able to append their immutable
   // fact while the Controller is offline.
@@ -2534,13 +2529,6 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
     : diagnostic
       ? resolveManagedTaskReader(verifiedStore, process.env)
       : requireManagedTaskCaller(verifiedStore, process.env);
-  if (diagnostic && runtime?.roleName !== "leader"
-    && !(args[1] === "show"
-      || (args[1] === "role" && args[2] === "session" && args[3] === "inspect"
-        && args[5] === runtime?.roleName))) {
-    // Non-Leaders keep their Assignment-scoped read authorization.
-    requireManagedTaskCaller(verifiedStore, process.env);
-  }
   const request = taskFinalReviewInvocation.request;
   if (request !== undefined && diagnostic) requireManagedTaskCaller(verifiedStore, process.env);
   if (request === undefined) {
@@ -3763,7 +3751,7 @@ function completionSelectionPorts(home: string): SelectionPorts {
   );
   if (process.env.YUI_SESSION_SCOPE !== "task") return ports;
   const taskId = process.env.YUI_TASK_ID!;
-  const readable = contextRecordReader(store, taskId, process.env);
+  assertTaskReadable(store, taskId, process.env);
   const families: Record<string, string> = {
     "task.list": "task", "project.list": "project-policy", "task.role.list": "role",
     "task.work.list": "work-item", "task.message.list": "task-message", "task.input.list": "input-request",
@@ -3782,7 +3770,7 @@ function completionSelectionPorts(home: string): SelectionPorts {
       const id = String(value.id ?? value.name ?? "");
       if (method === "task.list" && id !== taskId) return false;
       if (method === "project.list" && !store.getTask(taskId)?.projectBindings.some(binding => binding.projectId === id)) return false;
-      return readable(family, id);
+      return true;
     });
   } };
 }

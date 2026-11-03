@@ -4,7 +4,7 @@ import { projectAgentCapabilityConfig, type AgentCapabilityConfig } from "./agen
 import { activeRoleAgentBinding } from "../role/role.js";
 import { configuredAgentFingerprint, readAgentFailureContext } from "../runtime/agentFailureContext.js";
 import { resolveManagedTaskReader } from "../runtime/managedCaller.js";
-import { assertContextRecordReadable } from "../context/taskContext.js";
+import { assertTaskReadable } from "../context/taskContext.js";
 import type { TaskStore } from "../storage/taskStore.js";
 
 export type TaskAgentCapabilityQuery = Readonly<{
@@ -38,7 +38,7 @@ export function resolveTaskAgentCapabilities(
   let expectedFingerprint: string | undefined;
   let expectedComponent: string | undefined;
   if (errorId !== undefined) {
-    assertContextRecordReadable(store, taskId, "task-event", errorId, environment);
+    assertTaskReadable(store, taskId, environment);
     const event = store.listEventsByType(taskId, ["runtime.agent-error"]).find(event => event.id === errorId);
     if (event === undefined || event.payload.roleName !== roleName) {
       throw usageError("Agent failure is not owned by this Task/Role.");

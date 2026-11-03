@@ -11,7 +11,7 @@ import {
 } from "../controller/jobClient.js";
 import type { DurableJobOwner, DurableJobStep } from "../job/durableJob.js";
 import type { TaskStore } from "../storage/taskStore.js";
-import { resolveJobCaller, taskLocalActor } from "../task/taskAuthority.js";
+import { resolveJobCaller, resolveJobReadCaller, taskLocalActor } from "../task/taskAuthority.js";
 import { boundedJobArtifactPayload } from "../artifacts/jobArtifactTransport.js";
 import { readFileSync, statSync } from "node:fs";
 import type { GlobalShellConfiguration } from "../job/globalShell.js";
@@ -181,8 +181,7 @@ async function getJob(
   options: DurableJobCommandOptions
 ): Promise<string> {
   const ref = parseRefArgs(args, "get");
-  const caller = resolveJobCaller(options.environment, ref.taskId);
-  await ensureFileTaskController(options.home, { environment: options.environment });
+  const caller = resolveJobReadCaller(options.environment, ref.taskId);
   const job = await getDurableJob(options.home, ref.taskId, ref.jobId, caller);
   if (options.json === true) return `${JSON.stringify(job, null, 2)}\n`;
   const lines = [

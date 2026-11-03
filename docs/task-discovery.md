@@ -116,11 +116,11 @@ source records; no report text is parsed into status. Web explicitly labels
 these facts and offers category navigation. Selected detail survives paging,
 filtering and refresh; only the detail read can establish absence.
 
-Task Leader Sessions see only their own Task. Assignment-scoped Workers and
-Reviewers use existing authorized Run Context instead of whole-Task discovery;
-the catalog rejects their request before counting. Global non-Operator and
-incomplete managed identities are rejected. Historical Leader diagnostic reads
-retain their original Task scope. A cursor is scope/filter-bound continuation,
+Task Leaders, Workers and Reviewers may discover relevant ordinary records
+under the local resource's access rules; Task/Assignment ownership does not
+filter the catalog. Global non-Operator and incomplete or unknown managed
+identities remain rejected. Historical readers retain read-only identity,
+never another Task's execution authority. A cursor is scope/filter-bound continuation,
 not a credential. Read operations do not consume messages, acknowledge jobs,
 wake Roles or query providers.
 

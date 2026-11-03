@@ -148,9 +148,11 @@ test("managed dispatch freezes explicit materials and candidate reports; continu
   };
   const privateMessage = createTaskMessage("message-2", task.id, "Private other-role evidence", "system", { type: "system" }, now);
   store.saveMessage(task.id, privateMessage);
-  assert.throws(() => readDispatchContextRefs(store, task.id,
-    [`task-message/${privateMessage.id}@${contextContentDigest(privateMessage)}`], workerEnv),
-  /current scope|Assignment/);
+  assert.equal(readDispatchContextRefs(store, task.id,
+    [`task-message/${privateMessage.id}@${contextContentDigest(privateMessage)}`], workerEnv).length, 1);
+  assert.throws(() => expandRunContextRef(store, task.id, worker.id, privateMessage.id, "task-message"),
+    /not uniquely authorized/,
+    "Reading current evidence does not add it to a previously frozen Assignment.");
   const report = "Original report😀\n".repeat(2400);
   store.saveRun(completeRun(worker, report, later));
   store.clearActiveRun(task.id, "worker");

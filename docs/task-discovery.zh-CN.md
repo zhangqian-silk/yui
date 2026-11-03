@@ -73,10 +73,10 @@ Brief。当前 Brief 通过 Task Context 读取；Context inspect 可校验 dige
 不解析报告正文推导状态。Web 明确标示这些事实并提供分类导航。
 已选详情不因分页、筛选或刷新而丢失；只有详情读取可以确认目标不存在。
 
-Task Leader Session 只能发现自己的 Task。Assignment-scoped Worker 和
-Reviewer 使用既有授权 Run Context，目录会在计数前拒绝其全 Task 发现请求。
-非 Operator 的 Global Session 和不完整的受管身份也会被拒绝。
-历史 Leader 的诊断读取保持原 Task 范围。游标绑定范围及参数，不是凭证。
+Task Leader、Worker 和 Reviewer 可按本地资源访问规则发现相关普通记录；
+目录不以 Task/Assignment 归属过滤数据。非 Operator 的 Global Session、
+不完整或未知的受管身份仍被拒绝。历史读取者保持只读身份，不获得其他 Task 的执行权。
+游标绑定范围及参数，不是凭证。
 读取不会消费 Message、确认 Job、唤醒 Role 或查询外部 provider。
 
 ## 成本边界
