@@ -496,19 +496,19 @@ const taskChildren: readonly NodeInput[] = [
     fileOptions: ["--summary-file"]
   },
   {
-    name: "list", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+    name: "list", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] },
     summary: "Discover Tasks through a bounded, filterable catalog.",
     usage: "yui task list [--all] [--source <ordinary|job>] [--status <status>] [--project <id>] [--search <text>] [--attention <category>] [--limit <1..100>] [--cursor <cursor>]",
     options: ["--all", "--source", "--status", "--project", "--search", "--attention", "--limit", "--cursor"]
   },
   {
-    name: "search", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+    name: "search", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] },
     summary: "Search authorized Task bodies and return exact, reference-only source citations.",
     usage: "yui task search <query> [--task <id>] [--kind <brief|message|decision|result|completion>] [--limit <1..100>] [--cursor <cursor>]",
     options: ["--task", "--kind", "--limit", "--cursor"]
   },
   { name: "show", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] }, summary: "Show Task metadata and counts; long details use contentPage.", usage: "yui task show <id> [--cursor <cursor>]", options: ["--cursor"] },
-  { name: "usage", discovery: { surface: "public", audiences: ["public","operator","leader"] }, summary: "Read bounded Task usage and sourced costs; request detail pages explicitly.", usage: "yui task usage <task> [--limit <0..50>] [--offset <n>]", options: ["--limit", "--offset"] },
+  { name: "usage", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] }, summary: "Read bounded Task usage and sourced costs; request detail pages explicitly.", usage: "yui task usage <task> [--limit <0..50>] [--offset <n>]", options: ["--limit", "--offset"] },
   {
     name: "artifact", discovery: { surface: "managed", audiences: ["operator","leader"] },
     summary: "Save Task files in local Git and read current or commit-pinned content.",

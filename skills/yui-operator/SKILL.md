@@ -99,9 +99,11 @@ create/submit/activate sequence.
 
 Discussion does not authorize delivery; follow the Leader's
 [planning and activation boundary](../yui-leader/references/planning.md) before
-activation. Queries, record-only input and discussion do not authorize
-reopening. An explicit request to continue the same completed result can
-authorize the necessary reopening; follow the delivery guidance below.
+activation. Simple queries, record-only input and discussion needing no tracked
+follow-up do not authorize reopening. A same-result follow-up request or explicit
+unfinished commitment can justify tracked diagnosis, evidence handoff, necessary
+coordination or delivery; follow the shared post-completion boundary below.
+Diagnosis still does not authorize a repair.
 
 ```sh
 yui operator submit "<related request and delta>" --task <task-id> --intent discuss

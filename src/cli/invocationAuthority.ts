@@ -4,7 +4,7 @@ import { requireManagedGlobalCaller, type ManagedGlobalCallerStore } from "../ru
 import { routeInvocation } from "./invocationRouter.js";
 import { findInteractionPolicy } from "./interactionPolicy.js";
 import { TASK_RECORD_ID_PREFIXES } from "../task/taskRecordReference.js";
-import { taskDiagnosticTarget } from "./managedDiagnostics.js";
+import { isTaskReadCommand } from "./managedDiagnostics.js";
 
 /** Configuration reads remain available; every Home configuration mutation
  * has one owner, irrespective of which config subcommand parses its flags. */
@@ -38,11 +38,7 @@ export function assertTaskInvocationScope(args: readonly string[], env: NodeJS.P
     throw usageError("This global operation is outside the caller's Task; use its scoped Context.");
   }
   if (args[0] !== "task" || ["list", "search"].includes(args[1] ?? "")) return;
-  const diagnostic = taskDiagnosticTarget(args);
-  if (diagnostic !== undefined) {
-    if (diagnostic !== env.YUI_TASK_ID) throw usageError("Command target is outside the caller's Task.");
-    return;
-  }
+  if (isTaskReadCommand(args)) return;
   const invocation = routeInvocation([...args]);
   if (invocation.kind !== "execute") return;
   let targetIndex = invocation.node.path.length - 1;

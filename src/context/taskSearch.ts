@@ -2,8 +2,7 @@ import { usageError } from "../errors/cliError.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { TASK_SEARCH_KINDS, type TaskSearchKind, type SearchPosition } from "../storage/taskSearch.js";
 import { contextContentDigest } from "./contextSnapshot.js";
-import { taskCatalogScope } from "./taskCatalog.js";
-import { readTaskContextResource } from "./taskContext.js";
+import { readTaskContextResource, resolveContextReader } from "./taskContext.js";
 
 export type TaskSearchOptions = {
   query: string; taskId?: string; kind?: TaskSearchKind; limit: number; cursor?: string;
@@ -69,11 +68,8 @@ export function searchTaskBodies(store: TaskStore, options: TaskSearchOptions, e
     ...(options.kind === undefined ? [] : ["--kind", options.kind]),
     ...(options.cursor === undefined ? [] : ["--cursor", options.cursor])]);
   return store.readTransaction(reader => {
-    const callerTask = taskCatalogScope(reader, environment);
-    if (callerTask !== undefined && valid.taskId !== undefined && callerTask !== valid.taskId) {
-      throw usageError("Search target is outside the caller's Task.");
-    }
-    const taskId = callerTask ?? valid.taskId;
+    resolveContextReader(reader, environment);
+    const taskId = valid.taskId;
     const scope = contextContentDigest({ taskId: taskId ?? null, query: valid.query, kind: valid.kind ?? null });
     const after = valid.cursor === undefined ? undefined : decodeCursor(valid.cursor, scope);
     const rows = reader.queryTaskSearch({ ...valid, taskId, after, limit: valid.limit + 1 });

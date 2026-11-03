@@ -61,21 +61,25 @@ stage, not independent restrictions. Never use active status or Brief alone.
   even on an active Task. Do not turn it into edits or dispatch. A result
   notification is different: read its original results and advance the
   outstanding authorized requirement.
-- **Completed, unarchived, explicit same-result implementation or delivery request:**
-  the current matching Leader may call `task reopen <task-id>` for its own Task,
+- **Completed, unarchived, same-result follow-up:**
+  ordinary questions and permitted evidence reads need no reopen. When a user's
+  same-result request or an explicit unfulfilled commitment needs tracked
+  diagnosis, evidence handoff, necessary authority coordination, implementation
+  or delivery, the current matching Leader may call `task reopen <task-id>`,
   then continue that bounded request without a mandatory Operator handoff or
   another “reopen” confirmation. Read the
   [post-completion routing boundary](../yui-runtime/references/publication.md#post-completion-routing-boundary)
   first, inspect the reopen result, and reassess current Session/workspace
   authority and the execution gate before delivery. Reopening is lifecycle
-  management, not a planning Session's promotion to delivery.
+  management, not a planning Session's promotion to delivery or permission to
+  implement a diagnosis-only request.
 - **Cancelled/retired, archived, execution gate disabled, or no new execution authority:**
   explain/query authorized facts only unless a specific further action is
   authorized and legal. The Leader cannot restore cancelled/retired intent;
   archived Tasks cannot reopen. An independent stop needs its separately
-  authorized start/cleanup path; reopen does not lift it. Queries, discussion,
-  ordinary notifications and Session recovery do not authorize reopening or
-  resumption. Identify a genuinely missing lifecycle/authority action for the
+  authorized start/cleanup path; reopen does not lift it. Ordinary notifications
+  and Session recovery do not authorize reopening or resumption; simple queries
+  need no lifecycle change. Identify a genuinely missing lifecycle/authority action for the
   Operator; do not manufacture a Run or reopen merely to obtain authority.
   Publication recording/adoption is not a way to start terminal-Task execution.
 

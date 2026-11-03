@@ -8,8 +8,10 @@ description: Complete a bounded Yui WorkItem AgentRun or native child assignment
 Follow [yui-runtime](../yui-runtime/SKILL.md) first, including its per-turn
 version/availability check and conditional full reload. For a managed AgentRun,
 load its exact Context Pack and
-use only the returned WorkItem, refs, workspace, writable Project IDs, and
-completion actions. The launch Envelope is a pointer, not an execution brief.
+use the returned WorkItem, workspace, writable Project IDs, and completion
+actions as execution boundaries. Ordinary relevant evidence reads follow
+Runtime's resource access rules; they never expand the Assignment.
+The launch Envelope is a pointer, not an execution brief.
 
 Complete the assigned WorkItem, or the bounded parent brief for a native child
 without its own WorkItem. Do not create records merely to fit this Skill.
@@ -36,8 +38,9 @@ Report genuine scope conflicts to Leader; older stage-only wording is not a
 new prohibition after a legally authorized handoff.
 
 Leader clarification and continuation arrive as Messages in the exact bounded
-Context Pack. Read those authorized refs; do not request pack-external Leader
-messages or require redispatch/status changes merely to answer a question.
+Context Pack. Read those refs and relevant current originals without requiring
+redispatch/status changes merely to answer a question. Reading another
+Assignment's message does not adopt or acknowledge it.
 Continuation preserves the original Assignment, effective permissions and
 workspace, including unfinished files. If you need clarification, preserve
 those files and report the question; a final question is not WorkItem completion

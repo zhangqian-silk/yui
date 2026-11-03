@@ -40,7 +40,7 @@ import {
   readTaskCatalog,
   renderTaskCatalog
 } from "../context/taskCatalog.js";
-import { assertContextRecordReadable, readTaskContextResource } from "../context/taskContext.js";
+import { assertTaskReadable, readTaskContextResource, resolveContextReader } from "../context/taskContext.js";
 import { parseTaskSearchOptions, searchTaskBodies } from "../context/taskSearch.js";
 import { boundedDocument, readOptions, messageReceipt, recordPage } from "../output/boundedRead.js";
 import { referencedWakeRunIds } from "../context/wakeRunReferences.js";
@@ -199,7 +199,7 @@ import {
   RUNTIME_SESSION_REPLACE_REQUIRED_REASON,
   runtimeLifecycleTarget
 } from "../runtime/lifecycleReservation.js";
-import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
+import { currentManagedRuntime } from "../runtime/managedCaller.js";
 import { controlProviderRetry, providerRunRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
 import { currentProviderConversation, transferProviderAuthority } from "../runtime/providerRuntimeIdentity.js";
 import { projectProviderContinuations } from "../runtime/runtimeContinuationProjection.js";
@@ -2407,7 +2407,7 @@ function taskMessageCommand(
     const parsed = readOptions(rest, ["--cursor"]);
     exactPositionals(parsed.positionals, 1, usage);
     const ref = taskRecordReference(parsed.positionals[0], "message", "Message reference", options);
-    assertContextRecordReadable(store, ref.taskId, "task-message", ref.localId, options.environment);
+    assertTaskReadable(store, ref.taskId, options.environment);
     const message = store.queryContextRecords(ref.taskId, {
       family: "task-message", ids: [ref.localId], limit: 1
     }).records[0]?.value as TaskMessage | undefined;
@@ -3327,13 +3327,7 @@ function taskRoleSessionCommand(
       const task = requireTask(tx, taskId);
       const role = requireRole(tx, task.id, roleName);
       if (action !== "show") taskActor(tx, options, task.id);
-      else {
-        const reader = resolveManagedTaskReader(tx, options.environment);
-        if (reader === undefined) taskActor(tx, options, task.id);
-        else if (reader.taskId !== task.id || reader.roleName !== "leader" && reader.roleName !== role.name) {
-          throw usageError("Provider retry read is outside the caller's Task/Role.");
-        }
-      }
+      else resolveContextReader(tx, options.environment ?? {});
       const sessions = tx.getTaskRoleSessionSet(task.id, role.name);
       let binding = sessions?.providerBinding ?? null;
       if (action !== "show") {
@@ -3355,11 +3349,7 @@ function taskRoleSessionCommand(
     );
     const task = requireTask(store, rest[0]);
     const role = requireRole(store, task.id, rest[1]);
-    const reader = resolveManagedTaskReader(store, options.environment);
-    if (reader === undefined) taskActor(store, options, task.id);
-    else if (reader.taskId !== task.id || (reader.roleName !== "leader" && reader.roleName !== role.name)) {
-      throw usageError("Session inspection is outside the caller's Task/Role.");
-    }
+    resolveContextReader(store, options.environment ?? {});
     const sessions = store.getTaskRoleSessionSet(task.id, role.name);
     const active = sessions?.sessions[sessions.activeAgentId] ?? null;
     const binding = sessions?.providerBinding ?? null;
@@ -6127,35 +6117,18 @@ function parseRunContextReference(value: string): { taskId: string; runId: strin
   return { taskId, runId };
 }
 
-/**
- * A AgentRun Context Pack is information the Role's own runtime reads in order to
- * work. Authorization is therefore scope-shaped, not schedule-shaped: the
- * caller must be the current runtime of the Task Role that owns the AgentRun,
- * proven by its per-Session caller key against durable state.
- *
- * It deliberately does not require the AgentRun to still be the active one. An
- * Agent whose AgentRun has advanced must still be able to read the context it was
- * given; losing read access to its own Role's history is what forces an
- * otherwise healthy Agent to stop and escalate to a human.
- */
+/** Frozen packs are readable evidence. Their execution authority still belongs
+ * exclusively to the dispatched Run; reading does not adopt that identity. */
 function authorizeRunContext(
   store: TaskWorkflowStore,
   taskId: string,
   runId: string,
   environment: NodeJS.ProcessEnv | undefined
 ): void {
-  const managed = environment?.YUI_SESSION_SCOPE !== undefined
-    || environment?.YUI_TASK_ID !== undefined
-    || environment?.YUI_ROLE !== undefined;
-  if (!managed) return;
+  resolveContextReader(store, environment ?? {});
   const run = store.getRun(taskId, runId);
   if (run === null) {
     throw usageError(`AgentRun Context access is not authorized: ${taskId}/${runId}.`);
-  }
-  if (currentManagedRuntime(store, environment, taskId, run.roleName) === undefined) {
-    throw usageError(
-      `AgentRun Context access requires the current runtime of ${taskId}/${run.roleName}.`
-    );
   }
 }
 

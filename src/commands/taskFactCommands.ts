@@ -1,5 +1,5 @@
 import { createTaskBrief, updateTaskBrief } from "../brief/taskBrief.js";
-import { assertContextRecordReadable, resolveContextReader } from "../context/taskContext.js";
+import { assertTaskReadable, resolveContextReader } from "../context/taskContext.js";
 import { taskRecordList } from "./taskContextCommand.js";
 import { materialize } from "../context/taskContext.js";
 import {
@@ -43,7 +43,7 @@ export function taskBriefCommand(
     exactPositionals(rest, 1, "Task brief show usage: yui task brief show <task>.");
     const { task, brief, writeGuard, phase } = store.readTransaction(reader => {
       const task = requireTask(reader, rest[0]);
-      assertContextRecordReadable(reader, task.id, "task-brief", task.id, options.environment);
+      assertTaskReadable(reader, task.id, options.environment);
       const caller = resolveContextReader(reader, options.environment ?? {});
       const shared = caller === undefined || caller.roleName === "leader";
       return { task, brief: reader.getTaskBrief(task.id),
@@ -185,7 +185,7 @@ export function taskDecisionCommand(
   if (command === "show") {
     exactPositionals(rest, 2, "Task decision show usage: yui task decision show <task> <decision>.");
     const task = requireTask(store, rest[0]);
-    assertContextRecordReadable(store, task.id, "task-decision", rest[1]!, options.environment);
+    assertTaskReadable(store, task.id, options.environment);
     const decision = store.getDecision(task.id, rest[1]);
     if (decision === null) throw dataError(`Decision not found: ${rest[1]}.`);
     const timeZone = store.getConfig().timeZone;
@@ -279,7 +279,7 @@ export function taskMilestoneCommand(
   if (command === "show") {
     exactPositionals(rest, 2, "Task milestone show usage: yui task milestone show <task> <milestone>.");
     const task = requireTask(store, rest[0]);
-    assertContextRecordReadable(store, task.id, "task-milestone", rest[1]!, options.environment);
+    assertTaskReadable(store, task.id, options.environment);
     const milestone = store.getMilestone(task.id, rest[1]);
     if (milestone === null) throw dataError(`Milestone not found: ${rest[1]}.`);
     const timeZone = store.getConfig().timeZone;
@@ -310,7 +310,7 @@ export function taskEventCommand(
   if (command === "show") {
     exactPositionals(rest, 2, "Task event show usage: yui task event show <task> <event>.");
     const task = requireTask(store, rest[0]);
-    assertContextRecordReadable(store, task.id, "task-event", rest[1]!, options.environment);
+    assertTaskReadable(store, task.id, options.environment);
     const event = store.queryContextRecords(task.id, {
       family: "task-event", ids: [rest[1]!], limit: 1
     }).records[0]?.value as import("../event/taskEvent.js").TaskEvent | undefined;

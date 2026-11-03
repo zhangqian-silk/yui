@@ -76,7 +76,7 @@ test("maintenance authenticates native-only Operators before migrating an old Ho
   await assert.rejects(preflight(base), /unexpected schema objects/);
 });
 
-test("public CLI fences replaced Operators, Home configuration and cross-Task reads", async t => {
+test("public CLI separates ordinary Task reads from identity and mutation authority", async t => {
   const root = mkdtempSync(join(tmpdir(), "yui-cli-authority-"));
   const home = join(root, "home");
   const store = new SqliteTaskStore(home);
@@ -187,7 +187,7 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.ok(!(await taskHelp(desktopWorker)).includes("task create"));
   assert.equal((await cli(["task", "create", "Outside Assignment"], desktopWorker)).ok, false);
   assert.equal((await cli(["inbox", "list"], desktopWorker)).ok, true);
-  assert.equal((await cli(["task", "context", "task-2"], desktopWorker)).ok, false);
+  assert.equal((await cli(["task", "context", "task-2"], desktopWorker)).ok, true);
   assert.equal((await cli(["session", "skills"], { ...env, YUI_TASK_ID: "task-2" })).ok, false);
   const config = ["config", "resources", "set", "resources-gc-auto-quarantine", "true"];
   for (const partial of [{ YUI_SESSION_MANIFEST: current.YUI_SESSION_MANIFEST }, { YUI_TASK_ID: "task-1" }]) {
@@ -202,23 +202,29 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal((await cli(["config", "resources", "show"], env)).ok, true);
   assert.equal((await cli(config, current)).ok, true);
   store.saveDecision("task-2", createDecision("decision-1", "task-2", "Other decision", "Other rationale.", now));
-  assert.equal((await cli(["task", "decision", "list", "task-2"], env)).ok, false);
-  assert.equal((await cli(["task", "decision", "list", "--status", "active", "task-2"], env)).ok, false);
-  assert.equal((await cli(["task", "context", "task-2"], env)).ok, false);
+  assert.equal((await cli(["task", "decision", "list", "task-2"], env)).ok, true);
+  assert.equal((await cli(["task", "decision", "list", "--status", "active", "task-2"], env)).ok, true);
+  const foreignContext = await cli(["task", "context", "task-2"], env);
+  assert.equal(foreignContext.ok, true);
+  assert.equal(foreignContext.data.data.taskId, "task-2");
+  assert.equal(foreignContext.data.data.caller.taskId, "task-1");
+  assert.equal(foreignContext.data.data.caller.executionAuthority, "reference-only");
+  assert.equal((await cli(["task", "cancel", "task-2"], env)).ok, false);
+  assert.equal(store.getTask("task-2").status, "active");
   assert.equal((await cli(["task", "context", "read", "task-1"], env)).ok, true);
   assert.equal((await cli(["task", "run", "context", "task-1/run-1"], env)).ok, true);
   assert.equal((await cli(["task", "context", "list", "task-1", "--store", "task-message"], env)).ok, true);
-  assert.equal((await cli(["task", "context", "list", "task-2", "--store", "task-message"], env)).ok, false);
+  assert.equal((await cli(["task", "context", "list", "task-2", "--store", "task-message"], env)).ok, true);
   assert.equal((await cli(["role", "message", "list", "operator"], env)).ok, false);
   assert.equal((await cli(["task", "context", "inspect", "task-1", "--store", "task", "--ref", "task-1"], env)).ok, true);
-  assert.equal((await cli(["task", "usage", "task-1", "--limit", "20"], env)).ok, false,
-    "Reading the Task record does not authorize a Worker to read all Roles' usage evidence.");
+  assert.equal((await cli(["task", "usage", "task-1", "--limit", "20"], env)).ok, true,
+    "Usage is ordinary evidence, not execution authority.");
   assert.equal((await cli(["task", "usage", "task-1"], current)).ok, true);
   assert.equal((await cli(["task", "decision", "list", "task-2"], current)).ok, true);
   const searched = await cli(["task", "search", "Other rationale"], current);
   assert.equal(searched.ok, true);
   assert.equal(searched.data.data.items[0].taskId, "task-2");
-  assert.equal((await cli(["task", "search", "Other rationale"], env)).ok, false);
+  assert.equal((await cli(["task", "search", "Other rationale"], env)).ok, true);
   const leader = createRole("task-1", "leader", [binding], agent.id, workspace, now);
   store.saveRole("task-1", leader);
   store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet({
@@ -227,8 +233,12 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   const leaderEnv = environment(leader, { scope: "task", taskId: "task-1" }, "leader-current");
   const scopedSearch = await cli(["task", "search", "Other rationale"], leaderEnv);
   assert.equal(scopedSearch.ok, true);
-  assert.deepEqual(scopedSearch.data.data.items, []);
-  assert.equal((await cli(["task", "search", "Other rationale", "--task", "task-2"], leaderEnv)).ok, false);
+  assert.equal(scopedSearch.data.data.items[0].taskId, "task-2");
+  assert.equal((await cli(["task", "search", "Other rationale", "--task", "task-2"], leaderEnv)).ok, true);
+  assert.equal((await cli(["task", "run", "context", "task-1/run-1"], leaderEnv)).ok, true,
+    "A frozen execution pack can be read as evidence without acquiring its Assignment.");
+  assert.equal((await cli(["task", "role", "session", "inspect", "task-1", "worker"], leaderEnv)).ok, true);
+  assert.equal((await cli(["task", "context", "task-2"], { ...leaderEnv, CODEX_THREAD_ID: "unknown" })).ok, false);
   // A transport-only fixture prevents a regression from starting a scheduler.
   let jobReads = 0;
   let signals = 0;
@@ -237,8 +247,8 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
     if (method === "scheduler.signal") { signals++; return {}; }
     throw new Error(`Unexpected fixture RPC: ${method}`);
   });
-  assert.equal((await cli(["job", "get", "--task", "task-2", "--job", "job-1"], env)).ok, false);
-  assert.equal(jobReads, 0, "CLI refuses a different Task before contacting Job control.");
+  assert.equal((await cli(["job", "get", "--task", "task-2", "--job", "job-1"], env)).ok, true);
+  assert.equal(jobReads, 1, "Read-only Job lookup preserves the caller, without starting a scheduler.");
   const inherited = createGlobalRole("leader", [createRoleAgentBinding(agent, {
     adapterId: "codex", model: "configured-model", effort: "high",
     permission: { strategy: "configured", sandbox: "read-only", approval: "never" }
@@ -259,7 +269,7 @@ test("public CLI fences replaced Operators, Home configuration and cross-Task re
   assert.equal(signals, 2, "Draft creation only signals stored facts, not Agent execution");
 });
 
-test("Job read authority is enforced by the control port, not just the CLI", t => {
+test("Job control authenticates ordinary reads without granting cross-Task mutations", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-job-read-scope-"));
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
@@ -283,5 +293,7 @@ test("Job read authority is enforced by the control port, not just the CLI", t =
   assert.throws(() => parseDurableJobRefParams({ taskId: "task-1", jobId: "job-1" }), /params/i);
   const read = parseDurableJobRefParams({ taskId: "task-1", jobId: "job-1", caller });
   assert.equal(jobs.getJob(read.taskId, read.jobId, read.caller).taskId, "task-1");
-  assert.throws(() => jobs.getJob("task-2", "job-1", caller), /Task|scope|outside/i);
+  assert.equal(jobs.getJob("task-2", "job-1", caller).taskId, "task-2");
+  assert.throws(() => jobs.getJob("task-2", "job-1", { ...caller, nativeSessionId: "unknown" }), /Session|runtime/i);
+  assert.throws(() => jobs.cancelJob("task-2", "job-1", now, caller), /Task|scope|outside/i);
 });

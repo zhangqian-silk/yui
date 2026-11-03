@@ -12,7 +12,7 @@ import type {
   DurableJobStep
 } from "../job/durableJob.js";
 import type { DurableJobCaller } from "./jobControl.js";
-import { resolveJobCaller } from "../task/taskAuthority.js";
+import { resolveJobCaller, resolveJobReadCaller } from "../task/taskAuthority.js";
 import {
   callFileTaskController,
   type FileControllerClientOptions
@@ -194,7 +194,7 @@ export function createControllerIntegrationJobPort(
       return job;
     },
     async getJob(taskId, jobId) {
-      return getDurableJob(home, taskId, jobId, resolveJobCaller(clientOptions.environment, taskId), clientOptions);
+      return getDurableJob(home, taskId, jobId, resolveJobReadCaller(clientOptions.environment, taskId), clientOptions);
     },
     async cancelJob(taskId, jobId) {
       // rr8/rr12: Bind the cancel request to the caller's managed identity.
