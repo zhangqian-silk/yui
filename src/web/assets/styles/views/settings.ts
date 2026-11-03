@@ -197,6 +197,45 @@ export const SETTINGS_STYLES = `
 .agent-config-more>summary .agent-config-count{flex:0 0 auto}
 .agent-config-more>summary h3{flex:0 0 auto}
 .agent-inspector-form[data-dirty=false] .agent-live-ack{display:none}
+.agent-field-grid-compact>.settings-field[data-field=workspace]{grid-column:1/-1}
+/* "Apply a Profile template…" is a row like the collapsed groups; it opens a dialog. */
+.agent-profile-more{padding:0}
+.access-row-action{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:0;border:0;background:none;color:var(--ink-3);font:inherit;text-align:left;cursor:pointer}
+.access-row-action::after{content:"›";flex:none;margin-left:auto;color:var(--ink-3);font-size:18px;line-height:1}
+.access-row-action-title{flex:0 0 auto;font-size:var(--fs-2xs);font-weight:650;letter-spacing:.04em}
+.access-row-action:hover .access-row-action-title{color:var(--ink)}
+.access-row-action:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--r-sm)}
+.access-row-action:disabled{cursor:default;opacity:.6}
+.profile-dialog{width:min(620px,calc(100vw - 24px));max-height:calc(100dvh - 24px);padding:0;border:1px solid var(--line-2);border-radius:var(--r-lg);background:var(--surface);color:var(--ink);box-shadow:var(--shadow-2)}
+.profile-dialog::backdrop{background:rgba(0,0,0,.45)}
+.profile-dialog[open]{display:flex;flex-direction:column;gap:12px;padding:18px 20px;overflow:auto}
+.profile-dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.profile-dialog-head h2{font-size:var(--fs-md);font-weight:650}
+.profile-dialog-head p{margin:3px 0 0;color:var(--ink-3);font-size:var(--fs-xs)}
+.profile-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,170px),1fr));gap:8px}
+.profile-option{display:grid;gap:3px;align-content:start;min-width:0;padding:10px 12px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface);color:var(--ink-2);font:inherit;text-align:left;cursor:pointer;transition:border-color var(--t-fast),background var(--t-fast)}
+.profile-option strong{color:var(--ink);font-size:var(--fs-sm);font-weight:600}
+.profile-option code:empty{display:none}
+.profile-option code{color:var(--ink-2);font-size:var(--fs-2xs);overflow-wrap:anywhere}
+.profile-option small{color:var(--ink-3);font-size:var(--fs-2xs);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.profile-option:hover:not(:disabled){border-color:var(--accent-line)}
+.profile-option[data-selected=true]{border-color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent)}
+.profile-option:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.profile-option:disabled{cursor:not-allowed;opacity:.55}
+.profile-option-reason{color:var(--warn)!important}
+.profile-status{margin:0;color:var(--ink-2);font-size:var(--fs-xs)}
+.profile-dialog>.profile-status:empty{display:none}
+.profile-dialog .settings-profile-preview{display:grid;gap:8px}
+.profile-dialog .settings-profile-diff{border:1px solid var(--line);border-radius:var(--r-sm);border-collapse:separate;border-spacing:0;overflow:hidden}
+.profile-dialog .settings-profile-diff th,.profile-dialog .settings-profile-diff td{padding:7px 10px}
+.profile-dialog .settings-profile-diff tr:last-child>*{border-bottom:0}
+.profile-dialog .settings-profile-diff pre{margin:0;font-size:var(--fs-2xs)}
+.profile-copy-note{margin:0;color:var(--ink-3);font-size:var(--fs-2xs)}
+.profile-dialog-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding-top:4px;border-top:1px solid var(--line)}
+.profile-dialog-foot .spacer{flex:1 1 auto}
+.profile-ack{display:flex;gap:8px;align-items:flex-start;flex:1 1 100%;color:var(--ink-2);font-size:var(--fs-xs);line-height:1.45}
+.profile-ack[hidden]{display:none}
+@media(max-width:520px){.profile-dialog[open]{padding:14px}.profile-dialog-foot .btn{flex:1 1 auto}}
 .settings-field>.field{gap:5px;min-width:0}
 .settings-field label.field>span{color:var(--ink-2);font-size:var(--fs-xs);font-weight:550}
 .agent-field-help{margin:0;color:var(--ink-3)!important;font-size:var(--fs-2xs)!important;line-height:1.45!important}
