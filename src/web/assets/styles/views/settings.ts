@@ -124,7 +124,7 @@ export const SETTINGS_STYLES = `
 .agent-config-section.agent-config-more{padding:0;gap:0}
 .agent-config-more>summary{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:44px;padding:0;cursor:pointer;list-style:none}
 .agent-config-more>summary::-webkit-details-marker{display:none}
-.agent-config-more>summary::after{content:"";width:7px;height:7px;margin-left:auto;border-right:1.5px solid var(--ink-3);border-bottom:1.5px solid var(--ink-3);transform:rotate(45deg) translateY(-2px);transition:transform var(--t-fast)}
+.agent-config-more>summary::after{content:"";flex:none;width:7px;height:7px;margin-left:auto;border-right:1.5px solid var(--ink-3);border-bottom:1.5px solid var(--ink-3);transform:rotate(45deg) translateY(-2px);transition:transform var(--t-fast)}
 .agent-config-more[open]>summary::after{transform:rotate(225deg) translateY(-1px)}
 .agent-config-more>summary h3{margin:0}
 .agent-config-more>summary:hover h3{color:var(--ink)}
@@ -137,6 +137,8 @@ export const SETTINGS_STYLES = `
   .access-derived-row{grid-template-columns:minmax(0,1fr)}
   .access-detail-head{padding:10px 14px 12px}
   .agent-inspector-canvas{padding:4px 14px 16px}
+  .agent-config-more>summary{flex-wrap:wrap;row-gap:2px;padding:9px 0}
+  .agent-config-more>summary .agent-config-hint{order:3;flex:1 1 100%;white-space:normal}
 }
 
 .agent-inspector{min-width:0;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);overflow:clip}
@@ -174,6 +176,27 @@ export const SETTINGS_STYLES = `
 .agent-field-grid>.settings-field>.agent-field-help{order:4;flex:1 1 100%;display:none}
 .agent-field-grid>.settings-field:focus-within>.agent-field-help{display:block}
 .agent-section-heading p,.agent-native-head p,.agent-native-note{display:none}
+/* Core block: short choices are one line each (label · control · reset), two
+   per row when the detail is wide enough. Help and the saved-value note stay
+   available on focus / hover instead of taking lines. */
+.agent-config-core{gap:10px;padding-top:14px}
+.agent-field-grid.agent-field-grid-compact{grid-template-columns:repeat(auto-fill,minmax(min(100%,250px),1fr));gap:8px 22px}
+.agent-field-grid-compact>.settings-field{display:grid;grid-template-columns:64px minmax(0,1fr) auto;align-items:center;gap:4px 10px}
+.agent-field-grid-compact>.settings-field>label.field>span{grid-column:1;color:var(--ink-3);font-size:var(--fs-xs);font-weight:500;line-height:1.3}
+.agent-field-grid-compact>.settings-field>label.field>:is(input,select,textarea){grid-column:2;height:34px;min-height:34px;font-size:var(--fs-sm)}
+.agent-field-grid-compact>.settings-field>small.settings-field-meta{display:none}
+.agent-field-grid-compact>.settings-field>.settings-reset{grid-column:3;grid-row:1;margin:0}
+.agent-field-grid-compact>.settings-field>:not(label):not(.settings-reset){grid-column:2/-1}
+.agent-field-grid-compact>.settings-field>.settings-actions:not(:empty){justify-content:flex-start}
+.agent-capability-inline{display:grid;gap:6px;padding:0;border:0}
+.agent-capability-line{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 12px}
+.agent-capability-line>.agent-capability-info{flex:1 1 220px;margin:0}
+.agent-capability-line .settings-actions{margin:0;gap:6px}
+.agent-capability-line .btn{height:30px;font-size:var(--fs-xs)}
+.agent-config-hint{flex:1 1 auto;min-width:0;color:var(--ink-4);font-size:var(--fs-2xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-config-more>summary .agent-config-count{flex:0 0 auto}
+.agent-config-more>summary h3{flex:0 0 auto}
+.agent-inspector-form[data-dirty=false] .agent-live-ack{display:none}
 .settings-field>.field{gap:5px;min-width:0}
 .settings-field label.field>span{color:var(--ink-2);font-size:var(--fs-xs);font-weight:550}
 .agent-field-help{margin:0;color:var(--ink-3)!important;font-size:var(--fs-2xs)!important;line-height:1.45!important}
