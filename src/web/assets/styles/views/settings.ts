@@ -165,9 +165,9 @@ export const SETTINGS_STYLES = `
 .agent-field-grid>.settings-field{display:flex;flex-wrap:wrap;align-items:baseline;align-content:flex-start;gap:6px 10px;padding:0;border:0}
 .agent-field-grid>.settings-field>*{min-width:0}
 .agent-field-grid>.settings-field>label.field{display:contents}
-.agent-field-grid>.settings-field>label.field>span{order:0;flex:0 1 auto}
+.agent-field-grid>.settings-field>label.field>span{order:0;flex:0 1 auto;overflow-wrap:anywhere}
 .agent-field-grid>.settings-field>small{order:4;flex:1 1 100%}
-.agent-field-grid>.settings-field>small.settings-field-meta{order:1;flex:1 1 auto;color:var(--ink-4);font-size:var(--fs-2xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-field-grid>.settings-field>small.settings-field-meta{order:1;flex:1 1 0;color:var(--ink-4);font-size:var(--fs-2xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .agent-field-grid>.settings-field>.settings-reset{order:2;flex:0 0 auto;margin:0 0 0 auto;color:var(--ink-3);font-size:var(--fs-2xs)}
 .agent-field-grid>.settings-field>label.field>:is(input,select,textarea),.agent-field-grid>.settings-field>label.field>.settings-custom,.agent-field-grid>.settings-field>:not(label):not(small):not(.settings-reset):not(.agent-field-help){order:3;flex:1 1 100%}
 .agent-field-grid>.settings-field>small:empty,.agent-field-grid>.settings-field>.settings-actions:empty{display:none}
