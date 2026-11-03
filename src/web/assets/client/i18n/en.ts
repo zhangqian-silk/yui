@@ -797,6 +797,7 @@ export const EN = {
   "settings.default": "Default after reset",
   "settings.inherit": "Inherit / not configured",
   "settings.reset": "Reset this field when saving",
+  "settings.resetShort": "Reset",
   "settings.unsaved": "Unsaved changes",
   "settings.save": "Save group",
   "settings.compare": "Read current values / compare",
