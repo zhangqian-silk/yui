@@ -65,6 +65,8 @@ export type AgentEndpointConfiguration = Readonly<{
 }>;
 
 export interface AgentEndpoint {
+  readonly contextEpoch?: number;
+  checkQuiescent(): Promise<boolean>;
   readonly nativeAccess?: import("./codexNativeAccess.js").CodexNativeAccess;
   readonly publicReply?: import("./publicReply.js").PublicReply;
   readonly appliedGeneratedTitle?: string;
@@ -199,6 +201,11 @@ type EventValue =
   | Readonly<{ type: "diagnostic"; value: StructuredProviderDiagnostic }>;
 
 class BuiltinAgentEndpoint implements AgentEndpoint {
+  get contextEpoch() { return this.driver.contextEpoch; }
+  async checkQuiescent(): Promise<boolean> {
+    if (!this.driver.checkQuiescent) throw new Error("This native Endpoint cannot prove background quiescence.");
+    return this.driver.checkQuiescent();
+  }
   get nativeAccess() { return this.driver.nativeAccess; }
   get appliedGeneratedTitle() { return this.driver.appliedGeneratedTitle; }
   get ownedProcessId(): number | undefined { return this.driver.ownedProcessId; }

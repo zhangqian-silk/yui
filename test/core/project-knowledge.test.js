@@ -183,7 +183,8 @@ test(`1.${minor} migration preserves knowledge, frozen Context and input intent 
       ["1.22", "1.23", "global-shell-scripts"],
       ["1.23", "1.24", "task-read-revisions"],
       ["1.24", "1.25", "role-instance-code-session-titles"],
-      ["1.25", "1.26", "codex-workspace-temp-exclusions"]
+      ["1.25", "1.26", "codex-workspace-temp-exclusions"],
+      ["1.26", "1.27", "host-upgrade-lifecycle-signals"]
     ];
     assert.deepEqual(storageMinorUpgradePlan(`1.${minor}`).map(step =>
       [step.fromVersion, step.toVersion, step.name]), expectedChain.slice(minor));
@@ -191,7 +192,7 @@ test(`1.${minor} migration preserves knowledge, frozen Context and input intent 
     const inputBefore = database.prepare("SELECT payload FROM messages").get();
     assert.throws(() => new SqliteTaskStore(home), /current|upgrade|storage/i);
     applySqliteMinorUpgrades(database, home);
-    assert.equal(inspectSqliteSchema(database).currentVersion, "1.26");
+    assert.equal(inspectSqliteSchema(database).currentVersion, "1.27");
     assert.deepEqual(database.prepare("SELECT payload,digest FROM context_snapshots").get(), snapshotBefore);
     assert.deepEqual(database.prepare("SELECT payload FROM messages").get(), inputBefore);
   } finally { database.close(); }

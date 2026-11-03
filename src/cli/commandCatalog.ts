@@ -1385,8 +1385,8 @@ export const ROOT_COMMAND = buildNode({
     {
       name: "update", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Install the latest or an exact published Yui version after storage preflight.",
-      usage: "yui update [--version <exact-version>]",
-      options: ["--version"]
+      usage: "yui update [--version <exact-version>] | --hosts-status",
+      options: ["--version", "--hosts-status"]
     },
     {
       name: "upgrade", discovery: { surface: "public", audiences: ["public","operator"] },

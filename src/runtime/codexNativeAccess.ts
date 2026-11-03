@@ -28,7 +28,7 @@ const READS = new Set([
   "config/read", "configRequirements/read", "model/list", "collaborationMode/list",
   "experimentalFeature/list", "skills/list", "hooks/list", "mcpServerStatus/list", "account/read",
   "account/rateLimits/read", "modelProvider/capabilities/read", "permissionProfile/list",
-  "thread/read", "thread/turns/list", "thread/items/list", "thread/goal/get"
+  "thread/read", "thread/turns/list", "thread/items/list", "thread/goal/get", "thread/backgroundTerminals/list"
 ]);
 const REQUESTS = new Set([
   "item/commandExecution/requestApproval", "item/fileChange/requestApproval",

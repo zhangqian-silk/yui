@@ -2223,6 +2223,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       let mailbox = store.getWorkMailbox(target);
       const disposition = runtimeCleanupDisposition(mailbox);
       if (mailbox === null || disposition === null) return false;
+      if (disposition === "upgrade-host") return false;
       if (mailbox.processing !== null) {
         if (
           disposition !== "replace-session" && !mailbox.processing.batch.reasons.every(isRuntimeCleanupReason)

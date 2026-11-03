@@ -62,6 +62,7 @@ import {
 } from "../coordination/workMailbox.js";
 import {
   hasRuntimeCleanupObligation,
+  runtimeCleanupDisposition,
   type RuntimeLifecycleTarget,
   type RuntimeRoleOwner
 } from "../runtime/lifecycleReservation.js";
@@ -573,6 +574,12 @@ async function processSelectedRoleRuntimeCleanups(
     const owner = runtimeOwner(target);
     const batchId = runtimeLifecycleBatchIdentity(target, mailbox);
     if (hasRuntimeCleanupObligation(mailbox)) {
+      // Upgrade is a graceful, exact-identity operation, never the destructive
+      // cleanup path. Its coordinator owns drain/restore; retain backpressure.
+      if (runtimeCleanupDisposition(mailbox) === "upgrade-host") {
+        markFailedRuntimeTarget(failedRoles, target);
+        continue;
+      }
       try {
         if (lifecycleHost === undefined) {
           throw new Error("Role runtime cleanup host is unavailable.");

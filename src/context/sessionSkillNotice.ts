@@ -1,5 +1,9 @@
 import { checkSessionSkills } from "./sessionBootstrapManifest.js";
 
+/** Per-input provenance, not a model memory/load receipt. A detached client
+ * cannot inherit the Host check merely by reusing the same conversation. */
+export const HOST_SKILL_CHECK_MARKER = "<!-- yui:skills-checked -->";
+
 /** Host-local last accepted metadata, never a model loading/memory receipt.
  * A new Host/attachment starts cold. No durable schema or input replay is added. */
 export function createSessionSkillNotice(home: string) {
@@ -12,7 +16,7 @@ export function createSessionSkillNotice(home: string) {
       text: string,
       environment: Readonly<Record<string, string | undefined>>,
       sessionKey: string,
-      options: { recovery?: boolean } = {}
+      options: { recovery?: boolean; contextEpoch?: number } = {}
     ): { text: string; commit(): void } {
       const manifest = environment.YUI_SESSION_MANIFEST;
       if (manifest === undefined) return { text, commit() {} };
@@ -24,7 +28,7 @@ export function createSessionSkillNotice(home: string) {
         invalidate();
         throw error; // Do not submit business input with an invalid current installation.
       }
-      const key = JSON.stringify([sessionKey, manifest, current.roleProfileRef]);
+      const key = JSON.stringify([sessionKey, manifest, current.roleProfileRef, options.contextEpoch]);
       const skills = new Map(current.skills.map(skill => [skill.id, JSON.stringify({
         id: skill.id, path: skill.path, version: skill.version
       })]));
@@ -35,14 +39,15 @@ export function createSessionSkillNotice(home: string) {
       // Every input is checked, but only a lifecycle/metadata event needs an
       // instruction-loading notice. This marker distinguishes Host-mediated
       // input from an unmediated client without restating the operating manual.
-      const lines = ["Yui Host checked current Skills; no Agent check needed."];
+      const lines = [HOST_SKILL_CHECK_MARKER];
       if (cold || changed.length > 0 || removed) {
         lines.push(`Yui Session Manifest: ${manifest}`,
+          "The yui:skills-checked transport marker means this input passed the Host's current Skill check; do not repeat or narrate that check. It is not proof of retained instructions. Inputs without this marker or an explicit Host check notice still require the Manifest check fallback.",
           cold
             ? `First input or recovered attachment: read the exact Role profile at ${current.roleProfileRef.path} and the full current listed Skill entry points. Follow references only for the action you are taking, not to restore every previously used procedure. A Task role-profile projection is not this profile.`
             : "Skill metadata changed: load affected entries and applicable references; retain other complete instructions.",
           `Current Skill pointers: [${(removed ? [...skills.values()] : changed).join(",")}]`,
-          "Metadata is not a loading receipt. Read each required file through EOF; if output is truncated, finish the missing ranges. Recover missing instructions for the current task, not the whole manual.");
+          "Metadata is not a loading receipt. Read each required file through EOF; if output is truncated, finish the missing ranges. Recover missing instructions for the current task, not the whole manual. Keep routine role, Skill-version and empty-inbox checks internal; report only business progress or actionable failures.");
       }
       const preparedGeneration = generation;
       return {

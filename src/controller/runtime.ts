@@ -132,6 +132,10 @@ import {
   FileSchedulerStoreAdapter
 } from "./fileSchedulerStoreAdapter.js";
 import { deliverGlobalInputs } from "./globalInputDelivery.js";
+import { HostUpgradeCoordinator } from "./hostUpgrade.js";
+import { AGENT_HOST_IMPLEMENTATION } from "../runtime/agentHostImplementation.js";
+import { builtinAgentEndpointImplementation } from "../runtime/agentEndpointIdentity.js";
+import { sendAgentHostUpgradeControl } from "../runtime/agentHost.js";
 import { authorizeJobStart } from "./jobControl.js";
 import { authorizeGlobalJobStart, createJobDefinitionControl } from "./jobDefinitionControl.js";
 import { reconcileTaskDelegation } from "./jobTaskDelegationControl.js";
@@ -455,6 +459,27 @@ async function createFileTaskControllerRuntime(
         runtimeIsolation
       }
     );
+    const hostUpgrades = new HostUpgradeCoordinator(store, AGENT_HOST_IMPLEMENTATION, {
+      inspect: owner => inspectAgentHost({ home, ...owner }),
+      control: async (owner, type, request) => {
+        const result = await sendAgentHostUpgradeControl({
+          home, ...owner, control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type, ...request }
+        });
+        if (result.outcome === "rejected") throw new Error(result.failure?.detail ?? "Host upgrade control rejected.");
+        return result.snapshot;
+      },
+      hostState: async owner => (await sessionHost.inspectOwner(owner)).state,
+      endpoint: builtinAgentEndpointImplementation,
+      restore: async (owner, request, effective, assertCurrent) => {
+        const workspace = owner.scope === "task" ? currentDesiredManagedWorkspace(store, owner.taskId, owner.roleName) : undefined;
+        await launchCoordinator.prepare({
+          owner, agentId: request.agentId, adapterId: request.adapterId, effective,
+          workspace: effective.workspace.root, mode: "resume", nativeSessionId: request.nativeSessionId,
+          ...(workspace === undefined ? {} : { managedWorkspace: workspace }),
+          ...(effective.executionAuthority === "planning" ? { workspaceFree: true } : {})
+        }, assertCurrent);
+      }
+    });
     // One inventory scan per scheduler pass. When the inventory worker is active
     // the blocking /proc scan runs there; otherwise it runs on the main thread.
     const scanInventory = (panes: readonly RuntimePaneFact[]) => inventoryClient !== undefined
@@ -760,7 +785,13 @@ async function createFileTaskControllerRuntime(
         ? workerSchedulerStore(schedulerStore, asyncStoreClient!)
         : schedulerStore,
       delivery,
-      (method, params) => method === "task.role-capabilities"
+      (method, params) => method === "runtime.host-upgrade-status"
+        ? hostUpgrades.status().then(hosts => ({ hosts }) as unknown as JsonValue)
+        : method === "runtime.upgrade-hosts"
+        ? ((params as { generation?: unknown }).generation === AGENT_HOST_IMPLEMENTATION.generation
+          ? hostUpgrades.request().then(hosts => ({ hosts }) as unknown as JsonValue)
+          : Promise.reject(new Error("Host upgrade target is not this Controller's verified loaded generation.")))
+        : method === "task.role-capabilities"
         ? readTaskAgentCapabilities(store, catalogs, params)
         : method === "web.start" || method === "web.stop" || method === "web.status"
           ? web.dispatch(method, params) : lifecycleDispatcher(method, params),
@@ -807,6 +838,11 @@ async function createFileTaskControllerRuntime(
           ? await asyncStoreClient!.invokeObserver("reconcileMessageHealth", [now, messageHealthHosts]) as MessageHealthSnapshot
           : reconcileMessageHealth(store, now, messageHealthHosts),
         hostTerminalRecovery: async () => {
+          const upgrades = await hostUpgrades.reconcile();
+          for (const entry of upgrades) {
+            if (entry.status === "failed" || entry.status === "unknown") options.onError?.(
+              new Error(`Host upgrade ${entry.owner.roleName}/${entry.nativeSessionId}: ${entry.detail}`));
+          }
           messageHealthHosts = [];
           messageHealthHosts = await recoverTaskHostTerminals(home, store, options.onError ?? (() => undefined));
         },

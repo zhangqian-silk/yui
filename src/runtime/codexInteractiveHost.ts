@@ -8,6 +8,7 @@ import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 import type { AgentHostLaunchPayload } from "./launchBroker.js";
 import { openCodexInteractiveConnection } from "./structuredProviderHost.js";
 import { createSessionSkillNotice } from "../context/sessionSkillNotice.js";
+import { isNativeContextRecovery } from "./contextRecovery.js";
 
 /**
  * Keep the native TUI and its transparent App Server attachment in one pane.
@@ -136,6 +137,8 @@ export async function runCodexInteractiveHost(
     });
     connection.onMessage((message) => {
       try {
+        if (snapshot.nativeSessionId !== undefined
+          && isNativeContextRecovery("codex", snapshot.nativeSessionId, message)) skillNotice.invalidate();
         if (message.method === undefined && (typeof message.id === "string" || typeof message.id === "number")) {
           const pending = pendingNotices.get(message.id);
           if (pending !== undefined) {

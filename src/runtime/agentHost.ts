@@ -56,6 +56,7 @@ import type { AgentHostEventDelivery } from "./agentHostProtocol.js";
 import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 import { AGENT_HOST_IMPLEMENTATION } from "./agentHostImplementation.js";
 import { closeAgentHostEndpoints } from "./agentHostCleanup.js";
+import { createHostUpgradeGate, type HostUpgradeFence, type HostUpgradeObservation } from "./hostUpgradeGate.js";
 import {
   readAgentRunConfigurationObservation,
   unknownAgentRunConfiguration,
@@ -170,6 +171,7 @@ export type AgentHostCancelControl = Readonly<{
 }>;
 
 export type AgentHostControl =
+  | AgentHostUpgradeControl
   | AgentHostReconcileTurnControl
   | AgentHostLaunchControl
   | AgentHostStatusControl
@@ -178,6 +180,11 @@ export type AgentHostControl =
   | AgentHostCancelControl
   | AgentHostSetAuthorityControl
   | AgentHostNativeControl;
+
+export type AgentHostUpgradeControl = HostUpgradeFence & Readonly<{
+  protocol: typeof AGENT_HOST_CONTROL_PROTOCOL;
+  type: "prepare-upgrade" | "finish-upgrade";
+}>;
 
 export type AgentHostNativeControl = Readonly<{
   protocol: typeof AGENT_HOST_CONTROL_PROTOCOL;
@@ -224,6 +231,7 @@ export type AgentHostSnapshot = Readonly<{
   endpointImplementation?: ImplementationRef;
   /** Loaded Host bridge, distinct from the native Endpoint and disk install. */
   hostImplementation?: ImplementationRef;
+  hostUpgrade?: HostUpgradeObservation;
   /** Additive v1 operations. Missing advertisement means support is unknown. */
   controlCapabilities?: readonly string[];
   /** Live-only status reading, rebuilt on each query and never persisted. */
@@ -348,6 +356,8 @@ export async function runAgentHost(input: Readonly<{
   }
   let session: AgentEndpoint | undefined;
   const skillNotice = createSessionSkillNotice(input.home);
+  const upgrade = createHostUpgradeGate();
+  let upgradeDetaching = false;
   // This process really holds the Endpoint code its Session runs on. The lease
   // spans the Session's Turns, so installing a newer generation does not change
   // the implementation under a Session that is still using this one.
@@ -755,6 +765,9 @@ export async function runAgentHost(input: Readonly<{
     launched: AgentHostLaunchPayload
   ): void => {
     void providerSession.waitForExit().then((result) => enqueueSerialized(async () => {
+      // A drained attachment is not an ended native Session and must not
+      // trigger reconnect, cancellation, or session lifecycle replacement.
+      if (upgradeDetaching) return;
       const ownsCurrentSession = session === providerSession;
       const currentPayload = ownsCurrentSession
         ? activeRunPayload ?? lastTerminalPayload ?? sessionPayload ?? launched : launched;
@@ -1055,6 +1068,7 @@ export async function runAgentHost(input: Readonly<{
     request: AgentHostSubmitRunControl,
     operation: { failure?: ProviderDeliveryFailure }
   ): Promise<AgentHostSnapshot> => {
+    if (upgrade.fenced) throw new ProviderTurnBusyError("Host upgrade admission is fenced.", request.run.attemptId);
     if (session === undefined || sessionPayload === undefined) {
       throw new Error("Agent Host has no live Provider Conversation.");
     }
@@ -1190,7 +1204,7 @@ export async function runAgentHost(input: Readonly<{
       // authority and Session identity before this native write.
       const notice = skillNotice.prepare(
         recoveryInput?.text ?? request.run.boundedText, activeRunPayload.environment,
-        session.nativeSessionId, { recovery: recoveryInput !== undefined }
+        session.nativeSessionId, { recovery: recoveryInput !== undefined, contextEpoch: session.contextEpoch }
       );
       const receipt = endpointReceipt(await session.submit({
         ...request.run,
@@ -1328,7 +1342,8 @@ export async function runAgentHost(input: Readonly<{
     }
     try {
       await assertHostExecutionEnvironment(input.home, sessionPayload, session.nativeSessionId);
-      const notice = skillNotice.prepare(request.run.boundedText, sessionPayload.environment, session.nativeSessionId);
+      const notice = skillNotice.prepare(request.run.boundedText, sessionPayload.environment, session.nativeSessionId,
+        { contextEpoch: session.contextEpoch });
       const receipt = endpointReceipt(await session.steer({
         ...request.run,
         boundedText: notice.text,
@@ -1428,6 +1443,62 @@ export async function runAgentHost(input: Readonly<{
   };
 
   const handleControl = async (request: AgentHostControl): Promise<AgentHostControlResult> => {
+    if (request.type === "prepare-upgrade" || request.type === "finish-upgrade") {
+      upgrade.request(request, {
+        nativeSessionId: snapshot.nativeSessionId ?? "",
+        processInstanceId: snapshot.processInstanceId ?? "",
+        hostGeneration: AGENT_HOST_IMPLEMENTATION.generation
+      });
+      if (request.type === "prepare-upgrade") {
+        // Fence synchronously, then join the same lane as submission and
+        // terminal publication. No check-then-submit gap on Host-owned paths.
+        await enqueueSerialized(async () => {
+          upgrade.request(request, {
+            nativeSessionId: snapshot.nativeSessionId ?? "", processInstanceId: snapshot.processInstanceId ?? "",
+            hostGeneration: AGENT_HOST_IMPLEMENTATION.generation
+          });
+          await upgrade.drain({
+            busy: session === undefined || activeRunPayload !== undefined || activeNativeTurnId !== undefined
+              || snapshot.state !== "idle" || nativeTui !== undefined || nativeOpening !== undefined
+              || modelChanging || session.inspect().activeNativeTurnId !== undefined
+              || session.inspect().submissions.some(s => s.disposition.status === "unknown"
+                || s.disposition.status === "pending" && s.disposition.reason === "submitting"),
+            events: structuredProviderEventDelivery(input.home, sessionPayload?.environment ?? payload.environment,
+              snapshot.nativeSessionId),
+            checkQuiescent: async () => {
+              if (authority?.owner !== "controller" || conversationRecoverability !== "recoverable") {
+                throw new Error("Upgrade requires an exactly resumable controller-owned native Session.");
+              }
+              return await session!.checkQuiescent()
+                && session!.inspect().activeNativeTurnId === undefined;
+            },
+            release: async () => {
+              const events = structuredProviderEventDelivery(input.home, sessionPayload!.environment, snapshot.nativeSessionId);
+              if (events.pending !== 0 || events.unpersisted !== 0 || events.pendingTerminals !== 0 || events.failure
+                || session!.inspect().activeNativeTurnId !== undefined
+                || session!.nativeSessionId !== request.nativeSessionId
+                || session!.processInstanceId !== request.processInstanceId) {
+                throw new Error("Native execution or event delivery changed before Endpoint release.");
+              }
+              upgradeDetaching = true;
+              session!.detach();
+              await endpointLease?.release();
+              const drain = await endpointOwner.stop(endpointAdapterId!, ENDPOINT_DRAIN_TIMEOUT_MS);
+              if (!drain.quiescent) throw new Error("Endpoint release did not prove owned client/implementation drain.");
+            }
+          });
+        });
+      } else {
+        if (upgrade.observation?.state !== "drained") throw new Error("Host has not drained.");
+        // The Controller persists the drain receipt before this request.
+        // Delay close until this connection has had a chance to receive its ACK.
+        setImmediate(() => { hostStopRequested = true; stopResolve(); });
+      }
+      return controlResult("accepted", { ...snapshot, hostUpgrade: upgrade.observation });
+    }
+    if (upgrade.fenced && ["launch", "submit-turn", "steer-turn", "set-authority", "native-open", "native-model"].includes(request.type)) {
+      return controlResult("busy", { ...snapshot, hostUpgrade: upgrade.observation });
+    }
     if (request.type === "native-model") {
       return enqueueSerialized(async () => {
         const current = session;
@@ -1567,9 +1638,10 @@ export async function runAgentHost(input: Readonly<{
         return requestBytes <= 8000;
       }).slice(0, 8);
       return controlResult("status", session === undefined
-        ? snapshot
+        ? { ...snapshot, hostUpgrade: upgrade.observation }
         : validateSnapshot({
             ...snapshot,
+            hostUpgrade: upgrade.observation,
             nativeTui: !!nativeTui,
             ...(nativeRequests === undefined ? {} : { nativeRequests,
               nativeRequestsOmitted: nativeRequests.length !== session.nativeAccess!.requests.length }),
@@ -1901,6 +1973,12 @@ export async function sendAgentHostNativeControl(input: Readonly<{
   return sendAgentHostControl(input);
 }
 
+export async function sendAgentHostUpgradeControl(input: Readonly<{
+  home: string; scope: string; taskId?: string; roleName: string; control: AgentHostUpgradeControl;
+}>): Promise<AgentHostControlResult> {
+  return sendAgentHostControl(input);
+}
+
 export async function inspectAgentHost(input: Readonly<{
   home: string;
   scope: string;
@@ -2131,7 +2209,8 @@ export async function openAgentHostControl(
               hostImplementation: AGENT_HOST_IMPLEMENTATION,
               controlCapabilities: payload.providerControl === undefined ? ["status"] : [
                 "status", "launch", "submit-turn", "steer-turn", "cancel", "set-authority",
-                "native-open", "native-respond", "native-model", "reconcile-turn"
+                "native-open", "native-respond", "native-model", "reconcile-turn",
+                ...(payload.providerControl.adapterId === "codex" ? ["prepare-upgrade", "finish-upgrade"] : [])
               ],
               ...(!["task", "global"].includes(payload.environment.YUI_SESSION_SCOPE ?? "") ? {} : {
                 eventDelivery: structuredProviderEventDelivery(home, payload.environment, result.snapshot.nativeSessionId)
@@ -2297,6 +2376,12 @@ function validateControl(control: AgentHostControl): AgentHostControl {
     throw new Error("Agent Host control protocol is invalid.");
   }
   if (control.type === "status") return Object.freeze({ ...control });
+  if (control.type === "prepare-upgrade" || control.type === "finish-upgrade") {
+    for (const key of ["requestId", "nativeSessionId", "processInstanceId", "hostGeneration"] as const) {
+      validateIdentity(control[key], key);
+    }
+    return Object.freeze({ ...control });
+  }
   if (control.type === "reconcile-turn") {
     validateIdentity(control.nativeSessionId, "native Session id");
     validateIdentity(control.attemptId, "Provider input attempt id");
@@ -2414,6 +2499,12 @@ function validateSnapshot(snapshot: AgentHostSnapshot): AgentHostSnapshot {
     || snapshot.controlCapabilities.some(value => typeof value !== "string"
       || value.length === 0 || value.length > 64 || value.includes("\0")))) {
     throw new Error("Agent Host control capability advertisement is invalid.");
+  }
+  if (snapshot.hostUpgrade !== undefined) {
+    for (const key of ["requestId", "nativeSessionId", "processInstanceId", "hostGeneration"] as const) {
+      validateIdentity(snapshot.hostUpgrade[key], key);
+    }
+    if (!["waiting", "drained", "failed"].includes(snapshot.hostUpgrade.state)) throw new Error("Invalid Host drain state.");
   }
   const authorityFields = [
     snapshot.authorityEpoch,

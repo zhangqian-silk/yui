@@ -529,7 +529,7 @@ try {
     const initialInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     assert.ok(initialInputs.some(row => JSON.stringify(row.input).includes("Current Skill pointers:")),
       "Actual Host-to-Provider input carries current pointers on first entry.");
-    assert.ok(initialInputs.every(row => JSON.stringify(row.input).includes("Yui Host checked current Skills")),
+    assert.ok(initialInputs.every(row => JSON.stringify(row.input).includes("<!-- yui:skills-checked -->")),
       "Actual managed submissions perform engineering checks, not just notification rendering.");
     assert.equal(json("task", "show", task.id).task.status, "active");
     assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
@@ -717,7 +717,7 @@ try {
     const deliveredInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     assert.ok(deliveredInputs.some(row => {
       const input = JSON.stringify(row.input);
-      return input.includes("Yui Host checked current Skills") && !input.includes("Current Skill pointers:");
+      return input.includes("<!-- yui:skills-checked -->") && !input.includes("Current Skill pointers:");
     }), "A later actual Host Turn omits unchanged Skill metadata without skipping its check.");
     phase("task/session/archive");
 
@@ -884,7 +884,24 @@ try {
     const beforeHostRestart = listItems("role", "message", "list", "operator");
     await waitFor(async () => (await inspectAgentHost(target)).state === "idle",
       "Only an idle fixture Host may be restarted.");
-    process.kill(hostPid, "SIGTERM");
+    const { AGENT_HOST_IMPLEMENTATION } =
+      await import(pathToFileURL(join(root, "dist/runtime/agentHostImplementation.js")).href);
+    const upgradeStatus = await callFileTaskController(yuiHome, "runtime.upgrade-hosts",
+      { generation: AGENT_HOST_IMPLEMENTATION.generation }, { environment, requestTimeoutMs: 15_000 });
+    assert.ok(upgradeStatus.hosts.some(entry => entry.owner.scope === "global"
+      && entry.owner.roleName === "operator" && entry.status === "current"
+      && entry.nativeSessionId === hostBefore.nativeSessionId),
+      "The real Controller verifies actual Host and Endpoint generations before reporting current.");
+    assert.match(runCli(cli, ["update", "--hosts-status"], environment), /global\/operator.*current/);
+    const { sendAgentHostUpgradeControl } =
+      await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
+    const exactHost = await inspectAgentHost(target);
+    const fence = { protocol: "yui-agent-host-control/v1", requestId: "fixture-idle-upgrade",
+      nativeSessionId: exactHost.nativeSessionId, processInstanceId: exactHost.processInstanceId,
+      hostGeneration: exactHost.hostImplementation.generation };
+    const drained = await sendAgentHostUpgradeControl({ ...target, control: { ...fence, type: "prepare-upgrade" } });
+    assert.equal(drained.snapshot.hostUpgrade.state, "drained");
+    await sendAgentHostUpgradeControl({ ...target, control: { ...fence, type: "finish-upgrade" } });
     await waitFor(() => processExited(hostPid), "Original fixture Host did not exit.");
     await callFileTaskController(yuiHome, "runtime.ensure-role-session",
       { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });

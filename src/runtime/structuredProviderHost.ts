@@ -47,6 +47,7 @@ import type {
 import { PROVIDER_ACCEPT_TIMEOUT_MS } from "./runtimeDeadlines.js";
 import { foldPublicReply, type PublicReply } from "./publicReply.js";
 import { createCodexNativeAccess, type CodexNativeAccess } from "./codexNativeAccess.js";
+import { isNativeContextRecovery } from "./contextRecovery.js";
 
 const CODEX_PROXY_HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -150,6 +151,10 @@ export type StructuredProviderDiagnostic = Readonly<{
 }>;
 
 export interface StructuredProviderSession {
+  /** Host-local explicit native compaction observations, not inferred memory. */
+  readonly contextEpoch?: number;
+  /** Read-only native proof, where available; never interrupts background work. */
+  checkQuiescent?(): Promise<boolean>;
   /** Last generated name this connection actually applied, not launch intent. */
   readonly appliedGeneratedTitle?: string;
   readonly nativeAccess?: CodexNativeAccess;
@@ -623,6 +628,19 @@ class ChildProcessDuplex extends Duplex {
 }
 
 class CodexStructuredProviderSession implements StructuredProviderSession {
+  contextEpoch = 0;
+  async checkQuiescent(): Promise<boolean> {
+    const snapshot = await this.runtime.readConversation(this.conversationId, { includeTurns: false });
+    if (snapshot.threadId !== this.conversationId || snapshot.status !== "idle"
+      || snapshot.activeTurnId !== undefined) return false;
+    const backgrounds = await this.nativeAccess.read("thread/backgroundTerminals/list", {
+      threadId: this.conversationId, limit: 1
+    });
+    if (!Array.isArray(backgrounds.data) || !("nextCursor" in backgrounds)) {
+      throw new Error("Native background execution response is invalid.");
+    }
+    return backgrounds.data.length === 0 && backgrounds.nextCursor === null;
+  }
   appliedGeneratedTitle: string | undefined;
   nativeAccess!: CodexNativeAccess;
   readonly #turnAttempts = new Map<string, string>();
@@ -798,6 +816,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
   ): StructuredProviderTurnTerminal | undefined {
       const method = typeof message.method === "string" ? message.method : "";
       const params = object(message.params) ?? {};
+      if (isNativeContextRecovery("codex", this.conversationId, message)) this.contextEpoch += 1;
       const threadId = optionalId(params.threadId);
       if (emit) this.publicReply = foldPublicReply(this.publicReply, this.conversationId, method, params);
       if (threadId !== this.conversationId) {
@@ -1058,6 +1077,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
 }
 
 class ClaudeStructuredProviderSession implements StructuredProviderSession {
+  contextEpoch = 0;
   readonly adapterId = "claude" as const;
   get ownedProcessId(): number | undefined { return this.child.pid; }
   #activeAttemptId: string | undefined;
@@ -1220,6 +1240,7 @@ class ClaudeStructuredProviderSession implements StructuredProviderSession {
     onAccepted: ((receipt: StructuredProviderTurnReceipt) => void) | undefined,
     onActivity: ((activity: StructuredProviderActivity) => void) | undefined
   ): void {
+    if (isNativeContextRecovery("claude", this.conversationId, message)) this.contextEpoch += 1;
     const goal = claudeActiveGoal(message, this.conversationId);
     if (goal !== undefined) {
       const key = JSON.stringify(goal === null ? null : {

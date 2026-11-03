@@ -64,11 +64,11 @@ export function withSessionContextPointer(
  * Unmediated/native clients retain the explicit diagnostic fallback. */
 export function sessionContextInstructions(manifestPath: string, digest?: string): string {
   return `Yui Session Manifest: ${manifestPath}${digest === undefined ? "" : ` (digest ${digest})`}. `
-    + "For inputs carrying the Yui Host Skill-check notice, engineering has checked current versions; do not repeat that check. "
+    + "For inputs carrying the yui:skills-checked transport marker or an explicit Yui Host Skill-check notice, engineering has checked current versions; do not repeat or narrate that check. "
     + `Otherwise run its contextProtocol.skillCheckCommand (fallback: ${SKILL_CHECK_COMMAND}). `
     + "On first entry or lost instructions, read the current applicable Skill entry points, then only references needed for the current action. "
     + "On change reload affected instructions. Compaction does not require restoring every previously used procedure. "
-    + "Preserve the Manifest Role profile; metadata never proves loading or memory.";
+    + "Preserve the Manifest Role profile; metadata never proves loading or memory. Keep routine role, version and empty-inbox checks internal.";
 }
 
 /** The caller must already pass the ordinary managed Session/CLI/Home checks.

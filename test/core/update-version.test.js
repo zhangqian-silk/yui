@@ -21,6 +21,21 @@ test("staged preflight retains structured failure diagnostics without admitting 
   assert.match(result.message, /registered Operator/);
 });
 
+test("Host-only update status is read-only and bypasses staging and activation", () => {
+  let output = "";
+  assert.ok(findCommandNode(["update"]).options.includes("--hosts-status"));
+  assert.equal(runUpdateCommand(["--hosts-status"], { YUI_HOME: "/unused/home" },
+    undefined, text => { output += text; }, {
+      stage: () => assert.fail("Status must not stage a package"),
+      hostStatus: home => {
+        assert.equal(home, "/unused/home");
+        return [{ owner: { scope: "global", roleName: "operator" },
+          nativeSessionId: "original", status: "waiting", detail: "native turn remains active" }];
+      }
+    }), 0);
+  assert.match(output, /original.*waiting.*native turn remains active/);
+});
+
 test("update accepts an exact version and retains target-owned preflight refusal", () => {
   assert.ok(findCommandNode(["update"]).options.includes("--version"));
   const calls = [];

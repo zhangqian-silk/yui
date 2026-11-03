@@ -10,7 +10,8 @@ const release = detectRunningRelease(fileURLToPath(import.meta.url));
 const modules = [
   "agentHost.js", "agentHostProtocol.js", "agentHostImplementation.js",
   "codexInteractiveHost.js", "../controller/structuredProviderObservation.js",
-  "../controller/runtimeEventInbox.js"
+  "../controller/runtimeEventInbox.js", "../context/sessionSkillNotice.js",
+  "../context/sessionBootstrapManifest.js", "../context/currentSkills.js", "contextRecovery.js", "hostUpgradeGate.js"
 ];
 export const AGENT_HOST_IMPLEMENTATION: ImplementationRef = Object.freeze({
   id: "yui.agent-host",

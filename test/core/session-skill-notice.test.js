@@ -47,8 +47,8 @@ test("Host checks live Skills without repeated model checks; only accepted notic
     const body = `business input ${index}`;
     const next = notice.prepare(body, env, "thread-1");
     assert.ok(next.text.endsWith(body), "Keep the business input verbatim.");
-    assert.ok(Buffer.byteLength(next.text) - Buffer.byteLength(body) <= 128,
-      "Ordinary input has a bounded check result, not loading procedures.");
+    assert.equal(next.text, `<!-- yui:skills-checked -->\n\n${body}`,
+      "Ordinary input carries transport provenance only, not a repeated natural-language notice.");
     next.commit();
   }
   writeFileSync(join(source, "VERSION"), "2\n");
@@ -60,6 +60,10 @@ test("Host checks live Skills without repeated model checks; only accepted notic
   changed.commit();
   assert.match(notice.prepare("new thread", env, "thread-2").text, /sample/);
   assert.match(notice.prepare("recovery", env, "thread-1", { recovery: true }).text, /sample/);
+  const compacted = notice.prepare("after compact", env, "thread-1", { contextEpoch: 1 });
+  compacted.commit();
+  assert.doesNotMatch(notice.prepare("same epoch", env, "thread-1", { contextEpoch: 1 }).text, /sample/);
+  assert.match(notice.prepare("next compact", env, "thread-1", { contextEpoch: 2 }).text, /sample/);
   notice.invalidate();
   changed.commit();
   assert.match(notice.prepare("reattached", env, "thread-1").text, /sample/,

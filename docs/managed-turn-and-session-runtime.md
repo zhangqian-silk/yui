@@ -2,6 +2,39 @@
 
 # Session, AgentRun and notifications
 
+## Host upgrade and context checks
+
+`update` reports package installation, verified Controller startup and each
+Host separately. `update --hosts-status` reads current per-Host evidence without
+installing, starting or advancing a switch. Supported controlled Codex Hosts fence new input immediately,
+wait for the current native Turn and event persistence, inspect native background
+execution, and release their owned Endpoint before exiting gracefully. The
+existing role-runtime mailbox retains the exact generation, native Session,
+configuration digest and drain receipt across Controller restarts. A successor
+uses the recorded effective configuration and resumes that same conversation;
+only its loaded Host/Endpoint and control/event handshake confirm success.
+Queued Messages remain original and accepted/unknown inputs are never replayed.
+
+Paused Roles stay paused. Older Hosts, native-TUI-only attachments and Endpoints
+without a quiescence capability are retained with an unsupported diagnosis; no
+unsupported drain command is sent. A busy/unknown native execution has no
+bounded upgrade-completion promise. An uncertain launch is not automatically
+repeated; a later exact successful handshake can settle the retained request.
+This fence covers Host-controlled ingress, not arbitrary external native clients;
+it never terminates a shared daemon or native conversation.
+
+Host Skill checks still run before every input. Unchanged inputs carry only
+the 27-byte `yui:skills-checked` HTML-comment marker (plus two separators), not
+repeated natural-language notices or instructions. That per-input provenance
+keeps the explicit check fallback for unmediated clients. Cold attachment,
+affected Skill changes and observed native compaction supply loading guidance;
+compaction invalidates the next input's metadata baseline. Without a reliable
+native event, the Agent must still recover any missing instructions using the
+Manifest. Neither a version nor an accepted marker proves model memory.
+Routine checks and empty inboxes are not user-facing progress.
+
+## Session stop and runtime observations
+
 Global Session stop/replacement uses the same exact native-execution quiescence
 boundary as Task Sessions. A departed Host or archived Session alone is not
 proof that an accepted input ended: its retained Provider binding is inspected
