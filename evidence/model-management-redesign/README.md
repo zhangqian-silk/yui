@@ -98,3 +98,30 @@ Screenshots: `d-1365-role.png`, `d-390-role.png`, `d-1365-agent.png`, `d-1365-ro
 - Fifth pass: the Role workspace is no longer shown (nor written) in execution details. The template picker is a single radio list: name + description, one 42px line each; launch facts appear only in the change list. `s-*.png`.
 
 - Sixth pass: choosing a template previews the description, system instructions and constraints the Role will read after applying (Changes / Unchanged tag each; long text clamps with Show all). The preview API adds an additive `result` with those three values; the settings table keeps the short settings. `t-*.png`, `harness/profile-text.py`.
+
+## Seventh pass: long text, lists and data review (after the 2026-11-03 review)
+
+Checked the current commit against the reported anomalies first. Already fixed by `17238bc3` and re-verified:
+no stray `null` in the template dialog, empty-to-empty values (`null`/`""`/`[]`) are not listed as changes,
+the template list no longer shrinks under the change list, the sticky footer is opaque (no gap/overlap at
+980×1170, 1365, 1920), and changed template text opens a side-by-side current/after comparison.
+
+Still wrong and fixed in this pass:
+
+- **Lists shown as JSON.** Responsibilities, constraints and Skills appeared as `[ "…" ]` (and `[]` when empty).
+  They are now edited one item per line (blank lines and surrounding spaces dropped); an emptied list clears the
+  setting exactly like before. Items containing a line break keep the JSON editor so nothing is lost.
+- **Long text in the detail.** Description, instructions, expected output and the lists span the detail and size
+  to their content (2–8 lines). "Expand" opens a dialog with the saved text beside the edited text and an
+  Edited/Unchanged tag; Done writes back to the draft (dirty count, Unsaved badge), Cancel/Esc discard, focus returns
+  to the field. Read-only shows the text alone; empty fields show no Expand. Template comparisons use the same dialog
+  shell. Narrow screens stack the panes and scroll the dialog body as one.
+- **Debug text after saving.** Saving an execution member printed the full CLI transcript ("Saved — actual result:
+  Updated role … ───"). It now says "Saved." (transcript on hover); server settings keep the full result.
+- **Duplicated meta.** Fields left to the Agent read "Agent default" once instead of
+  "Native Agent default (resolved at launch) · Inherit / not configured"; the Profile access label no longer wraps.
+
+The fixture now carries realistic Role responsibilities/constraints/Skills and a long reviewer template.
+`harness/long-text.py` (1365/768/390/360: detail, editor, template dialog, comparison, Esc) and
+`harness/long-text-save.py` (edit in dialog → Done → save → persisted list) reproduce it. Screenshots: `x-*.png`
+(PNG size equals the CSS viewport; no horizontal overflow at any width; touch: Expand 44×40, dialog buttons ≥40px).

@@ -433,7 +433,18 @@ window.addEventListener("beforeunload", event => {
 });
 
 function format(value) { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
+// Responsibilities, constraints and Skills are lists of short sentences: they
+// are edited one item per line, not as JSON, whenever every item fits a line.
+const LINE_LIST_KEYS = ["responsibilities", "constraints", "skills"];
+function lineList(field) {
+  return field.kind === "json" && LINE_LIST_KEYS.includes(field.key) && Array.isArray(field.value)
+    && field.value.every(item => typeof item === "string" && !item.includes("\n"));
+}
+function linesOf(text) {
+  return String(text).split("\n").map(line => line.trim()).filter(Boolean);
+}
 function inputValue(field, control) {
+  if (lineList(field)) return linesOf(control.value);
   if (field.kind === "json") return JSON.parse(control.value);
   if (field.kind === "number") {
     if (!control.value.trim() || !Number.isFinite(Number(control.value))) throw new Error(t("settings.invalidNumber"));
@@ -463,8 +474,17 @@ function editor(field, group, state) {
     ...(field.kind === "number" ? { type: "number", step: "any" } : {}),
     ...(field.kind === "json" || field.kind === "multiline" ? { rows: 4 } : {})
   });
-  const initial = field.kind === "json" ? JSON.stringify(field.value, null, 2) : String(field.value ?? "");
+  const lines = lineList(field);
+  const initial = lines ? field.value.join("\n") : field.kind === "json" ? JSON.stringify(field.value, null, 2) : String(field.value ?? "");
   control.value = initial;
+  // Execution members' long text (description, instructions, lists) sizes to
+  // its content and opens a full editor that shows the saved text beside the
+  // edited one.
+  const longText = !!shortKey && (field.kind === "multiline" || lines);
+  if (longText) {
+    control.rows = 2;
+    control.placeholder = lines ? t("settings.text.onePerLine") : " ";
+  }
   label.append(control);
   const reset = h("input", { type: "checkbox" });
   const help = fieldText("help", field);
@@ -472,18 +492,30 @@ function editor(field, group, state) {
   const technical = [
     field.source ? t("settings.source." + field.source, field.source) : "",
     Object.hasOwn(field, "defaultValue") ? t("settings.default") + ": " + format(field.defaultValue) : "",
-    field.value === "" ? t("settings.inherit") : ""
+    // A field left to the Agent's default says so once, not also "inherit".
+    !field.source && (field.value === "" || lines && !field.value.length) ? t("settings.inherit") : ""
   ].filter(Boolean).join(" · ");
   const helpText = help || field.summary || "";
   const helpId = helpText ? "help-" + String(group.id + "-" + field.key).replace(/[^A-Za-z0-9_-]/g, "-") : "";
   if (helpId && control.setAttribute) control.setAttribute("aria-describedby", helpId);
-  const row = h("div.settings-field", { dataset: { field: field.key }, ...(helpText ? { title: helpText } : {}) }, label,
+  const expand = longText ? h("button.btn-link.agent-text-expand", { type: "button", dataset: { textExpand: field.key } }, t("settings.text.expand")) : null;
+  const row = h("div.settings-field", { dataset: { field: field.key, ...(longText ? { text: lines ? "lines" : "multiline" } : {}) }, ...(helpText ? { title: helpText } : {}) }, label,
     helpText ? h("p.agent-field-help", { id: helpId }, helpText) : null,
     technical || takesEffect || field.takesEffect ? h("small.settings-field-meta", { title: [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ") },
       [technical, takesEffect || field.takesEffect].filter(Boolean).join(" · ")) : null,
     // Execution members have no separate reset control: the user picks or
     // types the value; emptying a clearable field removes the saved setting.
-    field.reset && !shortKey ? h("label.settings-reset", { title: t("settings.reset") }, reset, t("settings.resetShort")) : null);
+    field.reset && !shortKey ? h("label.settings-reset", { title: t("settings.reset") }, reset, t("settings.resetShort")) : null,
+    expand);
+  expand?.addEventListener("click", () => openTextEditor({
+    label: fieldText("field", field, field.label), saved: initial, draft: control.value,
+    editable: !state.readOnly && !control.disabled, lines,
+    done: value => {
+      if (value === control.value) return;
+      control.value = value;
+      mark(); item.onChange?.();
+    }
+  }));
   let unavailable = false;
   function mark() {
     control.disabled = state.readOnly || reset.checked || unavailable;
@@ -656,22 +688,67 @@ function textOf(value) {
   if (Array.isArray(value)) return value.map(item => "• " + (typeof item === "string" ? item : JSON.stringify(item))).join("\n");
   return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
-function openTextCompare(label, before, after) {
-  const pane = (title, value) => h("section.text-compare-pane", null, h("h3", null, title),
-    textOf(value) ? h("pre.text-compare-body", { tabindex: "0" }, textOf(value)) : h("p.profile-text-empty", null, t("access.profileEmpty")));
+// One modal shell for long text: a header with the field name, one or two
+// panes, and an optional footer. Esc and × close it; focus returns to the
+// control that opened it.
+function textDialog(label, { panes, tag = null, footer = null, closeOnBackdrop = true, onClose = () => {} }) {
   const close = h("button.icon-btn.guide-close", { type: "button", "aria-label": t("guide.close"), title: t("guide.close") }, "×");
-  const dialog = h("dialog.text-compare", { "aria-label": label },
-    h("header.text-compare-head", null, h("h2", null, label), close),
-    h("div.text-compare-grid", null, pane(t("settings.profileBefore"), before), pane(t("settings.profileAfter"), after)));
+  const dialog = h("dialog.text-compare", { "aria-label": label, dataset: { panes: String(panes.length) } },
+    h("header.text-compare-head", null, h("h2", null, label), tag, h("span.spacer"), close),
+    h("div.text-compare-grid", null, panes), footer);
   const opener = typeof document !== "undefined" ? document.activeElement : null;
-  const done = () => { if (dialog.open) dialog.close?.(); dialog.remove?.(); opener?.focus?.(); };
+  const done = () => { onClose(); if (dialog.open) dialog.close?.(); dialog.remove?.(); opener?.focus?.(); };
   close.addEventListener("click", done);
   dialog.addEventListener?.("cancel", event => { event.preventDefault?.(); done(); });
-  dialog.addEventListener?.("click", event => { if (event.target === dialog) done(); });
+  if (closeOnBackdrop) dialog.addEventListener?.("click", event => { if (event.target === dialog) done(); });
   document.body?.append?.(dialog);
   if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.open = true;
-  close.focus?.();
-  return dialog;
+  return { dialog, done, close };
+}
+function textPane(title, value, extraClass = "") {
+  const text = textOf(value);
+  return h("section.text-compare-pane" + extraClass, null, title ? h("h3", null, title) : null,
+    text ? h("pre.text-compare-body", { tabindex: "0" }, text) : h("p.profile-text-empty", null, t("access.profileEmpty")));
+}
+function openTextCompare(label, before, after) {
+  const view = textDialog(label, { panes: [textPane(t("settings.profileBefore"), before), textPane(t("settings.profileAfter"), after)] });
+  view.close.focus?.();
+  return view.dialog;
+}
+// Full editor for an execution member's long text: the saved text on the left,
+// the edited text on the right. Done writes back to the field's draft; Cancel
+// and Esc discard. Read-only shows the text alone.
+function openTextEditor({ label, saved, draft, editable, lines, done }) {
+  if (!editable && draft === saved) {
+    const view = textDialog(label, { panes: [textPane("", lines ? linesOf(saved) : saved, ".text-compare-single")] });
+    view.close.focus?.();
+    return view.dialog;
+  }
+  const area = h("textarea.text-compare-input", { "aria-label": t("settings.text.edited") });
+  area.value = draft;
+  if (lines) area.placeholder = t("settings.text.onePerLine");
+  if (!editable) area.readOnly = true;
+  const tag = h("span.profile-text-tag", { dataset: { changed: "false" } });
+  const sync = () => {
+    const changed = area.value !== saved;
+    tag.dataset.changed = String(changed);
+    tag.textContent = t(changed ? "settings.text.changed" : "settings.text.unchanged");
+  };
+  area.addEventListener("input", sync);
+  sync();
+  const cancel = h("button.btn", { type: "button" }, t(editable ? "models.cancel" : "guide.close"));
+  const apply = editable ? h("button.btn.btn-primary", { type: "button" }, t("settings.text.done")) : null;
+  const footer = h("footer.text-compare-foot", null,
+    h("span.text-compare-note", null, lines ? t("settings.text.onePerLine") : ""), cancel, apply);
+  const view = textDialog(label, {
+    panes: [textPane(t("settings.text.saved"), lines ? linesOf(saved) : saved),
+      h("section.text-compare-pane", null, h("h3", null, t("settings.text.edited")), area)],
+    tag, footer, closeOnBackdrop: false
+  });
+  cancel.addEventListener("click", view.done);
+  apply?.addEventListener("click", () => { const value = area.value; view.done(); done(value); });
+  area.focus?.();
+  return view.dialog;
 }
 function profileTextSection(value) {
   const changes = meaningfulChanges(value.changes);
@@ -807,7 +884,9 @@ function roleProfileApplication(state, group) {
       });
       close();
       renderGroup(state, saved.group);
-      state.receipt.textContent = t("settings.profileApplied") + "\n" + saved.output + "\n" + saved.adoption + "\n" + saved.refresh;
+      // The command transcript stays available on hover, not as page text.
+      state.receipt.textContent = t("settings.profileApplied");
+      state.receipt.title = [saved.output, saved.adoption, saved.refresh].filter(Boolean).join("\n");
     } catch (error) {
       state.unknown = error.disposition !== "not-submitted";
       preview = null;
@@ -1133,7 +1212,11 @@ function renderGroup(state, group) {
         id: group.id, revision: state.group.revision, changes, acknowledgeLive: acknowledge.checked
       });
       renderGroup(state, result.group);
-      state.receipt.textContent = t("settings.saved") + "\n" + result.output + "\n" + result.adoption + "\n" + result.refresh;
+      const transcript = [result.output, result.adoption, result.refresh].filter(Boolean).join("\n");
+      // Execution members confirm in one line; the command transcript stays
+      // available on hover. Server settings keep the full result.
+      if (area === "server") state.receipt.textContent = t("settings.saved") + "\n" + transcript;
+      else { state.receipt.textContent = t("settings.savedShort"); state.receipt.title = transcript; }
     } catch (error) {
       state.unknown = error.disposition !== "not-submitted";
       receipt.textContent = error.message + "\n" + (state.unknown ? t("settings.unknown") : t("settings.draftKept"));
