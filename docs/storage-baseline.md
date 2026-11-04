@@ -2,7 +2,12 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.27. The 1.26 → 1.27 transition admits versioned Host-upgrade
+Current storage is 1.28. The 1.27 → 1.28 transition admits exact-identity native
+title effect receipts under `runtime/native-titles`. It does not infer historical
+title ownership, rename conversations, or change existing database payloads.
+Unconfirmed naming intents remain non-replayable across Host replacement.
+
+The 1.26 → 1.27 transition admits versioned Host-upgrade
 signals in the existing role-runtime mailbox. It adds no table, infers no past
 upgrade request, and preserves existing payloads. Drain receipts precede Host
 exit; a Controller restart resumes the exact request, not business input.

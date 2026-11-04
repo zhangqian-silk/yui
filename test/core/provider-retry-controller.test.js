@@ -816,7 +816,11 @@ test("manual and automatic managed Run retries share exact failed proof, includi
     runTaskCommand(["role", "enable", "task-1", f.roleName], f.store, { now: f.now, environment: {} });
     const admission = await dispatch("runtime.provider-turn-begin", admissionInput);
     assert.equal(admission.retryInput?.expectedFailedNativeTurnId, "native-original");
-    assert.match(admission.retryInput.text, /Preserve local changes/);
+    assert.equal(admission.retryInput.text, admissionInput.boundedText,
+      "Recovery preserves original input without a procedural prefix.");
+    assert.match(admission.retryInput.context, /Preserve local changes/);
+    assert.ok(!admission.retryInput.context.includes(admissionInput.boundedText),
+      "Recovery context must not duplicate user content as application instructions.");
     const calls = [];
     const native = new CodexAppServerRuntime({ request: async method => {
       calls.push(method);
@@ -1058,7 +1062,7 @@ test("registration ACK replay and a cancellation racing its reply never strip th
     };
     const original = await dispatch("runtime.provider-turn-begin", params);
     assert.equal(original.retryInput?.expectedFailedNativeTurnId, "native-original");
-    assert.match(original.retryInput.text, /continue only unfinished work/);
+    assert.match(original.retryInput.context, /continue only unfinished work/);
     if (race === "reply-read") {
       assert.equal(f.read().retry.status, "cancelled");
       continue;

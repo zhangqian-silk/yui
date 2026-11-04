@@ -51,6 +51,34 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.23.0 compatibility and migration notes
+
+Host upgrades use explicit lifecycle signals and safe drain/reattachment
+boundaries without replaying business input or replacing native identity.
+Routine Skill checks remain inside the Host; unchanged Turns carry no Skill
+notice. Cold attachment, explicit context loss/compaction and changed Skills
+provide only the current loading pointers.
+
+Codex keeps original user input separate from application context on start and
+steer. Failed-Turn recovery does not duplicate the original input or imply lost
+Skill context. This requires the native `additionalContext` contract verified
+against Codex CLI 0.159.2; older native implementations are not covered and there
+is no fallback that reinserts metadata into user input.
+
+Native titles reuse the Role/Task/Draft/instance format through an independent,
+bounded metadata process, never blocking Startup, Goal or Turn. Exact identity,
+persisted intent and native readback distinguish confirmed naming from unknown
+effects. Observed manual names are preserved; unknown writes are not replayed.
+Historical polluted names without ownership evidence are diagnosed, not renamed.
+The native naming API has no compare-and-swap, so a final concurrent external
+rename cannot be protected atomically.
+
+Storage advances to **1.28**, preserving **1.26 → 1.27** Host-upgrade signals and
+adding **1.27 → 1.28** native-title receipts without rewriting history. Back up
+the Home and use the normal upgrade/migration path; do not open a migrated Home
+with an older binary. Controller/Host protocols remain v1. Publishing does not
+update the global CLI, migrate production data or restart shared services.
+
 ### 2.22.0 compatibility and migration notes
 
 Context reads now support bounded discovery, precise batched original retrieval,

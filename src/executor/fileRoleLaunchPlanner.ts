@@ -52,6 +52,7 @@ import {
 } from "../runtime/providerRuntimeIdentity.js";
 import {
   globalRoleSessionTitle,
+  taskRoleSessionTitle,
   resolveTaskRoleSessionTitle
 } from "../runtime/sessionTitle.js";
 import {
@@ -350,7 +351,11 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       input.mode === "resume" && compatibleExisting ? existing.nativeSessionId : undefined,
       effective,
       {
-        purpose
+        purpose,
+        nativeGeneratedTitle: taskRoleSessionTitle(task, role.name, {
+          executionAuthority: (input.mode === "resume" ? existing?.effective : effective)?.executionAuthority,
+          instanceCode: role.instanceCode
+        })
       }
     );
   }
@@ -391,7 +396,12 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
           : undefined,
       input.mode === "resume" && compatibleExisting ? existing.nativeSessionId : undefined,
       effective,
-      { purpose: "execution" }
+      { purpose: "execution",
+        nativeGeneratedTitle: globalRoleSessionTitle(role.name,
+          input.mode === "resume" && existing !== undefined ? new Date(existing.createdAt) : this.#now(),
+          this.store.getConfig().timeZone, role.instanceCode)
+          ?? (input.mode === "resume" ? `Yui ${role.name}` : undefined)
+      }
     );
   }
 
@@ -411,7 +421,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     sessionTitle: string | undefined,
     knownNativeSessionId: string | undefined,
     effective: EffectiveLaunchSnapshot,
-    sessionPolicy: Readonly<{ purpose: "execution" | "review" | "planning" }>
+    sessionPolicy: Readonly<{ purpose: "execution" | "review" | "planning"; nativeGeneratedTitle?: string }>
   ): PlannedRoleSession {
     const launchRole = effectiveRoleForLaunch(role, effective);
     const binding = activeRoleAgentBinding(launchRole);
@@ -759,6 +769,14 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
         YUI_DRIVER_ID: driver.id,
         YUI_WORKSPACE: effectiveWorkspace,
         YUI_SESSION_MANIFEST: sessionContext.sessionManifestPath,
+        // A proposal only. The independent metadata lane must prove native
+        // ownership; planning never reads/waits on title effects.
+        ...(configured.adapterId !== "codex" || sessionPolicy.nativeGeneratedTitle === undefined ? {} : {
+          YUI_NATIVE_TITLE_PROPOSAL: sessionPolicy.nativeGeneratedTitle
+        }),
+        ...(configured.adapterId !== "codex" || input.mode !== "resume" || existingSession?.title === undefined ? {} : {
+          YUI_NATIVE_TITLE_LOCAL: existingSession.title
+        }),
         ...(configured.adapterId === "codex"
           ? { YUI_AGENT_BASE_ARGS: JSON.stringify(configured.baseArgs) }
           : {}),

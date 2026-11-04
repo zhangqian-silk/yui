@@ -191,7 +191,7 @@ function handleMessage(message) {
       break;
     case "turn/start":
       if (process.env.YUI_FAKE_INPUT_LOG) appendFileSync(process.env.YUI_FAKE_INPUT_LOG,
-        JSON.stringify({ threadId, input: message.params.input }) + "\n");
+        JSON.stringify({ threadId, input: message.params.input, additionalContext: message.params.additionalContext }) + "\n");
       turnSequence += 1;
       const turnId = `fake-turn-${turnSequence}`;
       if (controlled || turnHandler) activeTurnId = turnId;

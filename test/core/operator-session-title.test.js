@@ -25,6 +25,7 @@ import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerSt
 import { RuntimeLaunchCoordinator } from "../../dist/controller/runtimeLaunchCoordinator.js";
 
 const root = resolve(".");
+const providerEnvironment = { ...process.env, YUI_HOME: undefined, YUI_SESSION_TITLE: undefined };
 
 test("Role CLI display edits flow through launch and persistence without replacing the Session", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-role-title-flow-"));
@@ -202,7 +203,7 @@ test("only a newly created global Operator Session receives the dated title", (t
   assert.equal(resumed.launch.env.YUI_SESSION_TITLE, undefined);
 });
 
-test("intentionally skipped native title stays visible locally without a false runtime failure", async (t) => {
+test("native title waits for materialized input without delaying startup or reporting a business failure", async (t) => {
   let session;
   t.after(() => session?.terminate("SIGTERM"));
   const diagnostics = [];
@@ -212,7 +213,7 @@ test("intentionally skipped native title stays visible locally without a false r
     command: process.execPath,
     args: [join(root, "test", "fixtures", "fake-codex-app-server-proxy.mjs")],
     environment: {
-      ...process.env,
+      ...providerEnvironment,
       YUI_FAKE_EXPECT_THREAD_NAME: "Yui · Operator · 0920",
       YUI_FAKE_REJECT_THREAD_NAME: "1"
     },
@@ -238,8 +239,9 @@ test("intentionally skipped native title stays visible locally without a false r
 
   assert.equal(session.nativeSessionId, "fake-thread-1");
   assert.deepEqual(diagnostics, [], "An optional action not attempted is not a delivery/observer failure");
-  assert.ok(mirrored.some(item => item.stream === "stderr"
-    && /title synchronization was not submitted/u.test(item.text)));
+  assert.equal(session.appliedGeneratedTitle, undefined);
+  assert.equal(mirrored.some(item => /Native title:/u.test(item.text)), false,
+    "Startup is not a title synchronization receipt.");
 });
 
 test("an unanswered rename cannot stall business control on the new Session", async (t) => {
@@ -252,7 +254,7 @@ test("an unanswered rename cannot stall business control on the new Session", as
     schemaVersion: 1,
     command: process.execPath,
     args: [join(root, "test", "fixtures", "fake-codex-app-server-proxy.mjs")],
-    environment: { ...process.env, YUI_FAKE_STALL_THREAD_NAME: "1" },
+    environment: { ...providerEnvironment, YUI_FAKE_STALL_THREAD_NAME: "1" },
     cwd: root,
     childLifecycle: "persistent",
     startMode: "provider",
@@ -282,7 +284,7 @@ test("resume does not claim native title ownership when synchronization is inten
     const opened = await startStructuredProviderSession({
       schemaVersion: 1, command: process.execPath,
       args: [join(root, "test", "fixtures", "fake-codex-app-server-proxy.mjs")],
-      environment: { ...process.env, YUI_FAKE_REJECT_THREAD_NAME: reject ? "1" : "0",
+      environment: { ...providerEnvironment, YUI_FAKE_REJECT_THREAD_NAME: reject ? "1" : "0",
         ...(nativeName === undefined ? {} : { YUI_FAKE_THREAD_NAME: nativeName }) },
       cwd: root, childLifecycle: "persistent", startMode: "provider",
       providerControl: {

@@ -150,7 +150,7 @@ async function globalHostFixture(t, adapterId = "codex", {
     childLifecycle: planned.launch.childLifecycle, startMode: "provider",
     environment: { ...planned.launch.env, YUI_FAKE_CONTROLLED: controlled ? "1" : "0",
       ...(direct ? { YUI_FAKE_DIRECT_PORT_FILE: join(home, "direct.port") } : {}),
-      ...(capacityFailure ? { YUI_FAKE_CAPACITY_FAILURE: "1" } : {}) },
+      ...(capacityFailure ? { YUI_FAKE_CAPACITY_FAILURE: "1", YUI_FAKE_INPUT_LOG: join(home, "retry-inputs.jsonl") } : {}) },
     providerControl: planned.launch.providerControl
   };
   const startHost = providerControl => {
@@ -475,6 +475,15 @@ test("capacity recovery traverses Controller, real Host and Codex adapter on the
   assert.equal(binding().retry.failedNativeTurnId, "fake-turn-1");
   assert.equal(binding().retry.nativeSessionId, f.nativeSessionId);
   assert.deepEqual(binding().retry.input, { kind: "message", roleName: f.role.name, messageId: original.id });
+  const delivered = readFileSync(join(f.home, "retry-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(delivered.length, 2);
+  assert.deepEqual(delivered[1].input, delivered[0].input, "Retry keeps original business input verbatim.");
+  assert.ok(delivered[0].additionalContext["yui.session-skills"]);
+  assert.equal(delivered[1].additionalContext["yui.session-skills"], undefined,
+    "A failed Turn in the same attachment is not evidence of lost Skill context.");
+  const guidance = delivered[1].additionalContext["yui.recovery"].value;
+  assert.match(guidance, /fake-turn-1/);
+  assert.ok(!guidance.includes(delivered[1].input[0].text), "Recovery guidance does not duplicate business input.");
   assert.deepEqual(f.errors, []);
 });
 

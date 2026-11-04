@@ -1,6 +1,9 @@
 // Deterministic external boundary for the assembled-package smoke. No model,
 // account, network, or real Codex installation is used.
 import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
@@ -16,13 +19,22 @@ if (args.includes("--version")) {
   await import("./fake-codex-app-server-proxy.mjs");
 } else if (args.includes("--remote") && process.env.YUI_FAKE_TUI_LOG) {
   await import("./fake-codex-tui.mjs");
-} else if (args.includes("app-server") && args.includes("--stdio")) {
+} else if (args.includes("app-server") && (args.includes("--stdio") || args.includes("stdio://"))) {
   const lines = createInterface({ input: process.stdin });
   lines.on("line", line => {
     const request = JSON.parse(line);
     if (request.id === undefined) return;
+    if (["thread/read", "thread/name/set"].includes(request.method) && process.env.CODEX_HOME) {
+      const file = join(process.env.CODEX_HOME, "fixture-title-"
+        + createHash("sha256").update(request.params.threadId).digest("hex") + ".json");
+      if (request.method === "thread/name/set") writeFileSync(file, JSON.stringify({ name: request.params.name }));
+      const name = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).name : null;
+      const result = request.method === "thread/read" ? { thread: { id: request.params.threadId, name } } : {};
+      process.stdout.write(`${JSON.stringify({ id: request.id, result })}\n`);
+      return;
+    }
     const results = {
-      initialize: { userAgent: "fixture" },
+      initialize: { userAgent: "fixture", codexHome: process.env.CODEX_HOME },
       "model/list": { data: JSON.parse(process.env.YUI_FAKE_MODELS ?? "[]"), nextCursor: null },
       "configRequirements/read": { requirements: null },
       "modelProvider/capabilities/read": { webSearch: false }

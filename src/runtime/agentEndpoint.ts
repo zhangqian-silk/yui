@@ -1,4 +1,5 @@
 import type { ImplementationRef } from "../kernel/instanceHost.js";
+import { isDeepStrictEqual } from "node:util";
 import {
   builtinAgentEndpointImplementation,
   requireBuiltinAgentEndpointImplementation
@@ -284,6 +285,7 @@ class BuiltinAgentEndpoint implements AgentEndpoint {
     const previous = this.#attempts.get(input.attemptId);
     if (previous !== undefined) {
       if (previous.input.inputRef !== input.inputRef || previous.input.boundedText !== input.boundedText
+        || !isDeepStrictEqual(previous.input.additionalContext, input.additionalContext)
         || previous.operation !== operation) {
         throw new Error("Endpoint attempt identity cannot be reused for different input or operation.");
       }
@@ -297,7 +299,9 @@ class BuiltinAgentEndpoint implements AgentEndpoint {
       return { status: "not-submitted", error: new ProviderTurnRejectedError("Endpoint is detached.", input.attemptId) };
     }
     const attempt = {
-      input: Object.freeze({ ...input }),
+      input: Object.freeze({ ...input, ...(input.additionalContext === undefined ? {} : {
+        additionalContext: structuredClone(input.additionalContext)
+      }) }),
       operation,
       disposition: { status: "pending", reason: "submitting" } as AgentEndpointSubmission
     };

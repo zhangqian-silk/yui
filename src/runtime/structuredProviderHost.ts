@@ -3,6 +3,7 @@ import {
   type ChildProcessWithoutNullStreams
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createNativeTitleSync } from "./nativeTitleSync.js";
 import type { Socket } from "node:net";
 import { Duplex } from "node:stream";
 import { nativeExecutable } from "./nativeExecutable.js";
@@ -72,6 +73,7 @@ export type StructuredProviderTurnReceipt = Readonly<{
 }>;
 
 export type StructuredProviderTurnInput = Readonly<{
+  additionalContext?: import("./codexAppServerRuntime.js").CodexAdditionalContext;
   attemptId: string;
   boundedText: string;
   /** Exact failed native Turn whose unfinished work this input continues. */
@@ -642,6 +644,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     return backgrounds.data.length === 0 && backgrounds.nextCursor === null;
   }
   appliedGeneratedTitle: string | undefined;
+  #titleSync: ReturnType<typeof createNativeTitleSync> | undefined;
   nativeAccess!: CodexNativeAccess;
   readonly #turnAttempts = new Map<string, string>();
   readonly adapterId = "codex" as const;
@@ -725,16 +728,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         throw error;
       }
     }
-    if (control.sessionTitle !== undefined) {
-      // The native title mutation can persist without replying and stall later
-      // Goal/Turn requests, even through a separate metadata connection. Keep
-      // Yui's launch title, but do not put that optional mutation on a managed
-      // Session's execution path. Reconnect must not replay it either.
-      // This is an intentional omission, not a failed delivery or unavailable
-      // observer. Keep it in the Host log without waking an Agent to recover
-      // an operation that was never attempted.
-      mirror("stderr", "Native title synchronization was not submitted; Yui retains its Session title without blocking native Goal/Turn control.\n");
-    }
     const ownedTurn = control.kind === "restore" ? control.ownedTurn : undefined;
     // Keep notifications buffered during paginated recovery. Otherwise a live
     // terminal can be emitted before open returns and then returned again as a
@@ -803,6 +796,13 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       }
     }
     const goal = await runtime.readGoal(conversationId);
+    session.#titleSync = createNativeTitleSync(payload, conversationId, session.nativeAccountHome, result => {
+      if (result.status === "confirmed") session.appliedGeneratedTitle = result.title;
+      mirror("stderr", `Native title: ${JSON.stringify(result)}\n`);
+    });
+    void exit.then(() => session.#titleSync?.close());
+    // Fresh Threads may not be persisted until their first accepted input.
+    if (control.mode === "resume") session.#titleSync.notify();
     return Object.freeze({
       session,
       ...(recoveredTerminal === undefined ? {} : { recoveredTerminal }),
@@ -825,6 +825,11 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         }
         return undefined;
       }
+      if (method === "thread/name/updated") {
+        this.#titleSync?.close();
+        if (params.threadName !== this.appliedGeneratedTitle) this.appliedGeneratedTitle = undefined;
+      }
+      if (method === "turn/started") this.#titleSync?.notify();
       let goal;
       try {
         goal = codexGoalNotification({ method, params });
@@ -951,6 +956,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         conversationId: this.conversationId,
         attemptId: turn.attemptId,
         text: turn.boundedText,
+        ...(turn.additionalContext === undefined ? {} : { additionalContext: turn.additionalContext }),
         expectedNoActiveTurn: true,
         ...(turn.requireQuiescent ? { requireQuiescent: true } : {}),
         ...(turn.expectedFailedNativeTurnId === undefined ? {} : {
@@ -974,6 +980,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       this.#clientOwnedTurnId = acceptance.turnId;
       this.#clientOwnedAttemptId = turn.attemptId;
       this.#turnAttempts.set(acceptance.turnId, turn.attemptId);
+      this.#titleSync?.notify();
       return Object.freeze({
         attemptId: turn.attemptId,
         conversationId: this.conversationId,
@@ -1001,6 +1008,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       conversationId: this.conversationId,
       expectedTurnId: nativeTurnId,
       text: turn.boundedText,
+      ...(turn.additionalContext === undefined ? {} : { additionalContext: turn.additionalContext }),
       clientUserMessageId: turn.attemptId
     });
     if (acceptance.status === "unknown") {
@@ -1072,6 +1080,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
   }
 
   terminate(signal: NodeJS.Signals): void {
+    this.#titleSync?.close();
     terminateProcessGroup(this.child, signal);
   }
 }
