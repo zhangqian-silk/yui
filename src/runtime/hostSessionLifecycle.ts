@@ -1,6 +1,6 @@
 import type { NonBlockingChecks } from "./lifecycleChecks.js";
 
-export type HostLifecycleState =
+export type HostSessionLifecycleState =
   | "idle" | "starting" | "ready" | "busy" | "settling" | "delivery-unknown"
   | "rejected" | "failed" | "exited";
 type Identity = Readonly<{
@@ -10,35 +10,35 @@ type Identity = Readonly<{
   nativeTurnId?: string;
 }>;
 type Occupancy = "idle" | "busy" | "owned" | "unknown";
-export type HostLifecycleEvent = Identity & (
+export type HostSessionLifecycleEvent = Identity & (
   | Readonly<{ type: "launch" | "submit" | "accepted" | "native-started" | "terminal"
       | "interactive-connected" | "disconnected" | "authority-changed" | "exit" }>
   | Readonly<{ type: "connected"; occupancy: Occupancy }>
   | Readonly<{ type: "settled"; occupancy: "idle" | "busy" }>
   | Readonly<{ type: "failure"; outcome: "busy" | "delivery-unknown" | "rejected" | "failed" }>
 );
-export type HostLifecycleTransition = Readonly<{
-  from: HostLifecycleState;
-  to: HostLifecycleState;
+export type HostSessionLifecycleTransition = Readonly<{
+  from: HostSessionLifecycleState;
+  to: HostSessionLifecycleState;
   revision: number;
-  event: HostLifecycleEvent;
+  event: HostSessionLifecycleEvent;
 }>;
 type Rule = Readonly<{
-  from: readonly HostLifecycleState[];
-  guard?: (event: HostLifecycleEvent) => boolean;
-  to: HostLifecycleState;
+  from: readonly HostSessionLifecycleState[];
+  guard?: (event: HostSessionLifecycleEvent) => boolean;
+  to: HostSessionLifecycleState;
 }>;
-const live: readonly HostLifecycleState[] = [
+const live: readonly HostSessionLifecycleState[] = [
   "idle", "starting", "ready", "busy", "settling", "delivery-unknown", "rejected", "failed"
 ];
-const available: readonly HostLifecycleState[] = ["idle", "busy", "rejected", "failed"];
-const occupancy = (value: Occupancy) => (event: HostLifecycleEvent) =>
+const available: readonly HostSessionLifecycleState[] = ["idle", "busy", "rejected", "failed"];
+const occupancy = (value: Occupancy) => (event: HostSessionLifecycleEvent) =>
   "occupancy" in event && event.occupancy === value;
 
 /** Lifecycle only: no version checks, upgrade phases, I/O or business policy.
  * Each event selects one guarded edge; callers cannot assign a target state.
  * Existing authority/admission checks must succeed before sending commands. */
-export const HOST_LIFECYCLE_TRANSITIONS: Readonly<Record<HostLifecycleEvent["type"], readonly Rule[]>> = {
+export const HOST_SESSION_LIFECYCLE_TRANSITIONS: Readonly<Record<HostSessionLifecycleEvent["type"], readonly Rule[]>> = {
   launch: [{ from: [...available, "exited"], to: "starting" }],
   submit: [{ from: available, to: "starting" }],
   connected: [
@@ -63,22 +63,22 @@ export const HOST_LIFECYCLE_TRANSITIONS: Readonly<Record<HostLifecycleEvent["typ
   exit: [{ from: live, to: "exited" }]
 };
 
-export function createHostLifecycle(hooks: {
-  before?: NonBlockingChecks<HostLifecycleTransition>;
-  after?: NonBlockingChecks<HostLifecycleTransition>;
+export function createHostSessionLifecycle(hooks: {
+  before?: NonBlockingChecks<HostSessionLifecycleTransition>;
+  after?: NonBlockingChecks<HostSessionLifecycleTransition>;
 } = {}) {
-  let state: HostLifecycleState = "idle";
+  let state: HostSessionLifecycleState = "idle";
   let revision = 0;
   let identity: Identity = {};
-  const edgeFor = (event: HostLifecycleEvent) => HOST_LIFECYCLE_TRANSITIONS[event.type].find(rule =>
+  const edgeFor = (event: HostSessionLifecycleEvent) => HOST_SESSION_LIFECYCLE_TRANSITIONS[event.type].find(rule =>
     rule.from.includes(state) && (!rule.guard || rule.guard(event)));
   return {
     get state() { return state; },
     get revision() { return revision; },
     /** State eligibility only; caller still owns exact writer/resource guards. */
-    can(event: HostLifecycleEvent) { return edgeFor(event) !== undefined; },
-    send(input: HostLifecycleEvent): Readonly<{
-      status: "applied" | "ignored" | "invalid"; state: HostLifecycleState; reason?: string;
+    can(event: HostSessionLifecycleEvent) { return edgeFor(event) !== undefined; },
+    send(input: HostSessionLifecycleEvent): Readonly<{
+      status: "applied" | "ignored" | "invalid"; state: HostSessionLifecycleState; reason?: string;
     }> {
       const event = Object.freeze({ ...input });
       if (state === "exited" && event.type !== "launch") return { status: "ignored", state, reason: "exited" };

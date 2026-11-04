@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHostLifecycle } from "../../dist/runtime/hostLifecycle.js";
+import { createHostSessionLifecycle } from "../../dist/runtime/hostSessionLifecycle.js";
 import { createNonBlockingChecks } from "../../dist/runtime/lifecycleChecks.js";
 
 const identity = { processInstanceId: "proxy-1", nativeSessionId: "thread-1" };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test("Host lifecycle transitions are event/guard driven and reject stale or illegal facts", () => {
-  const host = createHostLifecycle();
+  const host = createHostSessionLifecycle();
   assert.equal(host.send({ type: "accepted", ...identity, attemptId: "not-submitted" }).status, "invalid");
   assert.equal(host.state, "idle");
   host.send({ type: "launch" });
@@ -52,7 +52,7 @@ test("Lifecycle before/after checks cannot block, veto or mutate transitions; in
   const after = createNonBlockingChecks([
     { id: "observer", run: event => { seen.push(event); assert.ok(Object.isFrozen(event)); } }
   ]);
-  const host = createHostLifecycle({ before, after });
+  const host = createHostSessionLifecycle({ before, after });
   host.send({ type: "launch" });
   host.send({ type: "connected", ...identity, occupancy: "idle" });
   assert.equal(host.state, "idle", "No check promise participates in state commitment.");

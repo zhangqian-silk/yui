@@ -134,6 +134,8 @@ import {
 import { deliverGlobalInputs } from "./globalInputDelivery.js";
 import { HostUpgradeCoordinator } from "./hostUpgrade.js";
 import { createHostLifecycleChecks } from "./hostLifecycleChecks.js";
+import { createControllerHostLifecycle, type ControllerHostTransition } from "./hostLifecycle.js";
+import { createNonBlockingChecks } from "../runtime/lifecycleChecks.js";
 import { AGENT_HOST_IMPLEMENTATION } from "../runtime/agentHostImplementation.js";
 import { builtinAgentEndpointImplementation } from "../runtime/agentEndpointIdentity.js";
 import { sendAgentHostUpgradeControl } from "../runtime/agentHost.js";
@@ -334,7 +336,7 @@ async function createFileTaskControllerRuntime(
       ?? new AgentConfigurationCatalogService(home, {
         environment: options.environment ?? process.env
       });
-    const sessionHost = options.sessionHost ?? new TmuxSessionHost(planner, tmux, {
+    const rawSessionHost = options.sessionHost ?? new TmuxSessionHost(planner, tmux, {
       validateLaunch: async (request) => {
         const agent = store.getConfiguredAgent(request.agentId);
         if (agent === null) return;
@@ -415,17 +417,12 @@ async function createFileTaskControllerRuntime(
           globalInstallPaths: [process.execPath]
         }
       });
-    const lifecycleHost = {
-      inspectOwner: (owner: Parameters<SessionHostPort["inspectOwner"]>[0]) => (
-        sessionHost.inspectOwner(owner)
-      ),
-      ...(sessionHost.inspectOwners === undefined
-        ? {}
-        : {
-            inspectOwners: (
-              owners: Parameters<NonNullable<SessionHostPort["inspectOwners"]>>[0]
-            ) => sessionHost.inspectOwners!(owners)
-          }),
+    const hostStateChecks = createNonBlockingChecks<ControllerHostTransition>([{
+      id: "host-version-hint",
+      run: (_transition, signal) => { if (!signal.aborted) hostLifecycleChecks.notify("host-observed"); }
+    }], options.onError);
+    const controllerHosts = createControllerHostLifecycle(rawSessionHost, {
+      after: hostStateChecks,
       stopOwner: (owner: Parameters<SessionHostPort["stopOwner"]>[0]) => {
         // Issue 03: the durable `stopped` transition is gated on physical
         // exit proof. A blocked result keeps the Session non-terminal and
@@ -445,7 +442,9 @@ async function createFileTaskControllerRuntime(
           return result.outcome === "stop-confirmed";
         });
       },
-    };
+    });
+    const sessionHost = controllerHosts.port;
+    const lifecycleHost = sessionHost;
     const resourceActivity = createRuntimeResourceActivityTracker();
     let runningRuntime: RunningFileTaskController["runtime"] | undefined;
     let runningController: RunningFileTaskController | undefined;
@@ -463,11 +462,14 @@ async function createFileTaskControllerRuntime(
     const hostUpgrades = new HostUpgradeCoordinator(store, AGENT_HOST_IMPLEMENTATION, {
       inspect: owner => inspectAgentHost({ home, ...owner }),
       control: async (owner, type, request) => {
-        const result = await sendAgentHostUpgradeControl({
-          home, ...owner, control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type, ...request }
-        });
-        if (result.outcome === "rejected") throw new Error(result.failure?.detail ?? "Host upgrade control rejected.");
-        return result.snapshot;
+        const send = async () => {
+          const result = await sendAgentHostUpgradeControl({
+            home, ...owner, control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type, ...request }
+          });
+          if (result.outcome === "rejected") throw new Error(result.failure?.detail ?? "Host upgrade control rejected.");
+          return result.snapshot;
+        };
+        return type === "finish-upgrade" ? controllerHosts.requestExit(owner, send) : send();
       },
       hostState: async owner => (await sessionHost.inspectOwner(owner)).state,
       endpoint: builtinAgentEndpointImplementation,
@@ -925,6 +927,7 @@ async function createFileTaskControllerRuntime(
     }
     let resourceClose: Promise<void> | undefined;
     const closeResources = (): Promise<void> => {
+      hostStateChecks.close();
       hostLifecycleChecks.close();
       resourceClose ??= hostUpgrades.close().then(() => closeTelemetry()).finally(() => Promise.all([
         web.close(),

@@ -2,9 +2,23 @@
 
 # Session、AgentRun 与通知
 
-## Host 生命周期与非阻塞检查
+## 两层生命周期与非阻塞检查
 
-Host 生命周期状态由明确的事件、guard 和转换表管理，不由版本检查管理。
+Controller 对 Host 的管理状态、Host 对原生 Session 的生命周期分别拥有自己的
+事件、guard 和转换表，都不是升级流程状态机。
+
+| 层级 | 事件与转换 | 权限及关联 |
+| --- | --- | --- |
+| Controller → Host | 新鲜物理观测恢复 `unavailable`／`stopped`／`starting`／`running`；合法 launch 进入 `starting`，匹配启动握手进入 `running`。停止或优雅退出请求进入 `stopping`，发送退出不证明 `stopped`；物理不存在才确认 `stopped`，未知效果进入 `unavailable`。 | owner、本地操作／观测 revision、返回 binding 和原生 Session ID；持久 Role／Task 意图、启动 reservation 和精确进程权属仍是权威。 |
+| Host → 原生 Session | launch、附件、输入接受、原生活动、终态、持久化、断连和退出驱动下述原生状态。 | 原生 Session、proxy 进程、attempt 和 Turn 身份；原有 writer／资源栅栏继续授权副作用。 |
+
+Controller 在共享 Host port 处统一管理启动／恢复、观测与停止（含安全升级的优雅退出）。
+冲突物理操作在副作用前拒绝，不由状态机另建队列或重放。迟到读取和旧 binding 不能覆盖
+新管理状态；相同观测不重复触发检查反馈循环。Controller 重启后从观测重建，
+不重放进程内状态。原生轮次完成或附件退出不能证明 Host 进程已退出；
+合法恢复通过同一原生对话关联两层，不共用状态枚举或新增持久权威。
+
+Host 内的原生 Session 生命周期由明确的转换表管理，不由版本检查管理。
 launch／submit 进入 `starting`；附件事实选择 `idle`、`busy`、
 `ready`（持有输入）或 `delivery-unknown`；接受输入进入 `ready`；
 原生执行进入 `busy`；终态处理进入 `settling`；持久化结清后回到观测到的
@@ -18,6 +32,10 @@ launch／submit 进入 `starting`；附件事实选择 `idle`、`busy`、
 （每项最多一个执行中和一个最新待处理观测）。“前”表示转换来源，不是等待完成的前置条件。
 慢检查或失败不能否决转换、阻塞事件折叠或输入投递；检查回调必须异步等待 I/O，
 并在请求副作用前响应取消。它们只能向独立的、受精确栅栏保护的升级协调器提出请求。
+Controller 的 Host 状态 hook 提议版本对账；Host 的 Session 状态 hook 在附件和结清时
+异步观测当前 Skill 元数据，不读正文、不提交通知基线、不假定模型记忆。
+逐输入完整性核验仍是投递安全门：无效 Skill 可以拒绝该次输入，但可选检查不能卡住生命周期。
+仍只有被接受的输入推进通知基线，未变化输入只有原有传输标记。
 
 Controller 启动、Host 连接／退出观测、Host 状态变化 signal 和事件持久化均可触发版本检查，
 不依赖显式 `update`。现有周期对账覆盖丢失提示、无法可靠提供后台执行结束事件的提供方，

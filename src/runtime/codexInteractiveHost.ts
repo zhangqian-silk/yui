@@ -7,9 +7,10 @@ import type { AgentHostSnapshot, openAgentHostControl as OpenAgentHostControl } 
 import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 import type { AgentHostLaunchPayload } from "./launchBroker.js";
 import { openCodexInteractiveConnection } from "./structuredProviderHost.js";
-import { createSessionSkillNotice } from "../context/sessionSkillNotice.js";
+import { createSessionSkillNotice, createSessionSkillLifecycleCheck } from "../context/sessionSkillNotice.js";
 import { isNativeContextRecovery } from "./contextRecovery.js";
-import { createHostLifecycle, type HostLifecycleEvent } from "./hostLifecycle.js";
+import { createHostSessionLifecycle, type HostSessionLifecycleEvent } from "./hostSessionLifecycle.js";
+import { createNonBlockingChecks } from "./lifecycleChecks.js";
 
 /**
  * Keep the native TUI and its transparent App Server attachment in one pane.
@@ -41,12 +42,14 @@ export async function runCodexInteractiveHost(
     throw new Error("Codex proxy base arguments are invalid.");
   }
   const expectedId = environment.YUI_NATIVE_SESSION_ID;
-  const lifecycle = createHostLifecycle();
+  const lifecycleChecks = createNonBlockingChecks([createSessionSkillLifecycleCheck(home, () => environment)],
+    error => process.stderr.write(`Session lifecycle check failed: ${String(error)}\n`));
+  const lifecycle = createHostSessionLifecycle({ after: lifecycleChecks });
   lifecycle.send({ type: "launch" });
   let snapshot: AgentHostSnapshot = {
     schemaVersion: 1, state: lifecycle.state, adapterId: "codex", updatedAt: new Date().toISOString()
   };
-  const transition = (event: HostLifecycleEvent, fields: Partial<Pick<AgentHostSnapshot,
+  const transition = (event: HostSessionLifecycleEvent, fields: Partial<Pick<AgentHostSnapshot,
     "nativeSessionId" | "conversationId" | "detail">> = {}) => {
     const result = lifecycle.send(event);
     if (result.status === "ignored") return;
@@ -205,6 +208,7 @@ export async function runCodexInteractiveHost(
     fail(error);
     throw error;
   } finally {
+    lifecycleChecks.close();
     closing = true;
     for (const signal of signals) process.removeListener(signal, stop);
     stop();

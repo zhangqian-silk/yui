@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { chmodSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type { GlobalRole, TaskRole } from "../role/role.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import type { RoleSessionOwner, RoleSkillContext } from "./roleSessionContext.js";
 import { validateSkillPackageRef, type SkillPackageRef } from "./skillPackage.js";
-import { checkCurrentSkills, SKILL_CHECK_COMMAND, SKILL_REUSE_RULE } from "./currentSkills.js";
+import { checkCurrentSkills, checkCurrentSkillsAsync, SKILL_CHECK_COMMAND, SKILL_REUSE_RULE } from "./currentSkills.js";
 import {
   SESSION_BOOTSTRAP_MANIFEST_SCHEMA_VERSION,
   SESSION_CONTEXT_PROTOCOL,
@@ -84,6 +85,17 @@ export function checkSessionSkills(home: string, manifestPath: string) {
   };
 }
 
+export async function checkSessionSkillsAsync(home: string, manifestPath: string, signal: AbortSignal) {
+  const manifest = validateSessionBootstrapManifest(JSON.parse(
+    await readFile(resolve(manifestPath), { encoding: "utf8", signal })));
+  return {
+    skills: await checkCurrentSkillsAsync(home, manifest.skills.map(skill => skill.id), signal),
+    roleProfileRef: manifest.roleProfileRef,
+    rule: SKILL_REUSE_RULE,
+    historicalPackagesAreAuditOnly: true
+  };
+}
+
 /** Explicit entry for self-contained Global Context reads across clients. */
 export type SessionEntryPoint = Readonly<{
   executable: string;
@@ -99,6 +111,10 @@ export function readSessionBootstrapManifest(path: string): SessionBootstrapMani
   } catch (error) {
     throw new Error(`Session Manifest is unreadable: ${source}.`, { cause: error });
   }
+  return validateSessionBootstrapManifest(parsed);
+}
+
+function validateSessionBootstrapManifest(parsed: unknown): SessionBootstrapManifest {
   if (parsed === null || typeof parsed !== "object") {
     throw new Error("Session Manifest is invalid.");
   }

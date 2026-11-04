@@ -1,4 +1,5 @@
 import { accessSync, constants, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { access, lstat, readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +38,33 @@ export function checkCurrentSkills(home: string | undefined, ids: readonly strin
         + "do not replace the Session or replay input to repair Skill loading.", { cause: error });
     }
   });
+}
+
+/** Advisory lifecycle observation uses asynchronous filesystem I/O; it neither
+ * blocks a state transition nor substitutes for the exact per-input check. */
+export async function checkCurrentSkillsAsync(home: string | undefined, ids: readonly string[], signal: AbortSignal) {
+  const skills = [];
+  for (const id of new Set(ids)) {
+    signal.throwIfAborted();
+    const path = currentSkillPath(home, id);
+    const versionPath = join(path, "VERSION");
+    try {
+      for (const file of [join(path, "SKILL.md"), versionPath]) {
+        if (await realpath(file) !== resolve(file) || !(await lstat(file)).isFile()) {
+          throw new Error(`Skill files must be regular files without symlinks: ${file}.`);
+        }
+        await access(file, constants.R_OK);
+      }
+      if ((await lstat(versionPath)).size > 128) throw new Error("VERSION exceeds 128 bytes.");
+      const version = (await readFile(versionPath, { encoding: "utf8", signal })).trim();
+      if (!/^[1-9][0-9]{0,8}$/u.test(version)) throw new Error("VERSION must contain a positive internal integer.");
+      skills.push({ id, path, version, versionPath });
+    } catch (error) {
+      throw new Error(`Current Skill ${id} is missing, unreadable or invalid at ${path}. `
+        + `${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+  }
+  return skills;
 }
 
 export const SKILL_CHECK_COMMAND = "yui session skills --json";

@@ -1,4 +1,24 @@
-import { checkSessionSkills } from "./sessionBootstrapManifest.js";
+import { checkSessionSkills, checkSessionSkillsAsync } from "./sessionBootstrapManifest.js";
+import type { HostSessionLifecycleTransition } from "../runtime/hostSessionLifecycle.js";
+import type { LifecycleCheck } from "../runtime/lifecycleChecks.js";
+
+/** Early advisory checks do not commit notices or assert model memory. The
+ * next input still validates its exact metadata and emits only its own delta.
+ * Invalid metadata may reject that input, never a Session state transition. */
+export function createSessionSkillLifecycleCheck(home: string,
+  environment: () => Readonly<Record<string, string | undefined>>
+): LifecycleCheck<HostSessionLifecycleTransition> {
+  return {
+    id: "session-skills",
+    run: async (transition, signal) => {
+      if (!["connected", "interactive-connected", "settled"].includes(transition.event.type)) return;
+      const manifest = environment().YUI_SESSION_MANIFEST;
+      if (!manifest || signal.aborted) return;
+      try { await checkSessionSkillsAsync(home, manifest, signal); }
+      catch (error) { if (!signal.aborted) throw error; }
+    }
+  };
+}
 
 /** Per-input provenance, not a model memory/load receipt. A detached client
  * cannot inherit the Host check merely by reusing the same conversation. */

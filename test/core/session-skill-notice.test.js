@@ -4,11 +4,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as notices from "../../dist/context/sessionSkillNotice.js";
-import { materializeSessionBootstrap } from "../../dist/context/sessionBootstrapManifest.js";
+import { materializeSessionBootstrap, checkSessionSkills, checkSessionSkillsAsync } from "../../dist/context/sessionBootstrapManifest.js";
 import { loadYuiSkillContexts } from "../../dist/context/roleSessionContext.js";
 import { codexInteractiveSkillInput } from "../../dist/runtime/codexInteractiveHost.js";
+import { createNonBlockingChecks } from "../../dist/runtime/lifecycleChecks.js";
+import { createHostSessionLifecycle } from "../../dist/runtime/hostSessionLifecycle.js";
 
-test("Host checks live Skills without repeated model checks; only accepted notices advance metadata", t => {
+test("Host checks live Skills without repeated model checks; only accepted notices advance metadata", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-host-skills-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const source = join(home, "skills", "sample");
@@ -26,6 +28,8 @@ test("Host checks live Skills without repeated model checks; only accepted notic
     entryPoint: { executable: process.execPath, cliEntry: "/fixture/cli.js" }
   });
   const env = { YUI_SESSION_MANIFEST: bootstrap.manifestPath };
+  assert.deepEqual(await checkSessionSkillsAsync(home, bootstrap.manifestPath, new AbortController().signal),
+    checkSessionSkills(home, bootstrap.manifestPath), "Advisory async checks resolve the same current metadata.");
   const notice = notices.createSessionSkillNotice(home);
   const first = notice.prepare("original input", env, "thread-1");
   assert.match(first.text, /sample/);
@@ -71,6 +75,14 @@ test("Host checks live Skills without repeated model checks; only accepted notic
   const renewed = notice.prepare("ready", env, "thread-1");
   renewed.commit();
   rmSync(join(source, "VERSION"));
+  let reportFailure;
+  const failure = new Promise(resolve => { reportFailure = resolve; });
+  const checks = createNonBlockingChecks([notices.createSessionSkillLifecycleCheck(home, () => env)], reportFailure);
+  const lifecycle = createHostSessionLifecycle({ after: checks });
+  lifecycle.send({ type: "connected", occupancy: "idle", nativeSessionId: "thread-1" });
+  assert.equal(lifecycle.state, "idle", "Invalid Skill metadata cannot hold Session lifecycle transitions.");
+  assert.match(String(await failure), /Current Skill sample/);
+  checks.close();
   assert.throws(() => notice.prepare("must not submit", env, "thread-1"), /Current Skill sample/);
   writeFileSync(join(source, "VERSION"), "2\n");
   assert.match(notice.prepare("repaired", env, "thread-1").text, /sample/);

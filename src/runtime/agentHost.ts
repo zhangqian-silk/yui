@@ -4,7 +4,7 @@ import { createConnection, createServer, type Server } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { createSessionSkillNotice } from "../context/sessionSkillNotice.js";
+import { createSessionSkillNotice, createSessionSkillLifecycleCheck } from "../context/sessionSkillNotice.js";
 
 
 import type { AgentAdapterId } from "../agent/adapterCatalog.js";
@@ -57,8 +57,8 @@ import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 import { AGENT_HOST_IMPLEMENTATION } from "./agentHostImplementation.js";
 import { closeAgentHostEndpoints } from "./agentHostCleanup.js";
 import { createHostUpgradeGate, type HostUpgradeFence, type HostUpgradeObservation } from "./hostUpgradeGate.js";
-import { createHostLifecycle, type HostLifecycleEvent, type HostLifecycleState,
-  type HostLifecycleTransition } from "./hostLifecycle.js";
+import { createHostSessionLifecycle, type HostSessionLifecycleEvent, type HostSessionLifecycleState,
+  type HostSessionLifecycleTransition } from "./hostSessionLifecycle.js";
 import { createNonBlockingChecks } from "./lifecycleChecks.js";
 import {
   readAgentRunConfigurationObservation,
@@ -199,7 +199,7 @@ export type AgentHostNativeControl = Readonly<{
   model?: string;
 }>;
 
-export type AgentHostProviderState = HostLifecycleState;
+export type AgentHostProviderState = HostSessionLifecycleState;
 
 export type AgentHostSnapshot = Readonly<{
   /** Confirmed native naming effect of this Provider connection. */
@@ -387,13 +387,14 @@ export async function runAgentHost(input: Readonly<{
     });
   };
   let snapshot = hostSnapshot("idle");
-  const lifecycleChecks = createNonBlockingChecks<HostLifecycleTransition>([{
+  const lifecycleChecks = createNonBlockingChecks<HostSessionLifecycleTransition>([
+    createSessionSkillLifecycleCheck(input.home, () => (sessionPayload ?? payload).environment), {
     id: "controller-lifecycle-hint",
     run: (_transition, signal) => {
       if (!signal.aborted) return signalRoleMailbox(input.home, sessionPayload ?? payload);
     }
-  }]);
-  const lifecycle = createHostLifecycle({ after: lifecycleChecks });
+  }], error => process.stderr.write(`Session lifecycle check failed: ${errorText(error)}\n`));
+  const lifecycle = createHostSessionLifecycle({ after: lifecycleChecks });
   let dispatchTail = Promise.resolve();
   let promptHuman = (): void => {};
   let humanConsole: ReturnType<typeof createInterface> | undefined;
@@ -407,9 +408,9 @@ export async function runAgentHost(input: Readonly<{
   await replayExitOutbox(input.home);
 
   type SnapshotFields = Omit<AgentHostSnapshot, "schemaVersion" | "state" | "updatedAt">;
-  const hostEvent = (event: HostLifecycleEvent, fields: SnapshotFields) => ({
+  const hostEvent = (event: HostSessionLifecycleEvent, fields: SnapshotFields) => ({
     event: { ...event, processInstanceId: fields.processInstanceId, nativeSessionId: fields.nativeSessionId,
-      attemptId: fields.attemptId, nativeTurnId: fields.nativeTurnId } as HostLifecycleEvent,
+      attemptId: fields.attemptId, nativeTurnId: fields.nativeTurnId } as HostSessionLifecycleEvent,
     fields
   });
   const updateSnapshot = (next: ReturnType<typeof hostEvent>): void => {

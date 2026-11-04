@@ -2,9 +2,26 @@
 
 # Session, AgentRun and notifications
 
-## Host lifecycle and nonblocking checks
+## Two lifecycle layers and nonblocking checks
 
-Host lifecycle state is owned by an explicit event/guard/transition table, not
+Controller custody of a Host and the Host's native Session lifecycle have
+separate event/guard/transition tables. Neither is an upgrade workflow.
+
+| Layer | Events and transitions | Authority and correlation |
+| --- | --- | --- |
+| Controller → Host | Fresh physical observations recover `unavailable`/`stopped`/`starting`/`running`. Authorized launch enters `starting`; matching launch handshake enters `running`. Stop or graceful-exit request enters `stopping`; sending exit does not prove `stopped`. Physical absence confirms `stopped`; unknown effects enter `unavailable`. | Owner, local operation/revision, returned binding and native Session ID. Durable Role/Task intent, launch reservations and exact process custody remain authoritative. |
+| Host → native Session | Launch, attachment, input acceptance, native activity, terminal, persistence, disconnect and exit drive the native states described below. | Native Session, proxy process, attempt and Turn identity; existing writer/resource fences still authorize effects. |
+
+The Controller wraps the shared Host port for launch/restore, observation and
+stop, including graceful-upgrade exit. A competing physical operation is
+rejected before its side effect, not queued or replayed by this FSM. Late
+reads and old bindings cannot overwrite newer custody; identical observations
+produce no hook feedback loop. A Controller restart reconstructs by observation,
+never by replaying the process-local state. Native completion/attachment exit
+does not prove Host process exit. Legal same-conversation resume correlates the
+layers without sharing their state enums or inventing another durable authority.
+
+Host-side native Session lifecycle state is owned by an explicit transition table, not
 by version detection. Launch/submit enters `starting`; attachment facts select
 `idle`, `busy`, `ready` (owned input), or `delivery-unknown`; acceptance enters
 `ready`; native execution enters `busy`; terminal handling enters `settling`;
@@ -23,6 +40,13 @@ coalesced (at most one running and one latest pending observation per check).
 A slow or failing check cannot veto a transition or hold event folding/input
 delivery; checks must yield for I/O and honour cancellation before effects.
 They may recommend work to the separate fenced upgrade coordinator.
+Controller Host-state hooks suggest version reconciliation. Host Session-state
+hooks asynchronously observe current Skill metadata on attachment/settlement,
+without reading Skill bodies, committing a notice or assuming model memory.
+The exact per-input integrity check remains an ingress safeguard: invalid
+Skills can reject that input, but an optional check cannot stall lifecycle.
+Only accepted input advances the existing notice baseline; unchanged input
+still carries just its transport marker.
 
 Controller startup, Host connection/exit observations, Host state-change
 signals and event persistence trigger version checks without an explicit
