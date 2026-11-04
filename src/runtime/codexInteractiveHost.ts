@@ -11,6 +11,7 @@ import { createSessionSkillNotice, createSessionSkillLifecycleCheck } from "../c
 import { isNativeContextRecovery } from "./contextRecovery.js";
 import { createHostSessionLifecycle, type HostSessionLifecycleEvent } from "./hostSessionLifecycle.js";
 import { createNonBlockingChecks } from "./lifecycleChecks.js";
+import { createNativeTitleSync } from "./nativeTitleSync.js";
 
 /**
  * Keep the native TUI and its transparent App Server attachment in one pane.
@@ -66,6 +67,9 @@ export async function runCodexInteractiveHost(
   let client: WebSocket | undefined;
   let closing = false;
   let startupRequestId: string | number | undefined;
+  let initializeRequestId: string | number | undefined;
+  let nativeAccountHome: string | undefined;
+  let titleSync: ReturnType<typeof createNativeTitleSync> | undefined;
   let connection: Awaited<ReturnType<typeof openCodexInteractiveConnection>> | undefined;
   let relay: WebSocketServer | undefined;
   const signals = ["SIGTERM", "SIGHUP", "SIGINT"] as const;
@@ -112,6 +116,9 @@ export async function runCodexInteractiveHost(
         try {
           if (binary) throw new Error("Codex TUI sent a binary App Server request.");
           const message = jsonObject(JSON.parse(data.toString()));
+          if (message.method === "thread/name/set") titleSync?.close();
+          if (message.method === "initialize"
+            && (typeof message.id === "string" || typeof message.id === "number")) initializeRequestId = message.id;
           if (snapshot.nativeSessionId === undefined
             && (message.method === "thread/start" || message.method === "thread/resume")) {
             if (startupRequestId !== undefined) throw new Error("Codex sent overlapping startup requests.");
@@ -150,6 +157,13 @@ export async function runCodexInteractiveHost(
       try {
         if (snapshot.nativeSessionId !== undefined
           && isNativeContextRecovery("codex", snapshot.nativeSessionId, message)) skillNotice.invalidate();
+        if (message.method === "thread/name/updated"
+          && (message.params as Record<string, unknown> | undefined)?.threadId === snapshot.nativeSessionId) titleSync?.close();
+        if (message.method === undefined && message.id === initializeRequestId) {
+          const initialized = message.result as Record<string, unknown> | undefined;
+          nativeAccountHome = typeof initialized?.codexHome === "string" ? initialized.codexHome : undefined;
+          initializeRequestId = undefined;
+        }
         if (message.method === undefined && (typeof message.id === "string" || typeof message.id === "number")) {
           const pending = pendingNotices.get(message.id);
           if (pending !== undefined) {
@@ -157,7 +171,10 @@ export async function runCodexInteractiveHost(
             const result = message.result as { turn?: { id?: unknown }; turnId?: unknown } | undefined;
             const turnId = result?.turn?.id ?? result?.turnId;
             if (message.error === undefined && typeof turnId === "string" && turnId.length > 0
-              && (pending.expectedTurnId === undefined || pending.expectedTurnId === turnId)) pending.commit();
+              && (pending.expectedTurnId === undefined || pending.expectedTurnId === turnId)) {
+              pending.commit();
+              titleSync?.notify();
+            }
           }
         }
         let nativeSessionId: string | undefined;
@@ -183,6 +200,9 @@ export async function runCodexInteractiveHost(
           transition({ type: "interactive-connected", nativeSessionId }, {
             nativeSessionId, conversationId: nativeSessionId
           });
+          titleSync = createNativeTitleSync(payload, nativeSessionId, nativeAccountHome,
+            result => process.stderr.write(`Native title: ${JSON.stringify(result)}\n`));
+          if (expectedId !== undefined) titleSync.notify();
         });
       } catch (error) {
         fail(error);
@@ -210,6 +230,7 @@ export async function runCodexInteractiveHost(
   } finally {
     lifecycleChecks.close();
     closing = true;
+    titleSync?.close();
     for (const signal of signals) process.removeListener(signal, stop);
     stop();
     client?.terminate();
@@ -219,7 +240,8 @@ export async function runCodexInteractiveHost(
   }
 }
 
-/** Preserve all native content parts (including images), adding only Host metadata. */
+/** Native user input owns previews/titles. Application context is a separate
+ * protocol field, including on steer; never prepend metadata to content parts. */
 export function codexInteractiveSkillInput(
   notice: ReturnType<typeof createSessionSkillNotice>,
   environment: Readonly<Record<string, string | undefined>>,
@@ -231,9 +253,12 @@ export function codexInteractiveSkillInput(
   return {
     params: {
       ...params,
-      input: prepared.text.length === 0 ? params.input : [
-        { type: "text", text: prepared.text.trimEnd(), text_elements: [] }, ...params.input
-      ]
+      ...(prepared.context === undefined ? {} : {
+        additionalContext: {
+          ...(params.additionalContext == null ? {} : jsonObject(params.additionalContext)),
+          "yui.session-skills": { kind: "application", value: prepared.context }
+        }
+      })
     },
     commit: prepared.commit
   };

@@ -33,9 +33,9 @@ export function createSessionSkillNotice(home: string) {
       environment: Readonly<Record<string, string | undefined>>,
       sessionKey: string,
       options: { recovery?: boolean; contextEpoch?: number } = {}
-    ): { text: string; commit(): void } {
+    ): { text: string; inputText: string; context?: string; commit(): void } {
       const manifest = environment.YUI_SESSION_MANIFEST;
-      if (manifest === undefined) return { text, commit() {} };
+      if (manifest === undefined) return { text, inputText: text, commit() {} };
       if (options.recovery) invalidate();
       let current: ReturnType<typeof checkSessionSkills>;
       try {
@@ -67,6 +67,8 @@ export function createSessionSkillNotice(home: string) {
       const preparedGeneration = generation;
       return {
         text: lines.length === 0 ? text : `${lines.join("\n")}\n\n${text}`,
+        inputText: text,
+        ...(lines.length === 0 ? {} : { context: lines.join("\n") }),
         commit() {
           if (generation !== preparedGeneration) return;
           previous = { key, skills };

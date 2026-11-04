@@ -1217,12 +1217,23 @@ export async function runAgentHost(input: Readonly<{
       // beginDurableProviderTurn validated current execution-environment,
       // authority and Session identity before this native write.
       const notice = skillNotice.prepare(
-        recoveryInput?.text ?? request.run.boundedText, activeRunPayload.environment,
+        session.adapterId === "codex" ? request.run.boundedText : recoveryInput?.text ?? request.run.boundedText,
+        activeRunPayload.environment,
         session.nativeSessionId, { recovery: recoveryInput !== undefined, contextEpoch: session.contextEpoch }
       );
       const receipt = endpointReceipt(await session.submit({
         ...request.run,
-        boundedText: notice.text,
+        boundedText: session.adapterId === "codex" ? notice.inputText : notice.text,
+        ...(session.adapterId !== "codex" || notice.context === undefined && recoveryInput === undefined ? {} : {
+          additionalContext: {
+            ...(notice.context === undefined ? {} : {
+              "yui.session-skills": { kind: "application" as const, value: notice.context }
+            }),
+            ...(recoveryInput === undefined ? {} : {
+              "yui.recovery": { kind: "application" as const, value: recoveryInput.text }
+            })
+          }
+        }),
         ...(recoveryInput === undefined ? {} : { requireQuiescent: true }),
         ...(recoveryInput?.expectedFailedNativeTurnId === undefined ? {} : {
           expectedFailedNativeTurnId: recoveryInput.expectedFailedNativeTurnId
@@ -1360,7 +1371,10 @@ export async function runAgentHost(input: Readonly<{
         { contextEpoch: session.contextEpoch });
       const receipt = endpointReceipt(await session.steer({
         ...request.run,
-        boundedText: notice.text,
+        boundedText: session.adapterId === "codex" ? notice.inputText : notice.text,
+        ...(session.adapterId !== "codex" || notice.context === undefined ? {} : {
+          additionalContext: { "yui.session-skills": { kind: "application", value: notice.context } }
+        }),
         inputRef: request.run.attemptId
       }), request.run.attemptId);
       if (receipt.nativeTurnId !== request.nativeTurnId) {

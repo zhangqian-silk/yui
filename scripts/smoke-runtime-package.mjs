@@ -527,8 +527,25 @@ try {
       () => JSON.stringify({ task: json("task", "show", task.id), events: json("task", "event", "list", task.id) }));
     assert.match(JSON.stringify(events()), /Native Codex result\./);
     const initialInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
-    assert.ok(initialInputs.some(row => JSON.stringify(row.input).includes("Current Skill pointers:")),
+    assert.ok(initialInputs.some(row => JSON.stringify(row.additionalContext ?? {}).includes("Current Skill pointers:")),
       "Actual Host-to-Provider input carries current pointers on first entry.");
+    assert.ok(initialInputs.every(row => !/Yui Host checked current Skills|Current Skill pointers:/.test(JSON.stringify(row.input))),
+      "Engineering metadata must not enter business input or its automatic title source.");
+    const titleDirectory = join(yuiHome, "runtime/native-titles");
+    const titleReceipt = () => {
+      if (!existsSync(titleDirectory)) return undefined;
+      return readdirSync(titleDirectory).flatMap(key => {
+        const file = join(titleDirectory, key, "receipt.json");
+        return existsSync(file) ? [JSON.parse(readFileSync(file, "utf8"))] : [];
+      }).find(receipt => receipt.identity.taskId === task.id && receipt.identity.roleName === "leader");
+    };
+    await waitFor(() => titleReceipt()?.status === "confirmed",
+      "Trusted-local Task title did not receive a native confirmation.", () => JSON.stringify(titleReceipt()));
+    const confirmedTitle = titleReceipt();
+    assert.equal(confirmedTitle.requestedTitle, `Yui Leader ${task.id} · runtime smoke`);
+    const nativeTitleFile = join(environment.CODEX_HOME, "fixture-title-"
+      + createHash("sha256").update(confirmedTitle.identity.threadId).digest("hex") + ".json");
+    assert.equal(JSON.parse(readFileSync(nativeTitleFile, "utf8")).name, confirmedTitle.requestedTitle);
     assert.equal(json("task", "show", task.id).task.status, "active");
     assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
       "Launching and waking a Leader must not generate a Session CLI script.");
@@ -714,7 +731,7 @@ try {
     await waitFor(() => processExited(serverPid), "The empty fixture tmux server did not exit.");
     const deliveredInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     assert.ok(deliveredInputs.some(row => {
-      return row.input.length === 1 && row.input[0].type === "text"
+      return row.additionalContext === undefined && row.input.length === 1 && row.input[0].type === "text"
         && row.input[0].text.startsWith("Yui Task notification:");
     }), "A later actual Host Turn begins with the original notification, without any Skill prefix or extra part.");
     phase("task/session/archive");

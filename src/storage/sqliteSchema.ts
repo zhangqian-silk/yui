@@ -321,6 +321,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // New versioned signal sources in the existing role-runtime mailbox. No
   // historical requests are inferred and existing records remain unchanged.
   sql: ""
+}, {
+  fromVersion: "1.27",
+  toVersion: "1.28",
+  name: "native-title-effect-receipts",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Additive exact-identity intent/confirmation files under runtime/native-titles.
+  // Never invent native ownership or replay history during migration.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

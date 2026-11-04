@@ -5,42 +5,11 @@ import { codexClientInitialization } from "../runtime/codexAppServerRuntime.js";
 
 type JsonObject = Record<string, unknown>;
 
-export type CodexThreadNameRequest = Readonly<{
-  command: string;
-  baseArgs?: readonly string[];
-  environment: NodeJS.ProcessEnv;
-  threadId: string;
-  name: string;
-  timeoutMs?: number;
-}>;
-
 const DEFAULT_TIMEOUT_MS = 1_000;
 
-export async function setCodexThreadName(
-  request: CodexThreadNameRequest
-): Promise<void> {
-  const timeoutMs = threadNameTimeout(request.timeoutMs);
-  const client = await CodexNamingClient.start(
-    request.command,
-    request.environment,
-    request.baseArgs ?? [],
-    timeoutMs
-  );
-  try {
-    await withTimeout(
-      client.request("thread/name/set", {
-        threadId: requiredText(request.threadId, "Codex thread id"),
-        name: requiredThreadName(request.name)
-      }),
-      timeoutMs,
-      "Timed out setting Codex thread name."
-    );
-  } finally {
-    client.close();
-  }
-}
-
-class CodexNamingClient {
+export class CodexNamingClient {
+  accountHome: string | undefined;
+  readonly exited: Promise<void>;
   readonly #pending = new Map<number, Readonly<{
     resolve(value: JsonObject): void;
     reject(error: Error): void;
@@ -48,18 +17,36 @@ class CodexNamingClient {
   readonly #stderr: string[] = [];
   #nextId = 1;
   #closed = false;
+  readonly #deadline: NodeJS.Timeout;
 
-  private constructor(readonly child: ChildProcessWithoutNullStreams) {
+  private constructor(readonly child: ChildProcessWithoutNullStreams, timeoutMs: number) {
+    this.exited = new Promise(resolve => child.once("close", () => resolve()));
+    this.#deadline = setTimeout(() => {
+      this.#failAll(new Error("Native title metadata process deadline exceeded; effect may be unknown."));
+      this.close("SIGKILL");
+    }, timeoutMs);
     const output = createInterface({ input: child.stdout });
-    output.on("line", (line) => { this.#receive(line); });
+    output.on("line", (line) => {
+      try {
+        if (Buffer.byteLength(line) > 1_048_576) throw new Error("Native title reply exceeds its bound.");
+        this.#receive(line);
+      } catch (error) {
+        this.#failAll(error instanceof Error ? error : new Error(String(error)));
+        this.close();
+      }
+    });
+    child.stdout.on("error", error => { this.#failAll(error); this.close(); });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
       this.#stderr.push(chunk);
       if (this.#stderr.join("").length > 16_384) this.#stderr.shift();
     });
-    child.on("error", (error) => { this.#failAll(error); });
+    child.on("error", (error) => { this.#failAll(error); this.close(); });
+    child.stdin.on("error", (error) => { this.#failAll(error); this.close(); });
     child.on("exit", (code, signal) => {
+      clearTimeout(this.#deadline);
       if (this.#closed) return;
+      this.#closed = true;
       const detail = this.#stderr.join("").trim();
       this.#failAll(new Error(
         `Codex App Server exited (${code ?? signal ?? "unknown"})${
@@ -75,21 +62,24 @@ class CodexNamingClient {
     baseArgs: readonly string[],
     timeoutMs: number
   ): Promise<CodexNamingClient> {
+    const deadlineMs = threadNameTimeout(timeoutMs);
     const client = new CodexNamingClient(spawn(
       command,
-      [...baseArgs, "app-server", "--stdio"],
+      [...baseArgs, "app-server", "--listen", "stdio://"],
       { env: environment, stdio: ["pipe", "pipe", "pipe"] }
-    ));
+    ), deadlineMs);
     try {
-      await withTimeout(
+      const initialized = await withTimeout(
         client.request("initialize", codexClientInitialization()),
         timeoutMs,
         "Timed out initializing Codex App Server for thread naming."
       );
+      client.accountHome = typeof initialized.codexHome === "string" ? initialized.codexHome : undefined;
       client.notify("initialized", {});
       return client;
     } catch (error) {
       client.close();
+      await client.exited;
       throw error;
     }
   }
@@ -107,10 +97,17 @@ class CodexNamingClient {
     this.#write({ method, params });
   }
 
-  close(): void {
+  close(signal: NodeJS.Signals = "SIGTERM"): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.child.kill("SIGTERM");
+    clearTimeout(this.#deadline);
+    this.child.kill(signal);
+    // An owned metadata process must not survive a lost reply or ignored TERM.
+    const reap = setTimeout(() => {
+      if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill("SIGKILL");
+    }, 250);
+    reap.unref();
+    this.child.once("exit", () => clearTimeout(reap));
     this.#failAll(new Error("Codex App Server closed."));
   }
 
@@ -137,14 +134,19 @@ class CodexNamingClient {
       }
       return;
     }
-    this.#pending.delete(message.id);
-    if (message.error !== undefined) {
-      const error = object(message.error, "Codex App Server error");
-      pending.reject(new Error(
-        typeof error.message === "string" ? error.message : "Codex App Server request failed."
-      ));
-    } else {
-      pending.resolve(object(message.result, "Codex App Server result"));
+    try {
+      if (message.error !== undefined) {
+        const error = object(message.error, "Codex App Server error");
+        pending.reject(new Error(
+          typeof error.message === "string" ? error.message : "Codex App Server request failed."
+        ));
+      } else {
+        pending.resolve(object(message.result, "Codex App Server result"));
+      }
+    } catch (error) {
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+    } finally {
+      this.#pending.delete(message.id);
     }
   }
 
@@ -159,24 +161,6 @@ function object(value: unknown, label: string): JsonObject {
     throw new Error(`${label} is invalid.`);
   }
   return value as JsonObject;
-}
-
-function requiredText(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} is invalid.`);
-  }
-  return value;
-}
-
-function requiredThreadName(value: unknown): string {
-  if (typeof value !== "string" || value.includes("\0")) {
-    throw new Error("Codex thread name is invalid.");
-  }
-  const normalized = value.trim();
-  if (normalized.length === 0 || normalized.length > 1_024) {
-    throw new Error("Codex thread name is invalid.");
-  }
-  return normalized;
 }
 
 function threadNameTimeout(value: unknown): number {

@@ -9,6 +9,8 @@ import { loadYuiSkillContexts } from "../../dist/context/roleSessionContext.js";
 import { codexInteractiveSkillInput } from "../../dist/runtime/codexInteractiveHost.js";
 import { createNonBlockingChecks } from "../../dist/runtime/lifecycleChecks.js";
 import { createHostSessionLifecycle } from "../../dist/runtime/hostSessionLifecycle.js";
+import { CodexAppServerRuntime } from "../../dist/runtime/codexAppServerRuntime.js";
+import { isNativeContextRecovery } from "../../dist/runtime/contextRecovery.js";
 
 test("Host checks live Skills without repeated model checks; only accepted notices advance metadata", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-host-skills-"));
@@ -32,6 +34,8 @@ test("Host checks live Skills without repeated model checks; only accepted notic
     checkSessionSkills(home, bootstrap.manifestPath), "Advisory async checks resolve the same current metadata.");
   const notice = notices.createSessionSkillNotice(home);
   const first = notice.prepare("original input", env, "thread-1");
+  assert.equal(first.inputText, "original input");
+  assert.match(first.context, /sample/);
   assert.match(first.text, /sample/);
   assert.match(first.text, /unchanged-skill/);
   assert.ok(first.text.includes(bootstrap.roleProfilePath),
@@ -73,6 +77,12 @@ test("Host checks live Skills without repeated model checks; only accepted notic
     "A late acceptance must not erase a recovery boundary.");
   const renewed = notice.prepare("ready", env, "thread-1");
   renewed.commit();
+  const compacted = { method: "item/completed", params: { threadId: "thread-1", item: { type: "contextCompaction" } } };
+  assert.equal(isNativeContextRecovery("codex", "other-thread", compacted), false);
+  assert.equal(isNativeContextRecovery("codex", "thread-1", compacted), true);
+  const afterCompaction = notice.prepare("after compaction", env, "thread-1", { contextEpoch: 1 });
+  assert.equal(afterCompaction.inputText, "after compaction");
+  assert.match(afterCompaction.context, /sample/);
   rmSync(join(source, "VERSION"));
   let reportFailure;
   const failure = new Promise(resolve => { reportFailure = resolve; });
@@ -87,12 +97,40 @@ test("Host checks live Skills without repeated model checks; only accepted notic
   assert.match(notice.prepare("repaired", env, "thread-1").text, /sample/);
   const originalParts = [{ type: "text", text: "user original" }, { type: "image", url: "fixture-image" }];
   const native = codexInteractiveSkillInput(notice, env, "thread-1", { input: originalParts, threadId: "thread-1" });
-  assert.deepEqual(native.params.input.slice(1), originalParts);
+  assert.deepEqual(native.params.input, originalParts,
+    "Host metadata must never enter the native user input/title preview.");
   assert.equal(native.params.threadId, "thread-1");
-  assert.match(native.params.input[0].text, /sample/);
+  assert.match(native.params.additionalContext["yui.session-skills"].value, /sample/);
+  assert.equal(native.params.additionalContext["yui.session-skills"].kind, "application");
   native.commit();
   const nativeWarm = codexInteractiveSkillInput(notice, env, "thread-1", { input: originalParts });
   assert.equal(nativeWarm.params.input, originalParts,
     "Unchanged native input retains every original part without an extra text part.");
+  assert.equal(nativeWarm.params.additionalContext, undefined);
+  const callerContext = { editor: { kind: "untrusted", value: "Selected code" } };
+  assert.deepEqual(codexInteractiveSkillInput(notice, env, "thread-1",
+    { input: originalParts, additionalContext: callerContext }).params.additionalContext.editor,
+  callerContext.editor, "Native client context must survive Host mediation.");
   assert.equal(notice.prepare("unmanaged", {}, "thread-1").text, "unmanaged");
+});
+
+test("Codex submit and steer keep application context out of user input", async () => {
+  const requests = [];
+  const runtime = new CodexAppServerRuntime({
+    async request(method, params) {
+      requests.push({ method, params });
+      if (method === "thread/read") return { thread: { id: "thread-1", status: { type: "idle" }, turns: [] } };
+      if (method === "thread/turns/list") return { data: [{ id: "turn-1", status: "inProgress" }], nextCursor: null };
+      return method === "turn/start" ? { turn: { id: "turn-1" } } : { turnId: "turn-1" };
+    }
+  });
+  const additionalContext = { "yui.session-skills": { kind: "application", value: "internal check" } };
+  await runtime.submitTurn({ conversationId: "thread-1", attemptId: "input-1",
+    text: "business", expectedNoActiveTurn: true, additionalContext });
+  await runtime.steerTurn({ conversationId: "thread-1", expectedTurnId: "turn-1",
+    text: "follow-up", additionalContext });
+  for (const [index, request] of requests.filter(request => request.method.startsWith("turn/")).entries()) {
+    assert.deepEqual(request.params.additionalContext, additionalContext);
+    assert.equal(request.params.input[0].text, index === 0 ? "business" : "follow-up");
+  }
 });

@@ -11,6 +11,10 @@ import type {
 } from "./providerControl.js";
 
 export type JsonRpcObject = Readonly<Record<string, unknown>>;
+export type CodexAdditionalContext = Readonly<Record<string, Readonly<{
+  kind: "application" | "untrusted";
+  value: string;
+}>>>;
 
 /**
  * Preserve the native non-interactive Codex identity used by our historical
@@ -246,6 +250,7 @@ export class CodexAppServerRuntime implements
     conversationId: string;
     attemptId: string;
     text: string;
+    additionalContext?: CodexAdditionalContext;
     expectedNoActiveTurn: boolean;
     expectedFailedNativeTurnId?: string;
     requireQuiescent?: boolean;
@@ -253,6 +258,7 @@ export class CodexAppServerRuntime implements
     return this.startTurn({
       conversationId: input.conversationId,
       text: input.text,
+      ...(input.additionalContext === undefined ? {} : { additionalContext: input.additionalContext }),
       expectedNoActiveTurn: input.expectedNoActiveTurn,
       ...(input.requireQuiescent ? { requireQuiescent: true } : {}),
       ...(input.expectedFailedNativeTurnId === undefined ? {} : {
@@ -265,6 +271,7 @@ export class CodexAppServerRuntime implements
   async startTurn(input: Readonly<{
     conversationId: string;
     text: string;
+    additionalContext?: CodexAdditionalContext;
     expectedNoActiveTurn: boolean;
     clientUserMessageId?: string;
     expectedFailedNativeTurnId?: string;
@@ -319,6 +326,7 @@ export class CodexAppServerRuntime implements
     try {
       const result = await this.transport.request("turn/start", {
         threadId,
+        ...(input.additionalContext === undefined ? {} : { additionalContext: input.additionalContext }),
         ...(input.clientUserMessageId === undefined
           ? {}
           : { clientUserMessageId: text(input.clientUserMessageId, "Codex input attempt id") }),
@@ -341,6 +349,7 @@ export class CodexAppServerRuntime implements
     conversationId: string;
     expectedTurnId: string;
     text: string;
+    additionalContext?: CodexAdditionalContext;
     clientUserMessageId?: string;
   }>): Promise<CodexTurnAcceptance> {
     const threadId = text(input.conversationId, "Codex thread id");
@@ -359,6 +368,7 @@ export class CodexAppServerRuntime implements
     try {
       const result = await this.transport.request("turn/steer", {
         threadId,
+        ...(input.additionalContext === undefined ? {} : { additionalContext: input.additionalContext }),
         expectedTurnId,
         ...(input.clientUserMessageId === undefined
           ? {}
