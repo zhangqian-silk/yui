@@ -125,3 +125,13 @@ The fixture now carries realistic Role responsibilities/constraints/Skills and a
 `harness/long-text.py` (1365/768/390/360: detail, editor, template dialog, comparison, Esc) and
 `harness/long-text-save.py` (edit in dialog → Done → save → persisted list) reproduce it. Screenshots: `x-*.png`
 (PNG size equals the CSS viewport; no horizontal overflow at any width; touch: Expand 44×40, dialog buttons ≥40px).
+
+## Eighth pass: unknown endpoint binding is not "no binding"
+
+When `/api/models` is still loading or fails, an endpoint binding may still replace the Role/Profile model. The pages
+now show the saved value without claiming it is the launch model: the list column reads "Saved model · effort", each
+row's source adds "endpoint binding unknown" (or "reading endpoint binding…" while loading), and the detail header
+says "Saved model" instead of "New Sessions use". The Agent and Role guides say the binding could not be read and ask
+the Operator to read the Yui model registry first; "no endpoint binding" is stated only after a successful read. A
+later successful read restores the launch precedence. No retry mechanism was added. `harness/route-unknown.py`
+(`nomodels` fixture vs `full`), screenshots `u-*.png`.
