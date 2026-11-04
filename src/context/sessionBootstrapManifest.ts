@@ -65,8 +65,8 @@ export function withSessionContextPointer(
  * Unmediated/native clients retain the explicit diagnostic fallback. */
 export function sessionContextInstructions(manifestPath: string, digest?: string): string {
   return `Yui Session Manifest: ${manifestPath}${digest === undefined ? "" : ` (digest ${digest})`}. `
-    + "For inputs carrying the yui:skills-checked transport marker or an explicit Yui Host Skill-check notice, engineering has checked current versions; do not repeat or narrate that check. "
-    + `Otherwise run its contextProtocol.skillCheckCommand (fallback: ${SKILL_CHECK_COMMAND}). `
+    + "The managed Host checks Skills internally and injects guidance only when loading is needed; absence of a notice does not require another check. "
+    + `For unmediated clients or uncertain current input routing, run its contextProtocol.skillCheckCommand (fallback: ${SKILL_CHECK_COMMAND}); conversation reuse alone does not establish Host mediation. `
     + "On first entry or lost instructions, read the current applicable Skill entry points, then only references needed for the current action. "
     + "On change reload affected instructions. Compaction does not require restoring every previously used procedure. "
     + "Preserve the Manifest Role profile; metadata never proves loading or memory. Keep routine role, version and empty-inbox checks internal.";

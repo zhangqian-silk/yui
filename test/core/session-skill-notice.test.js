@@ -45,14 +45,13 @@ test("Host checks live Skills without repeated model checks; only accepted notic
   assert.ok(!warm.text.includes(bootstrap.roleProfilePath),
     "Unchanged input must not repeat the cold profile pointer.");
   assert.ok(Buffer.byteLength(warm.text) < Buffer.byteLength(first.text));
-  // An unchanged long-running conversation carries only the engineering
-  // observation, not a repeated instruction/recovery manual on every input.
+  // An unchanged long-running conversation has no extra injected content.
   for (let index = 0; index < 100; index += 1) {
     const body = `business input ${index}`;
     const next = notice.prepare(body, env, "thread-1");
     assert.ok(next.text.endsWith(body), "Keep the business input verbatim.");
-    assert.equal(next.text, `<!-- yui:skills-checked -->\n\n${body}`,
-      "Ordinary input carries transport provenance only, not a repeated natural-language notice.");
+    assert.equal(next.text, body,
+      "Ordinary input is byte-for-byte unchanged, without notices, markers or separators.");
     next.commit();
   }
   writeFileSync(join(source, "VERSION"), "2\n");
@@ -93,7 +92,7 @@ test("Host checks live Skills without repeated model checks; only accepted notic
   assert.match(native.params.input[0].text, /sample/);
   native.commit();
   const nativeWarm = codexInteractiveSkillInput(notice, env, "thread-1", { input: originalParts });
-  assert.doesNotMatch(nativeWarm.params.input[0].text, /sample|session skills --json/);
-  assert.deepEqual(nativeWarm.params.input.slice(1), originalParts);
+  assert.equal(nativeWarm.params.input, originalParts,
+    "Unchanged native input retains every original part without an extra text part.");
   assert.equal(notice.prepare("unmanaged", {}, "thread-1").text, "unmanaged");
 });

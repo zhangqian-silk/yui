@@ -46,7 +46,7 @@ without reading Skill bodies, committing a notice or assuming model memory.
 The exact per-input integrity check remains an ingress safeguard: invalid
 Skills can reject that input, but an optional check cannot stall lifecycle.
 Only accepted input advances the existing notice baseline; unchanged input
-still carries just its transport marker.
+is passed through without any extra content.
 
 Controller startup, Host connection/exit observations, Host state-change
 signals and event persistence trigger version checks without an explicit
@@ -81,14 +81,16 @@ repeated; a later exact successful handshake can settle the retained request.
 This fence covers Host-controlled ingress, not arbitrary external native clients;
 it never terminates a shared daemon or native conversation.
 
-Host Skill checks still run before every input. Unchanged inputs carry only
-the 27-byte `yui:skills-checked` HTML-comment marker (plus two separators), not
-repeated natural-language notices or instructions. That per-input provenance
-keeps the explicit check fallback for unmediated clients. Cold attachment,
+Host Skill checks still run before every input. Unchanged inputs are passed
+through exactly, with no notice, marker, separator or extra native input part.
+The attachment's loading guidance explains this managed-input contract; no
+notice is not a reason to repeat the check. Unmediated clients or uncertain
+current input routing retain the explicit Manifest check fallback; reusing a
+conversation alone does not establish Host mediation. Cold attachment,
 affected Skill changes and observed native compaction supply loading guidance;
 compaction invalidates the next input's metadata baseline. Without a reliable
 native event, the Agent must still recover any missing instructions using the
-Manifest. Neither a version nor an accepted marker proves model memory.
+Manifest. Neither a version nor an accepted notice proves model memory.
 Routine checks and empty inboxes are not user-facing progress.
 
 ## Session stop and runtime observations

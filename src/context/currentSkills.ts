@@ -69,8 +69,8 @@ export async function checkCurrentSkillsAsync(home: string | undefined, ids: rea
 
 export const SKILL_CHECK_COMMAND = "yui session skills --json";
 export const SKILL_REUSE_RULE = "The managed Host checks current Skill versions/availability before each input; "
-  + "do not repeat a check identified by the yui:skills-checked transport marker or an explicit Host notice. "
-  + "Without either, check through the Manifest's command. Keep routine checks internal, not user-facing progress. "
+  + "unchanged inputs carry no notice or marker, and do not require a duplicate check. "
+  + "For unmediated clients or uncertain current input routing, check through the Manifest's command; conversation reuse alone does not establish Host mediation. Keep routine checks internal, not user-facing progress. "
   + "Reuse unchanged full instructions in context; messages alone require no reload. "
   + "Read affected entries/references fully on change or localized loss. On first entry, recovery or lost context, "
   + "rebuild the current working set from applicable Skill entry points and action-relevant references, not all past procedures. "

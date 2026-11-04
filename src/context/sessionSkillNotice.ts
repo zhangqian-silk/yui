@@ -20,10 +20,6 @@ export function createSessionSkillLifecycleCheck(home: string,
   };
 }
 
-/** Per-input provenance, not a model memory/load receipt. A detached client
- * cannot inherit the Host check merely by reusing the same conversation. */
-export const HOST_SKILL_CHECK_MARKER = "<!-- yui:skills-checked -->";
-
 /** Host-local last accepted metadata, never a model loading/memory receipt.
  * A new Host/attachment starts cold. No durable schema or input replay is added. */
 export function createSessionSkillNotice(home: string) {
@@ -57,12 +53,11 @@ export function createSessionSkillNotice(home: string) {
         .map(([, value]) => value);
       const removed = !cold && [...previous!.skills.keys()].some(id => !skills.has(id));
       // Every input is checked, but only a lifecycle/metadata event needs an
-      // instruction-loading notice. This marker distinguishes Host-mediated
-      // input from an unmediated client without restating the operating manual.
-      const lines = [HOST_SKILL_CHECK_MARKER];
+      // instruction-loading notice. Unchanged input is passed through exactly.
+      const lines: string[] = [];
       if (cold || changed.length > 0 || removed) {
         lines.push(`Yui Session Manifest: ${manifest}`,
-          "The yui:skills-checked transport marker means this input passed the Host's current Skill check; do not repeat or narrate that check. It is not proof of retained instructions. Inputs without this marker or an explicit Host check notice still require the Manifest check fallback.",
+          "This attachment uses Host-managed input checks. Unchanged inputs carry no Skill notice; do not repeat or narrate the Host's checks. A detached or unmediated client must use the Manifest check fallback; conversation reuse alone does not establish Host mediation.",
           cold
             ? `First input or recovered attachment: read the exact Role profile at ${current.roleProfileRef.path} and the full current listed Skill entry points. Follow references only for the action you are taking, not to restore every previously used procedure. A Task role-profile projection is not this profile.`
             : "Skill metadata changed: load affected entries and applicable references; retain other complete instructions.",
@@ -71,7 +66,7 @@ export function createSessionSkillNotice(home: string) {
       }
       const preparedGeneration = generation;
       return {
-        text: `${lines.join("\n")}\n\n${text}`,
+        text: lines.length === 0 ? text : `${lines.join("\n")}\n\n${text}`,
         commit() {
           if (generation !== preparedGeneration) return;
           previous = { key, skills };

@@ -529,8 +529,6 @@ try {
     const initialInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     assert.ok(initialInputs.some(row => JSON.stringify(row.input).includes("Current Skill pointers:")),
       "Actual Host-to-Provider input carries current pointers on first entry.");
-    assert.ok(initialInputs.every(row => JSON.stringify(row.input).includes("<!-- yui:skills-checked -->")),
-      "Actual managed submissions perform engineering checks, not just notification rendering.");
     assert.equal(json("task", "show", task.id).task.status, "active");
     assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
       "Launching and waking a Leader must not generate a Session CLI script.");
@@ -716,9 +714,9 @@ try {
     await waitFor(() => processExited(serverPid), "The empty fixture tmux server did not exit.");
     const deliveredInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     assert.ok(deliveredInputs.some(row => {
-      const input = JSON.stringify(row.input);
-      return input.includes("<!-- yui:skills-checked -->") && !input.includes("Current Skill pointers:");
-    }), "A later actual Host Turn omits unchanged Skill metadata without skipping its check.");
+      return row.input.length === 1 && row.input[0].type === "text"
+        && row.input[0].text.startsWith("Yui Task notification:");
+    }), "A later actual Host Turn begins with the original notification, without any Skill prefix or extra part.");
     phase("task/session/archive");
 
     const updateStarted = performance.now();

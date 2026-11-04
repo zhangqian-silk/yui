@@ -13,12 +13,14 @@ Resolve links relative to their containing file.
 ## Keep the current working set
 
 The managed Host mechanically checks current Skill VERSION/readability for each
-input. The `yui:skills-checked` transport marker or an explicit Host check notice
-identifies that input's check; do not duplicate it. The marker carries no
-instruction-loading or model-memory receipt. Keep routine role/Skill checks and
-empty-inbox observations internal; only report business progress or actionable
-failures. Without either marker or notice, run the Manifest's `contextProtocol.skillCheckCommand`
+input. It injects guidance only when loading is needed; unchanged inputs carry
+no notice or marker. Do not duplicate the Host's check merely because no notice
+appears. For unmediated clients or uncertain current input routing, run the
+Manifest's `contextProtocol.skillCheckCommand`
 (older Manifests: `yui session skills --json`) through the intended CLI/Home.
+Conversation reuse alone does not establish Host mediation. Keep routine
+role/Skill checks and empty-inbox observations internal; only report business
+progress or actionable failures.
 Global `loadCommand` includes the check. Recheck after repair/relevant change.
 
 A check is metadata, not bodies, remembered instructions, a loading receipt or
