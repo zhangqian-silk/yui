@@ -160,17 +160,17 @@ adjudication aggregation are deterministic; they do not run or measure a model.
 
 `ci.yml` runs on PRs and master. Business contracts and full package business
 wiring run once on Linux x64/Node 24. Platform tests run on Linux Node 24/26
-and Mac Intel/Apple Silicon Node 24. Every job builds exactly once, without
+and macOS Apple Silicon Node 24. Every job builds exactly once, without
 another lint or implicit pretest build. Keep the existing job names for branch
 checks; the complete workflow must pass for the exact master commit.
 
 | Evidence | PR/master | Exact release tarball |
 | --- | --- | --- |
 | Business/state/authority contracts (`test/core`) | Linux 24 once | Reuse exact-SHA successful Core CI |
-| OS/helper/PTY/Git/SQLite boundaries (`test/platform`) | Linux 24/26, both Macs 24 | Real SQLite SQL/GC on all 12 installs; other installed boundaries below |
+| OS/helper/PTY/Git/SQLite boundaries (`test/platform`) | Linux 24/26, Apple Silicon Mac 24 | Real SQLite SQL/GC on all 8 installs; other installed boundaries below |
 | `full` smoke: business Jobs/Schedules + lifecycle + compatibility | Linux 24 once | Reuse exact-SHA business evidence |
-| `lifecycle` smoke: restart, Session/Host handoff, archive + compatibility | Both Macs 24 (Linux included in full) | Node 24 on each of the 3 platforms |
-| `compatibility` smoke: setup, CLI/bin, helpers, Doctor/PTY/SQLite | Linux 26 (included in other profiles) | All 3 platforms × Node 20/22/24/26 (included in lifecycle on 24) |
+| `lifecycle` smoke: restart, Session/Host handoff, archive + compatibility | Apple Silicon Mac 24 (Linux included in full) | Node 24 on each of the 2 platforms |
+| `compatibility` smoke: setup, CLI/bin, helpers, Doctor/PTY/SQLite | Linux 26 (included in other profiles) | Both platforms × Node 20/22/24/26 (included in lifecycle on 24) |
 
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` exercises
 the actual CLI/Controller/Host/SQLite and isolated tmux, replacing only the
@@ -224,7 +224,7 @@ It starts empty on each smoke invocation and is removed with the fixture.
 No cache is restored across jobs, packages or Node versions, and no production
 default changes. Keep it out of V8 coverage runs, where it can reduce precision.
 
-`publish.yml` builds one archive containing all three native targets and runs
+`publish.yml` builds one archive containing both supported native targets and runs
 the profiles above against that exact freshly installed package through
 `YUI_INSTALLED_ROOT`, adding actual npm-bin, dependency, supported Node version,
 artifact and provenance boundaries. This validates runtime integration, not

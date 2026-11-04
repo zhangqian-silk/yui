@@ -99,6 +99,11 @@ const allPlatforms = process.argv[4] === "--all-platforms";
 if (process.argv.length !== (allPlatforms ? 5 : 4)) {
   throw new Error("assemble-runtime-package accepts --output <directory> [--all-platforms].");
 }
+const supportedNativeTargets = ["linux-x64", "darwin-arm64"];
+const nativeTargets = allPlatforms ? supportedNativeTargets : [`${process.platform}-${process.arch}`];
+if (nativeTargets.some(target => !supportedNativeTargets.includes(target))) {
+  throw new Error(`Unsupported runtime assembly target: ${nativeTargets.join(", ")}.`);
+}
 
 const output = resolve(root, process.argv[outputIndex + 1]);
 const outputRelative = relative(root, output);
@@ -125,9 +130,6 @@ for (const sourceName of runtimeSources) {
   cpSync(source, destination);
   chmodSync(destination, builtName === "cli.js" ? 0o755 : 0o644);
 }
-const nativeTargets = allPlatforms
-  ? ["linux-x64", "darwin-x64", "darwin-arm64"]
-  : [`${process.platform}-${process.arch}`];
 const nativeFiles = nativeTargets.flatMap(target => [
   `runtime/native/${target}/claude-process-owner`,
   ...(target.startsWith("darwin-") ? [`runtime/native/${target}/process-identity`] : [])
@@ -196,6 +198,8 @@ const runtimePackage = {
   bin: { yui: "./dist/cli.js" },
   files: RUNTIME_PACKAGE_FILES,
   engines: sourcePackage.engines,
+  // npm cannot express OS/CPU pairs: cli.js rejects unsupported combinations
+  // before loading the control plane. Keep the runtime lifecycle-script-free.
   os: allPlatforms ? ["linux", "darwin"] : [process.platform],
   cpu: allPlatforms ? ["x64", "arm64"] : [process.arch],
   // npm applies libc constraints to macOS too, where libc is undefined.
