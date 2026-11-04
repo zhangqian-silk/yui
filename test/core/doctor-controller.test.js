@@ -159,6 +159,33 @@ test("Controller failure reaches the CLI with recovery guidance while offline re
   assert.equal(started, 1);
 });
 
+test("startup retries only ambiguous status reads and never treats them as spawn authority", async () => {
+  const reset = classifyControllerSocketError(
+    Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }), true);
+  const running = { running: true, pid: 4242, ...yuiVersionIdentity(),
+    protocolVersion: yuiVersionIdentity().controllerProtocolVersion };
+  for (const outcome of ["running", "absent", "unknown"]) {
+    let reads = 0, spawned = 0;
+    const pending = ensureFileTaskController("/unused-status-fixture", {
+      call: async (_home, method) => {
+        assert.equal(method, "controller.status");
+        reads++;
+        if (reads === 1 || outcome === "unknown") throw reset;
+        if (outcome === "absent" && spawned === 0) {
+          throw new ControllerClientError("CONTROLLER_NOT_RUNNING", "proven absent");
+        }
+        return running;
+      },
+      spawnController: () => { spawned++; return 4242; },
+      startupTimeoutMs: 20, pollIntervalMs: 1
+    });
+    if (outcome === "unknown") await assert.rejects(pending, error => error === reset);
+    else assert.equal((await pending).pid, 4242);
+    assert.ok(reads > 1);
+    assert.equal(spawned, outcome === "absent" ? 1 : 0);
+  }
+});
+
 test("a reset after stop acknowledgement is not exit proof or permission to spawn a successor", async () => {
   const reset = classifyControllerSocketError(
     Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }), true);
