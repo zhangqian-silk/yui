@@ -529,8 +529,6 @@ try {
     const initialInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     assert.ok(initialInputs.some(row => JSON.stringify(row.input).includes("Current Skill pointers:")),
       "Actual Host-to-Provider input carries current pointers on first entry.");
-    assert.ok(initialInputs.every(row => JSON.stringify(row.input).includes("Yui Host checked current Skills")),
-      "Actual managed submissions perform engineering checks, not just notification rendering.");
     assert.equal(json("task", "show", task.id).task.status, "active");
     assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
       "Launching and waking a Leader must not generate a Session CLI script.");
@@ -716,9 +714,9 @@ try {
     await waitFor(() => processExited(serverPid), "The empty fixture tmux server did not exit.");
     const deliveredInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
     assert.ok(deliveredInputs.some(row => {
-      const input = JSON.stringify(row.input);
-      return input.includes("Yui Host checked current Skills") && !input.includes("Current Skill pointers:");
-    }), "A later actual Host Turn omits unchanged Skill metadata without skipping its check.");
+      return row.input.length === 1 && row.input[0].type === "text"
+        && row.input[0].text.startsWith("Yui Task notification:");
+    }), "A later actual Host Turn begins with the original notification, without any Skill prefix or extra part.");
     phase("task/session/archive");
 
     const updateStarted = performance.now();
@@ -764,11 +762,20 @@ try {
       "--request-id", "update-pending").message;
     const notificationTask = json("task", "create", "update notification fixture").task;
     json("task", "cancel", notificationTask.id, "--summary", "Notify the busy Operator.");
-    await waitFor(() => pending().some(message => message.id !== queued.id),
-      "The Task fact did not produce a pending engineering notice.");
-    const queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
-    assert.ok(queuedBefore.some(message => message.id !== queued.id && message.body.includes(notificationTask.id)),
-      "The pending engineering notice must reference this exact Task fact.");
+    // Only one unsent engineering notice is allowed. Earlier fixture facts may
+    // already own it; the new cancellation then coalesces in the mailbox rather
+    // than rewriting that original. Preserve whichever exact notice is queued.
+    const isEngineeringNotice = message => message.id !== queued.id
+      && message.inputControl?.requestId?.startsWith("operator-notice:");
+    let queuedBefore = [];
+    await waitFor(() => {
+      queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
+      return queuedBefore.some(isEngineeringNotice);
+    },
+      "No pending engineering notice was queued.",
+      () => JSON.stringify(queuedBefore));
+    assert.equal(queuedBefore.filter(isEngineeringNotice).length, 1,
+      "Handover must preserve the one original engineering notice alongside the queued user input.");
     assert.equal(context().nativeTurn.status, "accepted", "Busy Desktop input must fence queued delivery.");
     const beforeUpdate = updatePorts.controllerStatus(yuiHome);
     assert.equal(beforeUpdate.running, true);
@@ -884,7 +891,24 @@ try {
     const beforeHostRestart = listItems("role", "message", "list", "operator");
     await waitFor(async () => (await inspectAgentHost(target)).state === "idle",
       "Only an idle fixture Host may be restarted.");
-    process.kill(hostPid, "SIGTERM");
+    const { AGENT_HOST_IMPLEMENTATION } =
+      await import(pathToFileURL(join(root, "dist/runtime/agentHostImplementation.js")).href);
+    const upgradeStatus = await callFileTaskController(yuiHome, "runtime.upgrade-hosts",
+      { generation: AGENT_HOST_IMPLEMENTATION.generation }, { environment, requestTimeoutMs: 15_000 });
+    assert.ok(upgradeStatus.hosts.some(entry => entry.owner.scope === "global"
+      && entry.owner.roleName === "operator" && entry.status === "current"
+      && entry.nativeSessionId === hostBefore.nativeSessionId),
+      "The real Controller verifies actual Host and Endpoint generations before reporting current.");
+    assert.match(runCli(cli, ["update", "--hosts-status"], environment), /global\/operator.*current/);
+    const { sendAgentHostUpgradeControl } =
+      await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
+    const exactHost = await inspectAgentHost(target);
+    const fence = { protocol: "yui-agent-host-control/v1", requestId: "fixture-idle-upgrade",
+      nativeSessionId: exactHost.nativeSessionId, processInstanceId: exactHost.processInstanceId,
+      hostGeneration: exactHost.hostImplementation.generation };
+    const drained = await sendAgentHostUpgradeControl({ ...target, control: { ...fence, type: "prepare-upgrade" } });
+    assert.equal(drained.snapshot.hostUpgrade.state, "drained");
+    await sendAgentHostUpgradeControl({ ...target, control: { ...fence, type: "finish-upgrade" } });
     await waitFor(() => processExited(hostPid), "Original fixture Host did not exit.");
     await callFileTaskController(yuiHome, "runtime.ensure-role-session",
       { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });
@@ -978,13 +1002,24 @@ try {
       // immutable build has a different digest while keeping storage/protocol
       // unchanged; both preflights must run while the first release is active.
       // The earlier historical-session probe intentionally replaced hostPid.
-      const activationHost = await inspectAgentHost(target);
-      const activationHostPid = operatorHostPid;
-      assert.equal(processExited(activationHostPid), false);
+      assert.equal(processExited(operatorHostPid), false);
+      // An exiting Host cannot guarantee a post-exit signal. Exercise the
+      // existing periodic fallback at an explicit fixture-only cadence.
+      json("config", "runtime", "set", "reconciliation-interval-seconds", "5");
       const first = json("release", "install", root);
       assert.equal(first.outcome, "installed");
       assert.equal(json("release", "activate", first.releaseId).outcome, "activated");
       cli = join(first.releaseDir, "dist/cli.js");
+      const currentHost = async (generation) => {
+        try {
+          const observed = await inspectAgentHost(target);
+          return observed.hostImplementation?.generation === generation && observed.state === "idle" && observed;
+        } catch { return false; } // The old socket disappears during a proven graceful drain.
+      };
+      await waitFor(() => currentHost(first.packageDigest), "First installed Controller did not converge its Host.");
+      const activationHost = await inspectAgentHost(target);
+      const operatorPane = `=yui-${tmuxServer.slice(4, 16)}-operator:=operator`;
+      const activationHostPid = Number(tmux("display-message", "-p", "-t", operatorPane, "#{pane_pid}").trim());
       const nextSource = join(sandbox, "next-release");
       cpSync(root, nextSource, { recursive: true });
       writeFileSync(join(nextSource, "activation-fixture.txt"), "same code, distinct immutable build\n");
@@ -1010,12 +1045,17 @@ try {
       const pointer = JSON.parse(readFileSync(join(yuiHome, "runtime/active-release.json"), "utf8"));
       assert.equal(pointer.packageDigest, next.packageDigest);
       assert.deepEqual(json("task", "message", "list", task.id), before);
-      const retainedHost = await inspectAgentHost(target);
-      assert.equal(processExited(activationHostPid), false);
-      for (const key of ["nativeSessionId", "processInstanceId", "authorityEpoch", "authorityHolderId"]) {
-        assert.deepEqual(retainedHost[key], activationHost[key], `Activation must preserve Host ${key}`);
-      }
-      console.log("Installed inactive release activation passed: read-only/fenced preflights, candidate promotion, identity and retained Host.");
+      const successor = await waitFor(() => currentHost(next.packageDigest),
+        "Controller lifecycle checks did not automatically converge the old Host.", () =>
+          runCli(cli, ["update", "--hosts-status"], environment), 30_000);
+      assert.equal(successor.nativeSessionId, activationHost.nativeSessionId);
+      assert.notEqual(successor.processInstanceId, activationHost.processInstanceId);
+      assert.equal(processExited(activationHostPid), true);
+      operatorHostPid = Number(tmux("display-message", "-p", "-t", operatorPane, "#{pane_pid}").trim());
+      assert.ok(Number.isInteger(operatorHostPid) && operatorHostPid > 0);
+      assert.deepEqual(json("task", "message", "list", task.id), before);
+      assert.match(runCli(cli, ["update", "--hosts-status"], environment), /global\/operator.*current/);
+      console.log("Installed release activation passed: candidate promotion, automatic Host convergence, same native Session and original inputs (no explicit update request).");
       phase("release-activation");
     }
     runCli(cli, ["session", "stop", "--all"], environment);

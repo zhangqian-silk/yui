@@ -15,7 +15,7 @@ import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
-import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl, sendAgentHostRunControl, sendAgentHostLaunchControl } from "../../dist/runtime/agentHost.js";
+import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl, sendAgentHostRunControl, sendAgentHostLaunchControl, sendAgentHostUpgradeControl } from "../../dist/runtime/agentHost.js";
 import { AGENT_HOST_CONTROL_PROTOCOL } from "../../dist/runtime/agentHostProtocol.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
@@ -240,6 +240,34 @@ test("live Host reuse reports the applied native title, not its new launch inten
   const reused = await f.reuseHost("Yui assistant @new");
   assert.equal(reused.snapshot.nativeSessionId, original.nativeSessionId);
   assert.equal(reused.snapshot.appliedGeneratedTitle, original.appliedGeneratedTitle);
+});
+
+test("graceful Host upgrade releases its exact Endpoint and exits without ending or replaying the native Session", async t => {
+  const f = await globalHostFixture(t, "codex", { controlled: false });
+  const target = { home: f.home, scope: "global", roleName: f.role.name };
+  const before = await inspectAgentHost(target);
+  const session = structuredClone(f.store.getGlobalRoleSessionSet(f.role.name));
+  const queued = f.command(["message", "queue", f.role.name, "Queued original survives",
+    "--request-id", "upgrade-queued"]).message;
+  const queuedOriginal = structuredClone(f.store.listGlobalRoleMessages(f.role.name).find(m => m.id === queued.id));
+  const fence = { requestId: "fixture-upgrade", nativeSessionId: before.nativeSessionId,
+    processInstanceId: before.processInstanceId, hostGeneration: before.hostImplementation.generation };
+  const drained = await sendAgentHostUpgradeControl({ ...target,
+    control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "prepare-upgrade", ...fence } });
+  assert.equal(drained.snapshot.hostUpgrade.state, "drained");
+  const rejected = await sendAgentHostRunControl({ ...target, control: {
+    protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "submit-turn", nativeSessionId: before.nativeSessionId,
+    authority: { epoch: before.authorityEpoch, owner: before.authorityOwner, holderId: before.authorityHolderId },
+    run: { attemptId: "must-not-write", boundedText: "No native write across the admission fence" }
+  } });
+  assert.equal(rejected.outcome, "busy");
+  const exit = once(f.host, "exit");
+  await sendAgentHostUpgradeControl({ ...target,
+    control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "finish-upgrade", ...fence } });
+  await exit;
+  assert.equal(f.host.exitCode, 0);
+  assert.deepEqual(f.store.getGlobalRoleSessionSet(f.role.name), session);
+  assert.deepEqual(f.store.listGlobalRoleMessages(f.role.name).find(m => m.id === queued.id), queuedOriginal);
 });
 
 test("disable at atomic Host admission preserves the original Global input until enabled", async t => {

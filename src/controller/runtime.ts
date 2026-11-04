@@ -132,6 +132,13 @@ import {
   FileSchedulerStoreAdapter
 } from "./fileSchedulerStoreAdapter.js";
 import { deliverGlobalInputs } from "./globalInputDelivery.js";
+import { HostUpgradeCoordinator } from "./hostUpgrade.js";
+import { createHostLifecycleChecks } from "./hostLifecycleChecks.js";
+import { createControllerHostLifecycle, type ControllerHostTransition } from "./hostLifecycle.js";
+import { createNonBlockingChecks } from "../runtime/lifecycleChecks.js";
+import { AGENT_HOST_IMPLEMENTATION } from "../runtime/agentHostImplementation.js";
+import { builtinAgentEndpointImplementation } from "../runtime/agentEndpointIdentity.js";
+import { sendAgentHostUpgradeControl } from "../runtime/agentHost.js";
 import { authorizeJobStart } from "./jobControl.js";
 import { authorizeGlobalJobStart, createJobDefinitionControl } from "./jobDefinitionControl.js";
 import { reconcileTaskDelegation } from "./jobTaskDelegationControl.js";
@@ -329,7 +336,7 @@ async function createFileTaskControllerRuntime(
       ?? new AgentConfigurationCatalogService(home, {
         environment: options.environment ?? process.env
       });
-    const sessionHost = options.sessionHost ?? new TmuxSessionHost(planner, tmux, {
+    const rawSessionHost = options.sessionHost ?? new TmuxSessionHost(planner, tmux, {
       validateLaunch: async (request) => {
         const agent = store.getConfiguredAgent(request.agentId);
         if (agent === null) return;
@@ -410,17 +417,12 @@ async function createFileTaskControllerRuntime(
           globalInstallPaths: [process.execPath]
         }
       });
-    const lifecycleHost = {
-      inspectOwner: (owner: Parameters<SessionHostPort["inspectOwner"]>[0]) => (
-        sessionHost.inspectOwner(owner)
-      ),
-      ...(sessionHost.inspectOwners === undefined
-        ? {}
-        : {
-            inspectOwners: (
-              owners: Parameters<NonNullable<SessionHostPort["inspectOwners"]>>[0]
-            ) => sessionHost.inspectOwners!(owners)
-          }),
+    const hostStateChecks = createNonBlockingChecks<ControllerHostTransition>([{
+      id: "host-version-hint",
+      run: (_transition, signal) => { if (!signal.aborted) hostLifecycleChecks.notify("host-observed"); }
+    }], options.onError);
+    const controllerHosts = createControllerHostLifecycle(rawSessionHost, {
+      after: hostStateChecks,
       stopOwner: (owner: Parameters<SessionHostPort["stopOwner"]>[0]) => {
         // Issue 03: the durable `stopped` transition is gated on physical
         // exit proof. A blocked result keeps the Session non-terminal and
@@ -440,7 +442,9 @@ async function createFileTaskControllerRuntime(
           return result.outcome === "stop-confirmed";
         });
       },
-    };
+    });
+    const sessionHost = controllerHosts.port;
+    const lifecycleHost = sessionHost;
     const resourceActivity = createRuntimeResourceActivityTracker();
     let runningRuntime: RunningFileTaskController["runtime"] | undefined;
     let runningController: RunningFileTaskController | undefined;
@@ -455,6 +459,31 @@ async function createFileTaskControllerRuntime(
         runtimeIsolation
       }
     );
+    const hostUpgrades = new HostUpgradeCoordinator(store, AGENT_HOST_IMPLEMENTATION, {
+      inspect: owner => inspectAgentHost({ home, ...owner }),
+      control: async (owner, type, request) => {
+        const send = async () => {
+          const result = await sendAgentHostUpgradeControl({
+            home, ...owner, control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type, ...request }
+          });
+          if (result.outcome === "rejected") throw new Error(result.failure?.detail ?? "Host upgrade control rejected.");
+          return result.snapshot;
+        };
+        return type === "finish-upgrade" ? controllerHosts.requestExit(owner, send) : send();
+      },
+      hostState: async owner => (await sessionHost.inspectOwner(owner)).state,
+      endpoint: builtinAgentEndpointImplementation,
+      restore: async (owner, request, effective, assertCurrent) => {
+        const workspace = owner.scope === "task" ? currentDesiredManagedWorkspace(store, owner.taskId, owner.roleName) : undefined;
+        await launchCoordinator.prepare({
+          owner, agentId: request.agentId, adapterId: request.adapterId, effective,
+          workspace: effective.workspace.root, mode: "resume", nativeSessionId: request.nativeSessionId,
+          ...(workspace === undefined ? {} : { managedWorkspace: workspace }),
+          ...(effective.executionAuthority === "planning" ? { workspaceFree: true } : {})
+        }, assertCurrent);
+      }
+    });
+    const hostLifecycleChecks = createHostLifecycleChecks(hostUpgrades, options.onError);
     // One inventory scan per scheduler pass. When the inventory worker is active
     // the blocking /proc scan runs there; otherwise it runs on the main thread.
     const scanInventory = (panes: readonly RuntimePaneFact[]) => inventoryClient !== undefined
@@ -760,10 +789,22 @@ async function createFileTaskControllerRuntime(
         ? workerSchedulerStore(schedulerStore, asyncStoreClient!)
         : schedulerStore,
       delivery,
-      (method, params) => method === "task.role-capabilities"
+      (method, params) => method === "runtime.host-upgrade-status"
+        ? hostUpgrades.status().then(hosts => ({ hosts }) as unknown as JsonValue)
+        : method === "runtime.upgrade-hosts"
+        ? ((params as { generation?: unknown }).generation === AGENT_HOST_IMPLEMENTATION.generation
+          ? hostUpgrades.request().then(hosts => ({ hosts }) as unknown as JsonValue)
+          : Promise.reject(new Error("Host upgrade target is not this Controller's verified loaded generation.")))
+        : method === "task.role-capabilities"
         ? readTaskAgentCapabilities(store, catalogs, params)
         : method === "web.start" || method === "web.stop" || method === "web.status"
-          ? web.dispatch(method, params) : lifecycleDispatcher(method, params),
+          ? web.dispatch(method, params) : Promise.resolve(lifecycleDispatcher(method, params)).then(result => {
+            if (["runtime.ensure-role-session", "runtime.process-exit-observe",
+              "runtime.host-observation-apply", "runtime.observation-apply"].includes(method)) {
+              hostLifecycleChecks.notify("host-observed");
+            }
+            return result;
+          }),
       {
         intervalMs: options.intervalMs
           ?? reconciliationIntervalMilliseconds(store.getConfig().reconciliationIntervalSeconds),
@@ -783,6 +824,7 @@ async function createFileTaskControllerRuntime(
         diagnosticMetrics: options.diagnosticMetrics,
         onRequestDiagnostic: options.onRequestDiagnostic,
         lifecycleHost,
+        lifecycleChecks: hostLifecycleChecks,
         providerRetry: createProviderRetryHooks(home, store, {
           now: options.now,
           onError: options.onError,
@@ -885,7 +927,9 @@ async function createFileTaskControllerRuntime(
     }
     let resourceClose: Promise<void> | undefined;
     const closeResources = (): Promise<void> => {
-      resourceClose ??= closeTelemetry().finally(() => Promise.all([
+      hostStateChecks.close();
+      hostLifecycleChecks.close();
+      resourceClose ??= hostUpgrades.close().then(() => closeTelemetry()).finally(() => Promise.all([
         web.close(),
         kernel.close(),
         asyncStoreClient?.close() ?? Promise.resolve(),

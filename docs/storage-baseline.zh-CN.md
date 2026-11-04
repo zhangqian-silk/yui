@@ -2,7 +2,9 @@
 
 # 存储基线 1.0
 
-当前存储为 1.26。1.25 → 1.26 增加 Codex workspace-write 可选临时目录排除字段，不改写历史权限 payload。已发布的 1.24 → 1.25 定义保持不变：增加可选 Role `instanceCode` 和 Session `generatedTitle` 展示字段，不回填历史标题来源或实例码，不改写既有记录。1.23 → 1.24 为调度器的九类来源表增加事务维护的 Task 读取缓存修订号。插入、更新和删除只使对应 Task 的缓存失效，回滚同时回滚修订号。该值仅是派生缓存标识，不是 Task 权限或 Home revision CAS 的替代。历史 payload 不变，旧 Task 在首次修改前使用隐含的零修订号。
+当前存储为 1.27。1.26 → 1.27 允许现有 role-runtime mailbox 保存版本化 Host 升级信号，不新增表、不推断历史升级请求、不改写既有 payload。排空回执先于 Host 退出持久化；Controller 重启继续精确升级请求，不重放业务输入。
+
+1.25 → 1.26 增加 Codex workspace-write 可选临时目录排除字段，不改写历史权限 payload。已发布的 1.24 → 1.25 定义保持不变：增加可选 Role `instanceCode` 和 Session `generatedTitle` 展示字段，不回填历史标题来源或实例码，不改写既有记录。1.23 → 1.24 为调度器的九类来源表增加事务维护的 Task 读取缓存修订号。插入、更新和删除只使对应 Task 的缓存失效，回滚同时回滚修订号。该值仅是派生缓存标识，不是 Task 权限或 Home revision CAS 的替代。历史 payload 不变，旧 Task 在首次修改前使用隐含的零修订号。
 同时增加两个局部索引，支持按精确运行观测身份查找，不再扫描或反序列化历史观测集合。
 
 1.22 → 1.23 新增全局 Shell Job、版本化脚本文件及每次运行的配置快照，不改写已有 Job、计划和历史记录。

@@ -311,6 +311,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   // Optional workspace-write permission fields; preserve all existing payloads.
   sql: ""
+}, {
+  fromVersion: "1.26",
+  toVersion: "1.27",
+  name: "host-upgrade-lifecycle-signals",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // New versioned signal sources in the existing role-runtime mailbox. No
+  // historical requests are inferred and existing records remain unchanged.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

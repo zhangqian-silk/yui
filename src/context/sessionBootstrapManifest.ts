@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { chmodSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type { GlobalRole, TaskRole } from "../role/role.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import type { RoleSessionOwner, RoleSkillContext } from "./roleSessionContext.js";
 import { validateSkillPackageRef, type SkillPackageRef } from "./skillPackage.js";
-import { checkCurrentSkills, SKILL_CHECK_COMMAND, SKILL_REUSE_RULE } from "./currentSkills.js";
+import { checkCurrentSkills, checkCurrentSkillsAsync, SKILL_CHECK_COMMAND, SKILL_REUSE_RULE } from "./currentSkills.js";
 import {
   SESSION_BOOTSTRAP_MANIFEST_SCHEMA_VERSION,
   SESSION_CONTEXT_PROTOCOL,
@@ -64,11 +65,11 @@ export function withSessionContextPointer(
  * Unmediated/native clients retain the explicit diagnostic fallback. */
 export function sessionContextInstructions(manifestPath: string, digest?: string): string {
   return `Yui Session Manifest: ${manifestPath}${digest === undefined ? "" : ` (digest ${digest})`}. `
-    + "For inputs carrying the Yui Host Skill-check notice, engineering has checked current versions; do not repeat that check. "
-    + `Otherwise run its contextProtocol.skillCheckCommand (fallback: ${SKILL_CHECK_COMMAND}). `
+    + "The managed Host checks Skills internally and injects guidance only when loading is needed; absence of a notice does not require another check. "
+    + `For unmediated clients or uncertain current input routing, run its contextProtocol.skillCheckCommand (fallback: ${SKILL_CHECK_COMMAND}); conversation reuse alone does not establish Host mediation. `
     + "On first entry or lost instructions, read the current applicable Skill entry points, then only references needed for the current action. "
     + "On change reload affected instructions. Compaction does not require restoring every previously used procedure. "
-    + "Preserve the Manifest Role profile; metadata never proves loading or memory.";
+    + "Preserve the Manifest Role profile; metadata never proves loading or memory. Keep routine role, version and empty-inbox checks internal.";
 }
 
 /** The caller must already pass the ordinary managed Session/CLI/Home checks.
@@ -78,6 +79,17 @@ export function checkSessionSkills(home: string, manifestPath: string) {
   const manifest = readSessionBootstrapManifest(manifestPath);
   return {
     skills: checkCurrentSkills(home, manifest.skills.map(skill => skill.id)),
+    roleProfileRef: manifest.roleProfileRef,
+    rule: SKILL_REUSE_RULE,
+    historicalPackagesAreAuditOnly: true
+  };
+}
+
+export async function checkSessionSkillsAsync(home: string, manifestPath: string, signal: AbortSignal) {
+  const manifest = validateSessionBootstrapManifest(JSON.parse(
+    await readFile(resolve(manifestPath), { encoding: "utf8", signal })));
+  return {
+    skills: await checkCurrentSkillsAsync(home, manifest.skills.map(skill => skill.id), signal),
     roleProfileRef: manifest.roleProfileRef,
     rule: SKILL_REUSE_RULE,
     historicalPackagesAreAuditOnly: true
@@ -99,6 +111,10 @@ export function readSessionBootstrapManifest(path: string): SessionBootstrapMani
   } catch (error) {
     throw new Error(`Session Manifest is unreadable: ${source}.`, { cause: error });
   }
+  return validateSessionBootstrapManifest(parsed);
+}
+
+function validateSessionBootstrapManifest(parsed: unknown): SessionBootstrapManifest {
   if (parsed === null || typeof parsed !== "object") {
     throw new Error("Session Manifest is invalid.");
   }

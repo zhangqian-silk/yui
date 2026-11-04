@@ -2,6 +2,74 @@
 
 # Session、AgentRun 与通知
 
+## 两层生命周期与非阻塞检查
+
+Controller 对 Host 的管理状态、Host 对原生 Session 的生命周期分别拥有自己的
+事件、guard 和转换表，都不是升级流程状态机。
+
+| 层级 | 事件与转换 | 权限及关联 |
+| --- | --- | --- |
+| Controller → Host | 新鲜物理观测恢复 `unavailable`／`stopped`／`starting`／`running`；合法 launch 进入 `starting`，匹配启动握手进入 `running`。停止或优雅退出请求进入 `stopping`，发送退出不证明 `stopped`；物理不存在才确认 `stopped`，未知效果进入 `unavailable`。 | owner、本地操作／观测 revision、返回 binding 和原生 Session ID；持久 Role／Task 意图、启动 reservation 和精确进程权属仍是权威。 |
+| Host → 原生 Session | launch、附件、输入接受、原生活动、终态、持久化、断连和退出驱动下述原生状态。 | 原生 Session、proxy 进程、attempt 和 Turn 身份；原有 writer／资源栅栏继续授权副作用。 |
+
+Controller 在共享 Host port 处统一管理启动／恢复、观测与停止（含安全升级的优雅退出）。
+冲突物理操作在副作用前拒绝，不由状态机另建队列或重放。迟到读取和旧 binding 不能覆盖
+新管理状态；相同观测不重复触发检查反馈循环。Controller 重启后从观测重建，
+不重放进程内状态。原生轮次完成或附件退出不能证明 Host 进程已退出；
+合法恢复通过同一原生对话关联两层，不共用状态枚举或新增持久权威。
+
+Host 内的原生 Session 生命周期由明确的转换表管理，不由版本检查管理。
+launch／submit 进入 `starting`；附件事实选择 `idle`、`busy`、
+`ready`（持有输入）或 `delivery-unknown`；接受输入进入 `ready`；
+原生执行进入 `busy`；终态处理进入 `settling`；持久化结清后回到观测到的
+`idle`／`busy`。断连进入 `starting`，分类失败保留对应失败状态，退出进入
+`exited`，只有显式 launch 可离开它。原生 TUI 附件就绪有独立事件，
+其 `ready` 不证明原生执行静止。非法边不改变状态；过期的进程、attempt、
+终态 Turn 事实被忽略。精确 writer／资源 guard 仍在命令准入处执行。
+状态机仅在进程内从现有 launch 和原生事实恢复，不新增持久 Session 权威或升级流程状态机。
+
+可组合的前／后检查接收不可变观测，各自异步执行并合并重复提示
+（每项最多一个执行中和一个最新待处理观测）。“前”表示转换来源，不是等待完成的前置条件。
+慢检查或失败不能否决转换、阻塞事件折叠或输入投递；检查回调必须异步等待 I/O，
+并在请求副作用前响应取消。它们只能向独立的、受精确栅栏保护的升级协调器提出请求。
+Controller 的 Host 状态 hook 提议版本对账；Host 的 Session 状态 hook 在附件和结清时
+异步观测当前 Skill 元数据，不读正文、不提交通知基线、不假定模型记忆。
+逐输入完整性核验仍是投递安全门：无效 Skill 可以拒绝该次输入，但可选检查不能卡住生命周期。
+仍只有被接受的输入推进通知基线，未变化输入原样通过，不额外注入内容。
+
+Controller 启动、Host 连接／退出观测、Host 状态变化 signal 和事件持久化均可触发版本检查，
+不依赖显式 `update`。现有周期对账覆盖丢失提示、无法可靠提供后台执行结束事件的提供方，
+以及无法在退出后发出提示的优雅退出。
+比较对象是实际加载的 Host／Endpoint 实现与当前 Controller 已加载的目标，不查询 npm `latest`。
+版本匹配但就绪证据未齐不是升级理由。关闭时停止检查，已准入工作仍保留现有持久 mailbox；
+请求固定的目标与当前 Controller 不同时保持等待，交由显式恢复，不静默改目标。
+检查不会复活明确停止的 Session。
+
+## Host 升级与上下文检查
+
+`update` 分别报告程序安装、Controller 启动核验及逐 Host 的状态。
+`update --hosts-status` 只读查询逐 Host 证据，不安装、启动或推进切换。支持此能力的
+受控 Codex Host 先关闭新输入准入，等待当前原生轮次和事件持久化、核验后台执行，
+释放自己持有的 Endpoint 后优雅退出。现有 role-runtime mailbox 保存精确实现代际、
+native Session、配置摘要和排空回执，Controller 重启后仍可继续。
+后继使用原 effective 配置接回同一对话；实际加载的 Host/Endpoint、控制与事件能力
+握手通过后才确认成功。队列中的 Message 原文不变，不重放 accepted 或 unknown 输入。
+
+暂停角色保持暂停。旧 Host、仅有原生 TUI 的附件及不能证明静止的 Endpoint
+保留并报告不支持，不反复发送不支持的排空命令。忙碌或未知执行不承诺限时升级。
+启动结果未知不自动重放；后续精确成功握手可结清原请求。
+准入栅栏覆盖 Host 控制的入口，不控制任意外部原生客户端，也不会终止共享 daemon 或原生对话。
+
+Host 仍逐输入机械检查 Skills。未变化时原文原样通过，不添加检查通知、隐藏标记、
+分隔换行或原生输入片段。附件加载指引说明这一托管输入约定，不因没有通知而重复检查。
+绕过 Host 的客户端或当前输入路由不明时仍通过 Manifest 显式检查；复用同一对话
+本身不证明当前输入受 Host 托管。首次附件、局部 Skill 变化、已观测到的原生压缩
+提供相应加载指引；压缩使下一次输入的元数据基线失效。
+提供方无法可靠暴露事件时，Agent 仍须通过 Manifest 恢复缺失指令。
+版本和已接受的通知都不能证明模型记忆；例行检查、角色版本和空 inbox 不作为用户进度播报。
+
+## 会话停止与运行时观测
+
 局部停止等待自身的持久清理义务完成，不等待整个 Home 的 `scheduler.scan`
 循环排空。signal 只请求调度；完成仍以现有物理停止证明及清理事务为准。
 超时保留义务并阻止替换；选择失败和新会话启动未确认分别报告，不允许重放未知效果。
@@ -16,7 +84,8 @@ interrupt-owned 输入仍保留原处理路径。
 目标／请求标签仅保存哈希；每组最多保留 16 个近期样本、16 个活动样本及最慢完成样本。
 in-flight 请求数不是排队数，服务端不能独自测量客户端到路由的完整等待。
 观测不能反推旧事故的唯一根因，
-也不构成静止证明；重启 Controller 不会刷新存活 Host。
+也不构成静止证明；Controller 重启本身不证明 Host 已替换，
+异步生命周期检查仍须经过安全排空和后继实际握手。
 
 `observations.commands.routes.transport` 使用与 route service time 相同的请求哈希，
 分别关联 socket accept→route、完整帧 receive→route、route→本地 flush。

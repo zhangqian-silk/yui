@@ -45,6 +45,7 @@ import {
   resolve
 } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { HostUpgradeResult } from "../controller/hostUpgrade.js";
 
 import { runtimeError } from "../errors/cliError.js";
 import { isConcreteVersion } from "../domain/validation.js";
@@ -323,8 +324,38 @@ export function createUpdatePorts(
     },
     restoreController(home: string, identity: ControllerIdentity): void {
       restoreControllerIdentity(home, identity, environment, spawn);
+    },
+    upgradeHosts(home: string): readonly HostUpgradeResult[] {
+      if (!verifiedActivatedBinary) throw new Error("Host upgrade requires the verified activated binary.");
+      const root = dirname(dirname(activatedControllerEntrypoint(verifiedActivatedBinary)));
+      return requestHosts(root, home, "runtime.upgrade-hosts", environment, spawn);
+    },
+    hostStatus(home: string): readonly HostUpgradeResult[] {
+      return requestHosts(fileURLToPath(new URL("../", import.meta.url)), home,
+        "runtime.host-upgrade-status", environment, spawn);
     }
   };
+}
+
+function requestHosts(root: string, home: string, method: string, environment: NodeJS.ProcessEnv,
+  spawn: UpdateSpawner): readonly HostUpgradeResult[] {
+  const helper = [
+    "const [root, home] = process.argv.slice(1);",
+    "(async () => {",
+    " const { pathToFileURL } = await import('node:url');",
+    " const { callController } = await import(pathToFileURL(root + '/core/controllerClient.js').href);",
+    " const { AGENT_HOST_IMPLEMENTATION } = await import(pathToFileURL(root + '/runtime/agentHostImplementation.js').href);",
+    ` const data = await callController(home, ${JSON.stringify(method)}, { generation: AGENT_HOST_IMPLEMENTATION.generation });`,
+    " process.stdout.write(JSON.stringify({ok: true, data}));",
+    "})().catch(error => { process.stderr.write(String(error)); process.exitCode = 5; });"
+  ].join(" ");
+  const result = spawn(process.execPath, ["-e", helper, root, home],
+    { cwd: process.cwd(), env: { ...environment, YUI_HOME: home }, shell: false });
+  const data = parseSuccessEnvelopeData(result);
+  if (result.error || result.status !== 0 || !Array.isArray(data?.hosts)) {
+    throw new Error(`Host request was not confirmed: ${result.stderr.toString("utf8")}`);
+  }
+  return data.hosts as HostUpgradeResult[];
 }
 
 const UPDATE_CLI_PATH = fileURLToPath(new URL("../cli.js", import.meta.url));

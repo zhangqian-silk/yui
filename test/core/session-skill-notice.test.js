@@ -4,11 +4,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as notices from "../../dist/context/sessionSkillNotice.js";
-import { materializeSessionBootstrap } from "../../dist/context/sessionBootstrapManifest.js";
+import { materializeSessionBootstrap, checkSessionSkills, checkSessionSkillsAsync } from "../../dist/context/sessionBootstrapManifest.js";
 import { loadYuiSkillContexts } from "../../dist/context/roleSessionContext.js";
 import { codexInteractiveSkillInput } from "../../dist/runtime/codexInteractiveHost.js";
+import { createNonBlockingChecks } from "../../dist/runtime/lifecycleChecks.js";
+import { createHostSessionLifecycle } from "../../dist/runtime/hostSessionLifecycle.js";
 
-test("Host checks live Skills without repeated model checks; only accepted notices advance metadata", t => {
+test("Host checks live Skills without repeated model checks; only accepted notices advance metadata", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-host-skills-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const source = join(home, "skills", "sample");
@@ -26,6 +28,8 @@ test("Host checks live Skills without repeated model checks; only accepted notic
     entryPoint: { executable: process.execPath, cliEntry: "/fixture/cli.js" }
   });
   const env = { YUI_SESSION_MANIFEST: bootstrap.manifestPath };
+  assert.deepEqual(await checkSessionSkillsAsync(home, bootstrap.manifestPath, new AbortController().signal),
+    checkSessionSkills(home, bootstrap.manifestPath), "Advisory async checks resolve the same current metadata.");
   const notice = notices.createSessionSkillNotice(home);
   const first = notice.prepare("original input", env, "thread-1");
   assert.match(first.text, /sample/);
@@ -41,14 +45,13 @@ test("Host checks live Skills without repeated model checks; only accepted notic
   assert.ok(!warm.text.includes(bootstrap.roleProfilePath),
     "Unchanged input must not repeat the cold profile pointer.");
   assert.ok(Buffer.byteLength(warm.text) < Buffer.byteLength(first.text));
-  // An unchanged long-running conversation carries only the engineering
-  // observation, not a repeated instruction/recovery manual on every input.
+  // An unchanged long-running conversation has no extra injected content.
   for (let index = 0; index < 100; index += 1) {
     const body = `business input ${index}`;
     const next = notice.prepare(body, env, "thread-1");
     assert.ok(next.text.endsWith(body), "Keep the business input verbatim.");
-    assert.ok(Buffer.byteLength(next.text) - Buffer.byteLength(body) <= 128,
-      "Ordinary input has a bounded check result, not loading procedures.");
+    assert.equal(next.text, body,
+      "Ordinary input is byte-for-byte unchanged, without notices, markers or separators.");
     next.commit();
   }
   writeFileSync(join(source, "VERSION"), "2\n");
@@ -60,6 +63,10 @@ test("Host checks live Skills without repeated model checks; only accepted notic
   changed.commit();
   assert.match(notice.prepare("new thread", env, "thread-2").text, /sample/);
   assert.match(notice.prepare("recovery", env, "thread-1", { recovery: true }).text, /sample/);
+  const compacted = notice.prepare("after compact", env, "thread-1", { contextEpoch: 1 });
+  compacted.commit();
+  assert.doesNotMatch(notice.prepare("same epoch", env, "thread-1", { contextEpoch: 1 }).text, /sample/);
+  assert.match(notice.prepare("next compact", env, "thread-1", { contextEpoch: 2 }).text, /sample/);
   notice.invalidate();
   changed.commit();
   assert.match(notice.prepare("reattached", env, "thread-1").text, /sample/,
@@ -67,6 +74,14 @@ test("Host checks live Skills without repeated model checks; only accepted notic
   const renewed = notice.prepare("ready", env, "thread-1");
   renewed.commit();
   rmSync(join(source, "VERSION"));
+  let reportFailure;
+  const failure = new Promise(resolve => { reportFailure = resolve; });
+  const checks = createNonBlockingChecks([notices.createSessionSkillLifecycleCheck(home, () => env)], reportFailure);
+  const lifecycle = createHostSessionLifecycle({ after: checks });
+  lifecycle.send({ type: "connected", occupancy: "idle", nativeSessionId: "thread-1" });
+  assert.equal(lifecycle.state, "idle", "Invalid Skill metadata cannot hold Session lifecycle transitions.");
+  assert.match(String(await failure), /Current Skill sample/);
+  checks.close();
   assert.throws(() => notice.prepare("must not submit", env, "thread-1"), /Current Skill sample/);
   writeFileSync(join(source, "VERSION"), "2\n");
   assert.match(notice.prepare("repaired", env, "thread-1").text, /sample/);
@@ -77,7 +92,7 @@ test("Host checks live Skills without repeated model checks; only accepted notic
   assert.match(native.params.input[0].text, /sample/);
   native.commit();
   const nativeWarm = codexInteractiveSkillInput(notice, env, "thread-1", { input: originalParts });
-  assert.doesNotMatch(nativeWarm.params.input[0].text, /sample|session skills --json/);
-  assert.deepEqual(nativeWarm.params.input.slice(1), originalParts);
+  assert.equal(nativeWarm.params.input, originalParts,
+    "Unchanged native input retains every original part without an extra text part.");
   assert.equal(notice.prepare("unmanaged", {}, "thread-1").text, "unmanaged");
 });

@@ -1,4 +1,5 @@
 import { accessSync, constants, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { access, lstat, readFile, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,9 +40,37 @@ export function checkCurrentSkills(home: string | undefined, ids: readonly strin
   });
 }
 
+/** Advisory lifecycle observation uses asynchronous filesystem I/O; it neither
+ * blocks a state transition nor substitutes for the exact per-input check. */
+export async function checkCurrentSkillsAsync(home: string | undefined, ids: readonly string[], signal: AbortSignal) {
+  const skills = [];
+  for (const id of new Set(ids)) {
+    signal.throwIfAborted();
+    const path = currentSkillPath(home, id);
+    const versionPath = join(path, "VERSION");
+    try {
+      for (const file of [join(path, "SKILL.md"), versionPath]) {
+        if (await realpath(file) !== resolve(file) || !(await lstat(file)).isFile()) {
+          throw new Error(`Skill files must be regular files without symlinks: ${file}.`);
+        }
+        await access(file, constants.R_OK);
+      }
+      if ((await lstat(versionPath)).size > 128) throw new Error("VERSION exceeds 128 bytes.");
+      const version = (await readFile(versionPath, { encoding: "utf8", signal })).trim();
+      if (!/^[1-9][0-9]{0,8}$/u.test(version)) throw new Error("VERSION must contain a positive internal integer.");
+      skills.push({ id, path, version, versionPath });
+    } catch (error) {
+      throw new Error(`Current Skill ${id} is missing, unreadable or invalid at ${path}. `
+        + `${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+  }
+  return skills;
+}
+
 export const SKILL_CHECK_COMMAND = "yui session skills --json";
 export const SKILL_REUSE_RULE = "The managed Host checks current Skill versions/availability before each input; "
-  + "do not repeat an explicit Host check. Without that notice, check through the Manifest's command. "
+  + "unchanged inputs carry no notice or marker, and do not require a duplicate check. "
+  + "For unmediated clients or uncertain current input routing, check through the Manifest's command; conversation reuse alone does not establish Host mediation. Keep routine checks internal, not user-facing progress. "
   + "Reuse unchanged full instructions in context; messages alone require no reload. "
   + "Read affected entries/references fully on change or localized loss. On first entry, recovery or lost context, "
   + "rebuild the current working set from applicable Skill entry points and action-relevant references, not all past procedures. "

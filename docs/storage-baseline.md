@@ -2,7 +2,11 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.26. The 1.25 → 1.26 transition admits optional Codex
+Current storage is 1.27. The 1.26 → 1.27 transition admits versioned Host-upgrade
+signals in the existing role-runtime mailbox. It adds no table, infers no past
+upgrade request, and preserves existing payloads. Drain receipts precede Host
+exit; a Controller restart resumes the exact request, not business input.
+The 1.25 → 1.26 transition admits optional Codex
 workspace-write temporary-directory exclusions without changing historical
 permission payloads. The published 1.24 → 1.25 transition remains unchanged
 and admits optional Role

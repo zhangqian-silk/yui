@@ -12,6 +12,7 @@ import {
   type UpdateControllerReconciliationResult
 } from "../controller/updateReconciliation.js";
 import { isControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
+import type { HostUpgradeResult } from "../controller/hostUpgrade.js";
 
 /** A side-by-side staged package, isolated from the live global install. */
 export type StagedPackage = Readonly<{
@@ -67,6 +68,8 @@ export type UpdatePorts = Readonly<{
   stopController?: (home: string, expectedPid: number) => UpdateControllerStopResult;
   startController?: (home: string) => void;
   restoreController?: (home: string, identity: ControllerIdentity) => void;
+  upgradeHosts?: (home: string) => readonly HostUpgradeResult[];
+  hostStatus?: (home: string) => readonly HostUpgradeResult[];
 }>;
 
 export type UpdateResult = Readonly<
@@ -86,6 +89,9 @@ export type UpdateResult = Readonly<
       }
   ) & {
     cleanupWarning?: string;
+    hosts?: readonly HostUpgradeResult[];
+    hostUpgradeError?: string;
+    controllerStarted?: true;
     controllerReconciliation?: UpdateControllerReconciliationResult;
     controllerRestore?: Readonly<{
       identity: ControllerIdentity;
@@ -360,9 +366,18 @@ function activateAndVerify(
     }
   }
 
+  let hosts: readonly HostUpgradeResult[] | undefined;
+  let hostUpgradeError: string | undefined;
+  if (lifecycle.ensureRunning && ports.upgradeHosts) {
+    try { hosts = ports.upgradeHosts(home); }
+    catch (error) { hostUpgradeError = `Host upgrade request outcome is unknown: ${messageOf(error)}. Inspect existing requests; do not replay inputs.`; }
+  }
   return {
     outcome: "updated",
     version: staged.version,
+    ...(lifecycle.ensureRunning ? { controllerStarted: true as const } : {}),
+    ...(hosts === undefined ? {} : { hosts }),
+    ...(hostUpgradeError === undefined ? {} : { hostUpgradeError }),
     ...(migration?.backupPath === undefined ? {} : { backupPath: migration.backupPath })
   };
 }

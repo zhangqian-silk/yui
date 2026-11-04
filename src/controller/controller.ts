@@ -62,9 +62,12 @@ import {
 } from "../coordination/workMailbox.js";
 import {
   hasRuntimeCleanupObligation,
+  runtimeCleanupDisposition,
   type RuntimeLifecycleTarget,
   type RuntimeRoleOwner
 } from "../runtime/lifecycleReservation.js";
+import type { NonBlockingChecks } from "../runtime/lifecycleChecks.js";
+import type { ControllerLifecycleHint } from "./hostLifecycleChecks.js";
 import type { SessionHostPort } from "../runtime/ports.js";
 import { formatTaskRecordReference } from "../task/taskRecordReference.js";
 import type {
@@ -178,6 +181,7 @@ export type ControllerRuntimeOptions = Readonly<{
   jobSupervisor?: Readonly<{ reconcile(now: Date): void; confirmResult?(namespace: string, runId: string, now: Date): void }>;
   globalInputDelivery?: (options: { reconcile: boolean; now: Date }) => Promise<void>;
   hostTerminalRecovery?: () => Promise<void>;
+  lifecycleChecks?: NonBlockingChecks<ControllerLifecycleHint>;
   providerRetry?: Readonly<{
     reconcile(): Promise<void>;
     deadlines(): readonly { key: MailboxKey; at: number }[];
@@ -573,6 +577,12 @@ async function processSelectedRoleRuntimeCleanups(
     const owner = runtimeOwner(target);
     const batchId = runtimeLifecycleBatchIdentity(target, mailbox);
     if (hasRuntimeCleanupObligation(mailbox)) {
+      // Upgrade is a graceful, exact-identity operation, never the destructive
+      // cleanup path. Its coordinator owns drain/restore; retain backpressure.
+      if (runtimeCleanupDisposition(mailbox) === "upgrade-host") {
+        markFailedRuntimeTarget(failedRoles, target);
+        continue;
+      }
       try {
         if (lifecycleHost === undefined) {
           throw new Error("Role runtime cleanup host is unavailable.");
@@ -1136,6 +1146,7 @@ export class FileTaskController {
   readonly #providerRetry: ControllerRuntimeOptions["providerRetry"];
   readonly #continuationReconciler: ControllerRuntimeOptions["continuationReconciler"];
   readonly #hostTerminalRecovery: ControllerRuntimeOptions["hostTerminalRecovery"];
+  readonly #lifecycleChecks: ControllerRuntimeOptions["lifecycleChecks"];
   readonly #persistenceMetrics: ControllerRuntimeOptions["persistenceMetrics"];
   readonly #diagnosticMetrics: ControllerRuntimeOptions["diagnosticMetrics"];
   #current: Promise<ControllerSchedulerResult> | undefined;
@@ -1237,6 +1248,7 @@ export class FileTaskController {
     this.#schedules = options.schedules;
     this.#continuationReconciler = options.continuationReconciler;
     this.#hostTerminalRecovery = options.hostTerminalRecovery;
+    this.#lifecycleChecks = options.lifecycleChecks;
     this.#globalInputDelivery = options.globalInputDelivery;
     this.#messageHealth = options.messageHealth;
     this.#providerRetry = options.providerRetry;
@@ -1336,6 +1348,7 @@ export class FileTaskController {
   start(): void {
     if (this.#timer !== undefined) return;
     if (this.#stopped) throw new Error("Controller runtime is stopped.");
+    this.#lifecycleChecks?.notify("startup");
     this.#requestBackgroundPump();
     this.#requestRuntimeObservation();
     // Arm the Operator lane once for work that was already pending when the
@@ -1357,6 +1370,7 @@ export class FileTaskController {
 
   stop(): void {
     this.#stopped = true;
+    this.#lifecycleChecks?.close();
     this.#workspaceWaitAbort.abort(new Error("Controller stopped while waiting for Project maintenance."));
     this.#signalScheduler.stop();
     this.#operatorSignalScheduler.stop();
@@ -1400,6 +1414,7 @@ export class FileTaskController {
   signal(key: string): void {
     if (this.#stopped) throw new Error("Controller runtime is stopped.");
     parseMailboxKey(key);
+    this.#lifecycleChecks?.notify("signal");
     if (key === "operator") {
       // Main lane owns durable Hook folding; the Operator lane is the sole
       // consumer of the Operator delivery mailbox.
@@ -1510,6 +1525,7 @@ export class FileTaskController {
             }
           }
           const firstRuntimeDrain = await this.#phases.observe("runtime-drain", "home", () => this.#drainRuntimeEvents());
+          if (scope.kind === "full") this.#lifecycleChecks?.notify("periodic");
           if (scope.kind === "full" && this.#hostTerminalRecovery !== undefined) {
             await this.#observeMaintenance("Host terminal recovery", this.#hostTerminalRecovery);
           }
@@ -1841,6 +1857,7 @@ export class FileTaskController {
       ? await processor.drainAsync(this.#now())
       : processor.drain(this.#now());
     this.#lastRuntimeDrain = result;
+    if (result.acknowledgedEventIds.length > 0) this.#lifecycleChecks?.notify("events-persisted");
     this.#runtimeDrainPasses += 1;
     const metrics = result.metrics ?? ZERO_DRAIN_METRICS;
     this.#runtimeListedEvents += metrics.listedEventCount;

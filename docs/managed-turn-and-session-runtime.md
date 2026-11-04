@@ -2,6 +2,99 @@
 
 # Session, AgentRun and notifications
 
+## Two lifecycle layers and nonblocking checks
+
+Controller custody of a Host and the Host's native Session lifecycle have
+separate event/guard/transition tables. Neither is an upgrade workflow.
+
+| Layer | Events and transitions | Authority and correlation |
+| --- | --- | --- |
+| Controller → Host | Fresh physical observations recover `unavailable`/`stopped`/`starting`/`running`. Authorized launch enters `starting`; matching launch handshake enters `running`. Stop or graceful-exit request enters `stopping`; sending exit does not prove `stopped`. Physical absence confirms `stopped`; unknown effects enter `unavailable`. | Owner, local operation/revision, returned binding and native Session ID. Durable Role/Task intent, launch reservations and exact process custody remain authoritative. |
+| Host → native Session | Launch, attachment, input acceptance, native activity, terminal, persistence, disconnect and exit drive the native states described below. | Native Session, proxy process, attempt and Turn identity; existing writer/resource fences still authorize effects. |
+
+The Controller wraps the shared Host port for launch/restore, observation and
+stop, including graceful-upgrade exit. A competing physical operation is
+rejected before its side effect, not queued or replayed by this FSM. Late
+reads and old bindings cannot overwrite newer custody; identical observations
+produce no hook feedback loop. A Controller restart reconstructs by observation,
+never by replaying the process-local state. Native completion/attachment exit
+does not prove Host process exit. Legal same-conversation resume correlates the
+layers without sharing their state enums or inventing another durable authority.
+
+Host-side native Session lifecycle state is owned by an explicit transition table, not
+by version detection. Launch/submit enters `starting`; attachment facts select
+`idle`, `busy`, `ready` (owned input), or `delivery-unknown`; acceptance enters
+`ready`; native execution enters `busy`; terminal handling enters `settling`;
+persisted settlement returns to observed `idle`/`busy`. Disconnect enters
+`starting`, classified failures retain their failure outcome, and exit enters
+`exited`. Only an explicit launch can leave `exited`. Native-TUI attachment
+readiness has its own event: `ready` there is not proof of native quiescence.
+Illegal edges do not mutate state; stale process, attempt and terminal-Turn
+facts are ignored. Exact writer/resource guards remain at command admission.
+This process-local reducer reconstructs from existing launch and native facts;
+it adds no persisted Session authority or upgrade workflow state machine.
+
+Optional before/after observations are immutable, deferred and independently
+coalesced (at most one running and one latest pending observation per check).
+“Before” describes the transition's source, not an awaited precondition.
+A slow or failing check cannot veto a transition or hold event folding/input
+delivery; checks must yield for I/O and honour cancellation before effects.
+They may recommend work to the separate fenced upgrade coordinator.
+Controller Host-state hooks suggest version reconciliation. Host Session-state
+hooks asynchronously observe current Skill metadata on attachment/settlement,
+without reading Skill bodies, committing a notice or assuming model memory.
+The exact per-input integrity check remains an ingress safeguard: invalid
+Skills can reject that input, but an optional check cannot stall lifecycle.
+Only accepted input advances the existing notice baseline; unchanged input
+is passed through without any extra content.
+
+Controller startup, Host connection/exit observations, Host state-change
+signals and event persistence trigger version checks without an explicit
+`update` request. Existing periodic reconciliation covers missed hints,
+including providers without reliable background-execution-end events and
+graceful exits that cannot emit a post-exit hint. Checks
+compare actual loaded Host/Endpoint implementations with this Controller's
+loaded target, never npm `latest`. Incomplete readiness on matching versions
+is not an upgrade reason. Checks stop on shutdown; already-admitted work
+retains the existing durable mailbox. A request pinned to a different target
+stays waiting for explicit recovery, not silent retargeting. An explicitly
+stopped Session is never restarted by a check.
+
+## Host upgrade and context checks
+
+`update` reports package installation, verified Controller startup and each
+Host separately. `update --hosts-status` reads current per-Host evidence without
+installing, starting or advancing a switch. Supported controlled Codex Hosts fence new input immediately,
+wait for the current native Turn and event persistence, inspect native background
+execution, and release their owned Endpoint before exiting gracefully. The
+existing role-runtime mailbox retains the exact generation, native Session,
+configuration digest and drain receipt across Controller restarts. A successor
+uses the recorded effective configuration and resumes that same conversation;
+only its loaded Host/Endpoint and control/event handshake confirm success.
+Queued Messages remain original and accepted/unknown inputs are never replayed.
+
+Paused Roles stay paused. Older Hosts, native-TUI-only attachments and Endpoints
+without a quiescence capability are retained with an unsupported diagnosis; no
+unsupported drain command is sent. A busy/unknown native execution has no
+bounded upgrade-completion promise. An uncertain launch is not automatically
+repeated; a later exact successful handshake can settle the retained request.
+This fence covers Host-controlled ingress, not arbitrary external native clients;
+it never terminates a shared daemon or native conversation.
+
+Host Skill checks still run before every input. Unchanged inputs are passed
+through exactly, with no notice, marker, separator or extra native input part.
+The attachment's loading guidance explains this managed-input contract; no
+notice is not a reason to repeat the check. Unmediated clients or uncertain
+current input routing retain the explicit Manifest check fallback; reusing a
+conversation alone does not establish Host mediation. Cold attachment,
+affected Skill changes and observed native compaction supply loading guidance;
+compaction invalidates the next input's metadata baseline. Without a reliable
+native event, the Agent must still recover any missing instructions using the
+Manifest. Neither a version nor an accepted notice proves model memory.
+Routine checks and empty inboxes are not user-facing progress.
+
+## Session stop and runtime observations
+
 Global Session stop/replacement uses the same exact native-execution quiescence
 boundary as Task Sessions. A departed Host or archived Session alone is not
 proof that an accepted input ended: its retained Provider binding is inspected
@@ -31,7 +124,9 @@ Samples use a process-monotonic clock and hashed target/request labels, with
 at most 16 recent and 16 active samples plus the slowest completed sample.
 In-flight request count is not queue depth; total client-to-route wait is not
 measured by the server alone. These observations neither identify an old incident
-retroactively nor establish quiescence; restarting a Controller does not refresh live Hosts.
+retroactively nor establish quiescence. A Controller restart does not itself
+prove Host replacement; asynchronous lifecycle checks still require a safe
+drain and the successor's actual handshake.
 
 `observations.commands.routes.transport` correlates socket accept-to-route,
 complete-frame receive-to-route and route-to-local-flush stages by the same
