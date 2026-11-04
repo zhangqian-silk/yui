@@ -124,19 +124,28 @@ export async function ensureFileTaskController(
 ): Promise<JsonValue> {
   const call = options.call ?? callController;
   await waitForForeignHandover(home, options);
-  try {
-    const status = await call(home, "controller.status", {});
-    assertCompatibleControllerStatus(status, options.expectedIdentity);
-    return status;
-  } catch (error) {
-    if (!isUnavailable(error)) throw error;
+  const timeoutMs = positive(options.startupTimeoutMs, STARTUP_TIMEOUT_MS, "startupTimeoutMs");
+  const pollMs = positive(options.pollIntervalMs, POLL_INTERVAL_MS, "pollIntervalMs");
+  const probeDeadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const status = await call(home, "controller.status", {});
+      assertCompatibleControllerStatus(status, options.expectedIdentity);
+      return status;
+    } catch (error) {
+      if (isUnavailable(error)) break;
+      // A closing endpoint may reset a read even after its owner exited.
+      // Retry only this observation: ambiguity never authorizes a spawn.
+      if (!(error instanceof ControllerClientError)
+        || error.code !== "CONTROLLER_DELIVERY_UNKNOWN"
+        || Date.now() >= probeDeadline) throw error;
+    }
+    await delay(pollMs);
   }
   // A handover may have started after the first lock check and before the
   // failed discovery/socket call. Re-check before spawning so a managed
   // Session can never resurrect the old Controller during an update.
   await waitForForeignHandover(home, options);
-  const timeoutMs = positive(options.startupTimeoutMs, STARTUP_TIMEOUT_MS, "startupTimeoutMs");
-  const pollMs = positive(options.pollIntervalMs, POLL_INTERVAL_MS, "pollIntervalMs");
   const spawnController = options.spawnController ?? spawnDetachedFileTaskController;
   // A readiness timeout is not exit evidence. Reuse the observable startup
   // process for this exact Home rather than multiplying unready Controllers.
@@ -327,16 +336,22 @@ async function waitForControllerProcessExit(
   );
   const pollMs = positive(options.pollIntervalMs, POLL_INTERVAL_MS, "pollIntervalMs");
   const deadline = Date.now() + timeoutMs;
-  // This check is tri-state: unreadable OS identity throws rather than
-  // collapsing an unknown/live process into the absence of a Controller match.
-  while (processGenerationIsLive(controller.pid, controller.processStartIdentity)) {
-    if (process.platform === "linux") {
-      const observed = readLinuxProcessIdentity(controller.pid);
-      // Preserve the existing physical-stop boundary: an exact zombie has
-      // exited, even if its parent has not reaped the process table entry.
-      if (observed?.startIdentity === controller.processStartIdentity && observed.state === "Z") return;
+  for (;;) {
+    let observationError: unknown;
+    try {
+      if (!processGenerationIsLive(controller.pid, controller.processStartIdentity)) return;
+      if (process.platform === "linux") {
+        const observed = readLinuxProcessIdentity(controller.pid);
+        // An exact zombie has exited even before its parent reaps it.
+        if (observed?.startIdentity === controller.processStartIdentity && observed.state === "Z") return;
+      }
+    } catch (error) {
+      // OS identity can disappear before kill(pid, 0) reports absence.
+      // Keep observing within the existing stop budget, never infer exit.
+      observationError = error;
     }
     if (Date.now() >= deadline) {
+      if (observationError !== undefined) throw observationError;
       throw new ControllerClientError(
         "CONTROLLER_TIMEOUT",
         `Controller process ${controller.pid} did not exit within ${timeoutMs} ms.`

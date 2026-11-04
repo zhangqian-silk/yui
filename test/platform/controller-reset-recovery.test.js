@@ -27,6 +27,8 @@ test("production restart retains the exact generation fence across a post-stop s
       t => resetFixture(t, true, true));
     await t.test("an exited old generation recovers; a mismatched captured generation is never signalled",
       t => resetFixture(t, false));
+    await t.test("unreadable generation during exit is observed until absence is proven",
+      t => resetFixture(t, false, true));
   });
 
 async function resetFixture(t, holdOldProcess, unknownGeneration = false) {
@@ -74,8 +76,8 @@ async function resetFixture(t, holdOldProcess, unknownGeneration = false) {
     t.mock.method(synchronousFilesystem, "readFileSync", (...args) => {
       // Simulate loss of the ownership inspection after its exact generation
       // was captured. Its kernel start identity and kill(pid, 0) stay readable.
-      if (holdOldProcess && faultArmed
-        && ((args[0] === `/proc/${child.pid}/status` && (stopAcknowledged || unknownGeneration))
+      if (faultArmed
+        && ((holdOldProcess && args[0] === `/proc/${child.pid}/status` && (stopAcknowledged || unknownGeneration))
           || (unknownGeneration && stopAcknowledged && args[0] === `/proc/${child.pid}/stat`))) {
         throw Object.assign(new Error("fixture ownership inspection unavailable"), { code: "EACCES" });
       }
