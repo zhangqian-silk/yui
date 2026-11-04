@@ -762,9 +762,12 @@ try {
       "--request-id", "update-pending").message;
     const notificationTask = json("task", "create", "update notification fixture").task;
     json("task", "cancel", notificationTask.id, "--summary", "Notify the busy Operator.");
-    await waitFor(() => pending().some(message => message.id !== queued.id),
+    let queuedBefore = [];
+    await waitFor(() => {
+      queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
+      return queuedBefore.some(message => message.id !== queued.id && message.body.includes(notificationTask.id));
+    },
       "The Task fact did not produce a pending engineering notice.");
-    const queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
     assert.ok(queuedBefore.some(message => message.id !== queued.id && message.body.includes(notificationTask.id)),
       "The pending engineering notice must reference this exact Task fact.");
     assert.equal(context().nativeTurn.status, "accepted", "Busy Desktop input must fence queued delivery.");
