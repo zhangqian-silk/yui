@@ -11,7 +11,7 @@ go(4302,"roles",1920,1080); js("document.querySelectorAll('#role-access-host .ac
 out["1920"]=js(M); capture_screenshot(E+"g-1920.png")
 go(4302,"roles",390,844); js("document.querySelectorAll('#role-access-host .access-row')[0].click()"); time.sleep(1.2)
 out["390"]=js(M); capture_screenshot(E+"g-390.png")
-go(4301,"roles",1365,1300); 
+go(4301,"roles",1365,1300);
 out["dirty"]=js("""(async () => { document.querySelectorAll('#role-access-host .access-row')[3].click(); await new Promise(r=>setTimeout(r,1200));
  const ack=document.querySelector('.agent-inspector .agent-live-ack'); const before=getComputedStyle(ack).display;
  const inp=[...document.querySelectorAll('.agent-inspector .agent-field-grid-compact input')].find(e=>!e.disabled&&e.type!=='checkbox'); inp.value='m2'; inp.dispatchEvent(new Event('input',{bubbles:true})); await new Promise(r=>setTimeout(r,200));

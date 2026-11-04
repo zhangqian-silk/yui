@@ -89,6 +89,10 @@ export function createModelManagement(store: Store, options: {
       try { cpaProviders = readCpaProviders(modelJsonFile(state.module.configFile).value, state.module.configFile); }
       catch { state.configurationError = "CPA configuration is unavailable or unsupported. No configuration was changed."; }
     }
+    // One native read per Agent: its Providers and whether they could be read
+    // at all. An unreadable file is unknown, never "no custom Provider".
+    const natives = (store.listConfiguredAgents?.() ?? [])
+      .map(agent => ({ agent, native: readNativeModelConfiguration(agent, options.environment) }));
     return {
       revision: state.revision, connection: state.connection, providers: [...cpaProviders, ...state.providers.map(provider => {
         const view = providerView(provider);
@@ -96,8 +100,9 @@ export function createModelManagement(store: Store, options: {
       })],
       configurationError: state.configurationError, application: "unverified", notice: NOTICE,
       registry: registry.read(), registryRevision: registry.revision(),
-      nativeProviders: (store.listConfiguredAgents?.() ?? [])
-        .flatMap(a => readNativeModelConfiguration(a, options.environment).providers),
+      nativeProviders: natives.flatMap(({ native }) => native.providers),
+      nativeConfigurations: natives.filter(({ native }) => native.status !== "unsupported" || native.sourceFile)
+        .map(({ agent, native }) => ({ agentId: agent.id, status: native.status, sourceFile: native.sourceFile })),
       // An adapter's supported wire operations are not configured accounts.
       // Only sources with actual retained account observations become UI tabs.
       quotaSources: registry.read().modules.filter(m => m.kind === "cliproxyapi").flatMap(m =>

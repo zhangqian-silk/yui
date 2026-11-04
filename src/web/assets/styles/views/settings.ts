@@ -296,6 +296,7 @@ export const SETTINGS_STYLES = `
 .agent-fact-grid>div:last-child{border-right:0}
 .agent-fact-grid dt{color:var(--ink-3);font-size:var(--fs-2xs)}
 .agent-fact-grid dd{margin:0;color:var(--ink);font-family:var(--font-mono);font-size:var(--fs-xs);overflow-wrap:anywhere}
+.agent-native-status{margin:0;padding:8px 12px;border-left:2px solid var(--warn);border-radius:0 var(--r-sm) var(--r-sm) 0;background:var(--warn-soft);color:var(--ink-2);font-size:var(--fs-xs);line-height:1.5;overflow-wrap:anywhere}
 .agent-native-note{margin:0;color:var(--ink-3)!important;font-size:var(--fs-2xs)!important;line-height:1.45}
 .agent-cached-models>summary{cursor:pointer;color:var(--ink-2);font-size:var(--fs-xs);font-weight:550}
 .agent-cached-models ul{columns:2;column-gap:20px;margin:8px 0 0;padding-left:16px;font-size:var(--fs-xs)}

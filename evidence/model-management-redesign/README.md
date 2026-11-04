@@ -135,3 +135,21 @@ says "Saved model" instead of "New Sessions use". The Agent and Role guides say 
 the Operator to read the Yui model registry first; "no endpoint binding" is stated only after a successful read. A
 later successful read restores the launch precedence. No retry mechanism was added. `harness/route-unknown.py`
 (`nomodels` fixture vs `full`), screenshots `u-*.png`.
+
+## Ninth pass: dependent Profiles and unreadable native config (after review-round-2)
+
+- **Saving the Worker refreshes the Profiles that depend on it.** A Profile resolves against the global Worker when
+  read, so after a Worker save or template application every loaded Profile's runtime projection is read again
+  (only that projection: the Profile's own fields and any unsaved draft on another member are untouched). While the
+  read runs the row shows loading; if it fails the row and detail say the configuration is unknown ("Cannot resolve"
+  plus why) instead of the old value, and selecting the Profile again retries. `harness/worker-save.py` (full fixture):
+  Worker effort medium→high shows `· high` on `reader` at 1365 and 390, the `designer` draft stays "1 unsaved", a
+  forced re-read failure shows unknown, reselecting recovers. `worker-save.json`, `w-*.png`.
+- **An unreadable native config is unknown, not "no Provider".** `/api/models` now carries each Agent's native read
+  status (`nativeConfigurations`: read / absent / unavailable). The services page shows "Native config unreadable —
+  Provider unknown, not confirmed absent" for that Agent's route (also as "Outside Yui: …" when bound), a note in the
+  native-Provider list instead of "No custom Provider found", and the Agent detail labels the fact "Native config: Not
+  read" with the reason and the unreadable file path instead of "Native default". A missing file still means built-in
+  defaults. No file is written; secrets never leave the parser. Fixtures `badnative` (no binding, port 4312),
+  `badbound` (bound, 4313) and `full` (readable, 4311) via `harness/native-status.py` at 1365/768/390/360:
+  `native-status.json`, `n-*.png` (PNG equals the CSS viewport; `scrollWidth == innerWidth` everywhere).

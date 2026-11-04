@@ -251,6 +251,30 @@ test("native-only Provider records have no invented components, catalog, quota p
   assert.equal(find(root, node => node.dataset.modelDetail === "maintenance"), undefined);
 });
 
+test("an unreadable native config is unknown on the services page, not a built-in service without Providers", async () => {
+  const routeText = root => text(find(root, node => node.dataset.routeAgent === "codex"));
+  const nativeText = root => text(find(root, node => node.dataset.dimension === "codex"));
+  for (const [status, bound] of [["unavailable", false], ["unavailable", true], ["read", false], ["absent", false]]) {
+    const current = view("r1", { connection: null, providers: [], quotaSources: [], nativeProviders: [],
+      nativeConfigurations: [{ agentId: "codex", status, sourceFile: "/fixture/config.toml" }] });
+    if (bound) current.registry.bindings.push({ agentId: "codex", adapterId: "codex", endpointId: "bridge-api", model: "m", scope: "yui-new-session" });
+    const { root, page } = mount(fakeApi({ current }));
+    await page.ready;
+    const label = status + (bound ? " bound" : "");
+    if (status === "unavailable") {
+      assert.doesNotMatch(routeText(root), /services\.nativeDefault|services\.noCustomProvider/, label);
+      assert.match(nativeText(root), /services\.nativeUnreadList/, label);
+      assert.doesNotMatch(nativeText(root), /services\.noNative\b/, label + ": an unread file does not claim no Providers");
+      if (!bound) assert.match(routeText(root), /services\.nativeUnreadable.*services\.nativeUnknownHelp/, label);
+    } else {
+      assert.match(routeText(root), /services\.nativeDefault/, label);
+      assert.match(routeText(root), status === "absent" ? /services\.noNativeFile/ : /services\.noCustomProvider/, label);
+      assert.match(nativeText(root), /services\.noNative\b/, label);
+      assert.doesNotMatch(nativeText(root), /services\.nativeUnreadList/, label);
+    }
+  }
+});
+
 test("a standalone registered endpoint remains visible without any optional component", async () => {
   const current = view("r1", { connection: null, providers: [], quotaSources: [] });
   current.registry.endpoints.push({ id: "standalone", moduleId: null, url: "https://standalone.invalid",

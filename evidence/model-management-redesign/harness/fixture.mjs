@@ -37,6 +37,8 @@ if (mode !== "empty") {
     { slug: "factory/claude-opus-5-5", display_name: "Opus 5.5 (via Factory)", supported_reasoning_levels: ["low", "medium", "high"].map(effort => ({ effort })) }
   ] }));
   writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({ model: "sonnet", effortLevel: "xhigh" }));
+  // badnative / badbound: Codex's native TOML cannot be parsed (unknown, not "no Provider").
+  if (mode.startsWith("bad")) writeFileSync(join(codexHome, "config.toml"), 'model = "unterminated\n[model_providers.broken\n');
 }
 const bridgeConfig = join(root, "bridge.json");
 writeFileSync(bridgeConfig, JSON.stringify({ backends: [
@@ -78,7 +80,7 @@ store.transaction(w => {
     w.saveAgentProfile(createAgentProfile({ id: "fast-fix", runtime: { source: "explicit", agentId: "codex", model: "gpt-6-astra", effort: "low" } }, now));
   }
   const config = { schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION, defaultAgent: "codex", defaultWorkspace: ws };
-  if (mode === "full" || mode === "readonly") config.modelManagement = {
+  if (["full", "readonly", "badnative", "badbound"].includes(mode)) config.modelManagement = {
     modules: [
       { id: "bridge", kind: "metabridge", version: "0.9.2", managementUrl: "http://127.0.0.1:9", managementKeyFile: "", configFile: bridgeConfig, maintenance: "external", quotaAdapter: "none" },
       { id: "cpa", kind: "cliproxyapi", version: "6.1.0", managementUrl: "http://127.0.0.1:9", managementKeyFile: join(root, "cpa.key"), configFile: cpaConfig, maintenance: "external", quotaAdapter: "factory-quota-v1" }
@@ -87,7 +89,7 @@ store.transaction(w => {
       { id: "bridge-codex", moduleId: "bridge", url: "http://127.0.0.1:9/v1", protocol: "responses", clientKeyFile: "" },
       { id: "claude-gateway", moduleId: null, url: "https://claude-gw.invalid", protocol: "anthropic-messages", clientKeyFile: join(root, "claude.key") }
     ],
-    bindings: [{ agentId: "codex", adapterId: "codex", endpointId: "bridge-codex", model: "factory/claude-opus-5-5", scope: "yui-new-session" }],
+    bindings: mode === "badnative" ? [] : [{ agentId: "codex", adapterId: "codex", endpointId: "bridge-codex", model: "factory/claude-opus-5-5", scope: "yui-new-session" }],
     receipts: []
   };
   w.saveConfig(config);

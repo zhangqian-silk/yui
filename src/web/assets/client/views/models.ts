@@ -219,19 +219,32 @@ export function mountModels(root, deps) {
     const module = moduleOf(endpoint);
     return module ? componentName(module) + " · " + module.id : t("services.direct");
   }
+  // Whether an Agent's native file was read. Only "read" (or a confirmed
+  // absent file) says anything about its Providers; a failed or unreported
+  // read is unknown, never "no custom Provider".
+  function nativeRead(agentId) {
+    const entry = (state.view.nativeConfigurations || []).find(item => item.agentId === agentId);
+    return entry ? entry.status : "unknown";
+  }
+  function nativeKnown(agentId) { return ["read", "absent"].includes(nativeRead(agentId)); }
   function agentRoute(agent) {
     const registry = state.view.registry;
     const binding = registry.bindings.find(item => item.agentId === agent.id && item.endpointId);
     const endpoint = binding ? registry.endpoints.find(item => item.id === binding.endpointId) : null;
     const natives = (state.view.nativeProviders || []).filter(provider => provider.agentId === agent.id);
     const selected = natives.find(provider => provider.selected);
-    const nativeText = selected ? t("services.nativeSelected").replace("{name}", selected.name || selected.id)
-      : t("services.nativeDefault");
+    const status = nativeRead(agent.id);
+    const known = nativeKnown(agent.id);
+    const nativeText = !known ? t("services.nativeUnreadable")
+      : selected ? t("services.nativeSelected").replace("{name}", selected.name || selected.id)
+        : t("services.nativeDefault");
+    const nativeNote = !known ? t("services.nativeUnknownHelp")
+      : selected ? t("services.ownedNative") : t(status === "absent" ? "services.noNativeFile" : "services.noCustomProvider");
     const target = binding
       ? [h("strong", null, t("services.viaEndpoint").replace("{id}", binding.endpointId)),
         h("small", null, viaLabel(endpoint) + " · " + t("services.model") + " " + (binding.model || "—") + " · " + t("services.newSessionsOnly")),
         h("small.faint", null, t("services.outsideYui").replace("{native}", nativeText))]
-      : [h("strong", null, nativeText), h("small", null, selected ? t("services.ownedNative") : t("services.noCustomProvider"))];
+      : [h("strong" + (known ? "" : ".services-native-unknown"), null, nativeText), h("small", null, nativeNote)];
     return h("li.services-route", { dataset: { routeAgent: agent.id } },
       h("span.services-route-agent", null, h("code", null, agent.id)),
       h("span.services-route-arrow", { "aria-hidden": "true" }, "→"),
@@ -243,6 +256,7 @@ export function mountModels(root, deps) {
     const agents = (view.configuredAgents || []).filter(agent => agent.adapterId === spec.adapter);
     const endpoints = view.registry.endpoints.filter(endpoint => endpoint.protocol === spec.protocol);
     const natives = (view.nativeProviders || []).filter(provider => agents.some(agent => agent.id === provider.agentId));
+    const unread = agents.filter(agent => !nativeKnown(agent.id)).map(agent => agent.id);
     const bound = endpoint => view.registry.bindings.filter(binding => binding.endpointId === endpoint.id).map(binding => binding.agentId);
     const children = [
       h("header.services-dim-head", null,
@@ -262,13 +276,15 @@ export function mountModels(root, deps) {
             endpoint.clientKeyFile ? h("small.mono-line", null, endpoint.clientKeyFile) : null),
           bound(endpoint).join(", ") || h("span.faint", null, t("services.unbound"))] })), "endpoints-" + spec.adapter)
         : h("p.models-empty", null, t("services.noEndpoints")));
-    children.push(h("h3.services-sub", null, t("services.native"), h("span.count", null, String(natives.length))),
+    children.push(h("h3.services-sub", null, t("services.native"), h("span.count", null, !unread.length ? String(natives.length) : natives.length ? natives.length + "+?" : "?")),
+      unread.length ? h("p.services-native-unknown", { role: "note", dataset: { nativeUnread: unread.join(" ") } },
+        t("services.nativeUnreadList").replace("{agents}", unread.join(", "))) : null,
       natives.length ? table([t("services.col.provider"), t("services.col.agent"), t("models.column.baseUrl"), t("models.credential"), ""],
         natives.map(provider => ({ data: { providerIdentity: "native:" + provider.agentId + ":" + provider.sourceFile + ":" + provider.id }, cells: [h("strong", null, provider.name || provider.id), h("code", null, provider.agentId),
           h("span.mono-line", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.notReported")),
           credentialLabel(provider, true),
           provider.selected ? tone("info", t("models.nativeSelected")) : h("span.faint", null, t("models.nativeNotSelected"))] })), "native-" + spec.adapter)
-        : h("p.models-empty", null, t("services.noNative")));
+        : unread.length ? null : h("p.models-empty", null, t("services.noNative")));
     return h("section.services-dim", { dataset: { dimension: spec.adapter } }, ...children);
   }
   function componentCard(component) {

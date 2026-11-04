@@ -615,4 +615,45 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   assert.match(text(profile.summary), /Worker is unavailable/);
   assert.match(text(profile.summary), /settings.summaryDisabled/);
   assert.doesNotMatch(text(profile.summary), /settings.summaryNativeDefault/, "an unresolved template is not presented as a native-default choice");
+
+  // A saved Worker changes what inheriting Profiles launch with. Their runtime
+  // projection is re-read; another member's unsaved draft is kept.
+  const rowText = id => text(findAccess(id));
+  const profileDraft = emptyProfile.editors.find(editor => editor.field.key === "model").control;
+  profileDraft.value = "profile-draft"; profileDraft.handlers.input();
+  const workerSaved = { ...currentGroups["role/worker"], revision: "role-saved",
+    fields: currentGroups["role/worker"].fields.map(field => field.key === "effort" ? { ...field, value: "high" } : field) };
+  currentGroups["profile/reader"] = { ...currentGroups["profile/reader"],
+    observation: { source: "global-worker", status: "resolved", workerRevision: 2, binding: { agentId: "fixture", config: { model: "worker-inherited", effort: "high" } } } };
+  context.submitMutation = async () => ({ group: workerSaved, output: "saved" });
+  const saveWorker = async () => {
+    const effortEditor = role.editors.find(editor => editor.field.key === "effort");
+    effortEditor.control.value = effortEditor.control.value === "high" ? "max" : "high"; effortEditor.control.handlers.change();
+    await role.form.handlers.submit({ preventDefault() {} });
+    await new Promise(resolve => setTimeout(resolve, 0));
+  };
+  await saveWorker();
+  assert.match(rowText("profile/reader"), /worker-inherited\s+· high/, "an inheriting Profile shows the saved Worker effort");
+  assert.doesNotMatch(rowText("profile/reader"), /Worker is unavailable|access.unresolved/);
+  assert.equal(emptyProfile.editors.find(editor => editor.field.key === "model").control, profileDraft, "other drafts are not rebuilt");
+  assert.equal(profileDraft.value, "profile-draft");
+  assert.equal(emptyProfile.dirty, true);
+  const read = context.requestJson;
+  context.requestJson = async url => { if (url.includes("profile")) throw new Error("offline"); return read(url); };
+  await saveWorker();
+  assert.match(rowText("profile/reader"), /access.unresolved/, "a failed re-read is unknown, not the previous Worker value");
+  assert.doesNotMatch(rowText("profile/reader"), /worker-inherited/);
+  assert.equal(profileDraft.value, "profile-draft");
+  context.requestJson = read;
+  findAccess("profile/reader").handlers.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(rowText("profile/reader"), /worker-inherited\s+· high/, "selecting the template again retries the re-read");
+
+  // An Agent whose native file could not be read is not titled "Native default".
+  const unreadAgent = { content: element("div"), pending: false };
+  context.renderGroup(unreadAgent, { ...currentGroups["agent/fixture"],
+    observation: { adapterId: "codex", native: { status: "unavailable", model: null, effort: null, models: [] } } });
+  assert.match(text(unreadAgent.headerFacts), /access.nativeUnread.*access.nativeUnreadLong/);
+  assert.doesNotMatch(text(unreadAgent.headerFacts), /access.nativeDefault/);
+  assert.match(text(unreadAgent.content), /access.nativeUnreadFile/, "the native card says its file could not be read");
 });

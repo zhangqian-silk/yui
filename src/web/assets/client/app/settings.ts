@@ -144,6 +144,10 @@ function effective(state) {
   }
   let agentId = group.agentId || "", model, effort, own;
   if (area === "profiles") {
+    // A Worker change is being re-read (or that read failed): the cached
+    // runtime is no longer what a new Session would get.
+    if (state.runtimeStale === "pending") return null;
+    if (state.runtimeStale === "failed") return { unavailable: t("access.runtimeStale"), agentId };
     const runtime = group.observation;
     if (!runtime || runtime.status !== "resolved") return { unavailable: runtime?.reason || t("settings.profileUnavailable"), agentId };
     agentId = runtime.binding?.agentId || agentId;
@@ -160,6 +164,9 @@ function effective(state) {
     modelSource: route ? "route" : model ? own : "native", effortSource: effort ? own : "native",
     nativeStatus: native?.status || (nativeOf(agentId) ? "read" : "unknown") };
 }
+// Only a read file (or a confirmed absent one) shows the Agent's own default;
+// a failed read is unknown, not "Native default".
+function nativeKnown(e) { return e?.nativeStatus === "read" || e?.nativeStatus === "absent"; }
 function sourceText(kind, route) {
   return kind === "route" ? t("access.source.route").replace("{id}", route?.binding.endpointId || "")
     : t("access.source." + kind);
@@ -208,7 +215,7 @@ function accessRow(state) {
     const route = e?.route;
     const users = rolesUsing(group?.agentId || state.meta.title);
     columns.push(cell("kind", h("span", null, agentKind(group?.agentId) || t("settings.summaryLoading")), adapterChip(group?.agentId)),
-      cell("model", ...(group ? [h("span.access-model", null, e.model || t(e.nativeStatus === "read" ? "access.nativeDefault" : "access.nativeUnread"),
+      cell("model", ...(group ? [h("span.access-model", null, e.model || t(nativeKnown(e) ? "access.nativeDefault" : "access.nativeUnread"),
         e.effort ? h("span.access-effort", null, " · " + e.effort) : null),
         h("small.access-source", null, t("access.nativeFile." + (e.nativeStatus === "read" ? "read" : e.nativeStatus === "absent" ? "absent" : "other")))] : modelLine(null))),
       cell("route", modelRoutes.status === "read"
@@ -343,6 +350,8 @@ function applyAccessSelection(state) {
   }
   agentInspectorOpen = true;
   accessLayout.dataset.detail = "open";
+  // Selecting a Profile whose post-Worker re-read failed retries it.
+  if (state.runtimeStale === "failed") void rereadRuntime(state, dependentsGeneration);
   if (state === selectedAccess() && inside(state.inspectorContent, agentInspector)) return;
   groups.forEach(item => { item.selected = false; });
   state.selected = true;
@@ -617,12 +626,14 @@ function groupSnapshot(state) {
   const area = groupArea(state.meta);
   const field = key => group?.fields.find(item => item.key === key);
   const native = area === "agents" ? group?.observation?.native : null;
-  const runtime = area === "profiles" ? group?.observation : null;
+  // A runtime being re-read after a Worker change is not shown as current.
+  const runtime = area === "profiles" && !state.runtimeStale ? group?.observation : null;
   return {
     group, area, native, runtime,
     model: native?.model || field("model")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.model : ""),
     effort: native?.effort || field("effort")?.value || (runtime?.status === "resolved" ? runtime.binding?.config?.effort : ""),
     unavailable: !!state.loadError || native?.status === "unavailable" || runtime?.status === "unavailable"
+      || state.runtimeStale === "failed"
   };
 }
 function renderGroupSummary(state) {
@@ -893,6 +904,8 @@ function roleProfileApplication(state, group) {
       });
       close();
       renderGroup(state, saved.group);
+      void refreshWorkerDependents(group.id);
+      if (accessSection()) renderAgentIndex();
       // The command transcript stays available on hover, not as page text.
       state.receipt.textContent = t("settings.profileApplied");
       state.receipt.title = [saved.output, saved.adoption, saved.refresh].filter(Boolean).join("\n");
@@ -1034,6 +1047,8 @@ function nativeOverview(group) {
       statusPill(observedAt ? t("settings.source.observed") + " · " + observedAt : t("settings.source.observationUnknown"), observedAt ? "info" : "")),
     rows.length ? h("dl.agent-fact-grid", null, rows.map(([key, value]) => h("div", null,
       h("dt", null, t(key)), h("dd", null, String(value))))) : null,
+    ["read", "unsupported"].includes(native.status) ? null : h("p.agent-native-status", { role: "note" },
+      t(native.status === "absent" ? "access.nativeAbsentFile" : "access.nativeUnreadFile").replace("{file}", native.sourceFile || "")),
     h("p.agent-native-note", null, t(native.models?.length ? "settings.nativeModelsCached" : "settings.nativeModelsUnknown")),
     native.models?.length ? h("details.agent-cached-models", null,
       h("summary", null, t("settings.nativeModels") + " · " + native.models.length),
@@ -1046,7 +1061,7 @@ function renderGroup(state, group) {
   const previousContent = state.content;
   const generation = state.renderGeneration = (state.renderGeneration || 0) + 1;
   state.loadError = null;
-  state.group = group; state.editors = []; state.dirty = false; state.unknown = false;
+  state.group = group; state.editors = []; state.dirty = false; state.unknown = false; state.runtimeStale = null;
   state.readOnly = !!(settingsReadOnly || group.readOnly);
   state.capabilityPending = false;
   state.profileApplication = null;
@@ -1221,6 +1236,8 @@ function renderGroup(state, group) {
         id: group.id, revision: state.group.revision, changes, acknowledgeLive: acknowledge.checked
       });
       renderGroup(state, result.group);
+      void refreshWorkerDependents(group.id);
+      if (accessSection()) renderAgentIndex();
       const transcript = [result.output, result.adoption, result.refresh].filter(Boolean).join("\n");
       // Execution members confirm in one line; the command transcript stays
       // available on hover. Server settings keep the full result.
@@ -1297,7 +1314,9 @@ function renderHeaderFacts(state) {
   const items = [];
   if (area === "agents") {
     items.push(fact(t("access.col.kind"), agentKind(state.group.agentId) || t("access.unknown")),
-      fact(t("access.col.native"), (e.model || t("access.nativeDefault")) + (e.effort ? " · " + e.effort : "")),
+      nativeKnown(e) ? fact(t("access.col.native"), (e.model || t("access.nativeDefault")) + (e.effort ? " · " + e.effort : ""))
+        : e.nativeStatus === "unsupported" ? fact(t("access.col.nativeConfig"), t("access.nativeUnread"))
+          : fact(t("access.col.nativeConfig"), t("access.nativeUnread"), t("access.nativeUnreadLong"), "warn"),
       fact(t("access.col.route"), modelRoutes.status !== "read" ? t("access.unknown") : e.route ? e.route.binding.endpointId : t("access.routeNative")));
   } else if (e?.unavailable) {
     items.push(fact(t("access.col.model"), t("access.unresolved"), e.unavailable, "warn"));
@@ -1339,6 +1358,36 @@ function refreshDerived(state) {
   host.replaceChildren(...lines);
 }
 
+// Profiles resolve against the global Worker when they are read, so a saved
+// or applied Worker change makes every loaded Profile's runtime projection
+// stale. Re-read only that projection: the Profile's own fields and any
+// unsaved draft stay as they are (the Profile revision covers only the
+// Profile itself). A failed re-read is shown as unknown, never as the old value.
+let dependentsGeneration = 0;
+async function refreshWorkerDependents(savedId) {
+  if (savedId !== "role/worker") return;
+  const generation = ++dependentsGeneration;
+  const targets = groups.filter(state => state.group && groupArea(state.meta) === "profiles");
+  if (!targets.length) return;
+  targets.forEach(state => { state.runtimeStale = "pending"; renderGroupSummary(state); refreshDerived(state); });
+  if (accessSection()) renderAgentIndex();
+  await Promise.all(targets.map(state => rereadRuntime(state, generation, false)));
+  if (generation === dependentsGeneration && accessSection()) renderAgentIndex();
+}
+// Selecting a Profile whose re-read failed retries it.
+async function rereadRuntime(state, generation, redraw = true) {
+  try {
+    const fresh = await requestJson("/api/settings/group?" + new URLSearchParams({ id: state.meta.id }));
+    if (generation !== dependentsGeneration || !state.runtimeStale) return;
+    state.group = { ...state.group, observation: fresh.observation, agentId: fresh.agentId };
+    state.runtimeStale = null;
+  } catch {
+    if (generation !== dependentsGeneration || !state.runtimeStale) return;
+    state.runtimeStale = "failed";
+  }
+  renderGroupSummary(state); refreshDerived(state);
+  if (redraw && accessSection()) renderAgentIndex();
+}
 async function loadGroup(state) {
   if (state.loaded || state.loading || state.dirty || state.pending || state.unknown) return;
   state.loading = true;
