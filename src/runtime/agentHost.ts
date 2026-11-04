@@ -1143,7 +1143,7 @@ export async function runAgentHost(input: Readonly<{
       request.runId
     ), boundedText: request.run.boundedText,
       retrySupport: session.adapterId === "codex" ? "codex-failed-turn-v1" : "unsupported" };
-    let recoveryInput: { text: string; expectedFailedNativeTurnId?: string } | undefined;
+    let recoveryInput: { text: string; context?: string; expectedFailedNativeTurnId?: string } | undefined;
     // Registration precedes the Provider write, so its failure modes are not
     // the Provider's. A definite failure means the Provider never saw this
     // input and the occupancy must be released; anything unconfirmed leaves
@@ -1152,10 +1152,11 @@ export async function runAgentHost(input: Readonly<{
       const admitted = await beginDurableProviderTurn(input.home, durableRun);
       if (admitted !== null && typeof admitted === "object" && !Array.isArray(admitted)) {
         const retry = (admitted as Readonly<Record<string, JsonValue>>).retryInput as
-          Readonly<{ text?: JsonValue; expectedFailedNativeTurnId?: JsonValue }> | undefined;
+          Readonly<{ text?: JsonValue; context?: JsonValue; expectedFailedNativeTurnId?: JsonValue }> | undefined;
         if (retry !== null && typeof retry === "object" && !Array.isArray(retry)
           && typeof retry.text === "string") recoveryInput = {
           text: retry.text,
+          ...(typeof retry.context === "string" ? { context: retry.context } : {}),
           ...(typeof retry.expectedFailedNativeTurnId === "string"
             ? { expectedFailedNativeTurnId: retry.expectedFailedNativeTurnId } : {})
         };
@@ -1219,18 +1220,18 @@ export async function runAgentHost(input: Readonly<{
       const notice = skillNotice.prepare(
         session.adapterId === "codex" ? request.run.boundedText : recoveryInput?.text ?? request.run.boundedText,
         activeRunPayload.environment,
-        session.nativeSessionId, { recovery: recoveryInput !== undefined, contextEpoch: session.contextEpoch }
+        session.nativeSessionId, { contextEpoch: session.contextEpoch }
       );
       const receipt = endpointReceipt(await session.submit({
         ...request.run,
         boundedText: session.adapterId === "codex" ? notice.inputText : notice.text,
-        ...(session.adapterId !== "codex" || notice.context === undefined && recoveryInput === undefined ? {} : {
+        ...(session.adapterId !== "codex" || notice.context === undefined && recoveryInput?.context === undefined ? {} : {
           additionalContext: {
             ...(notice.context === undefined ? {} : {
               "yui.session-skills": { kind: "application" as const, value: notice.context }
             }),
-            ...(recoveryInput === undefined ? {} : {
-              "yui.recovery": { kind: "application" as const, value: recoveryInput.text }
+            ...(recoveryInput?.context === undefined ? {} : {
+              "yui.recovery": { kind: "application" as const, value: recoveryInput.context }
             })
           }
         }),

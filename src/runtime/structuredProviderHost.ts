@@ -4,7 +4,6 @@ import {
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createNativeTitleSync } from "./nativeTitleSync.js";
-import { isNativeContextRecovery } from "./contextRecovery.js";
 import type { Socket } from "node:net";
 import { Duplex } from "node:stream";
 import { nativeExecutable } from "./nativeExecutable.js";

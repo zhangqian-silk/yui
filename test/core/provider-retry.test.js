@@ -6,7 +6,7 @@ import {
 } from "../../dist/runtime/providerRuntimeIdentity.js";
 import {
   recordProviderFailure, admitProviderRetry, providerRetryProjection,
-  cancelProviderRetry, deferProviderRetry, providerRetryAttemptId, providerRetryPrompt, providerRunRetry
+  cancelProviderRetry, deferProviderRetry, providerRetryAttemptId, providerRetryContext, providerRunRetry
 } from "../../dist/runtime/providerRetry.js";
 import { mapCodexAgentError, mapClaudeAgentError } from "../../dist/runtime/builtinAgentErrorMappers.js";
 
@@ -174,7 +174,8 @@ test("terminal proof, Retry-After, deadline and cancellation bound automatic adm
 
 test("busy admission has a fresh transport identity without spending a model attempt or changing recovery intent", () => {
   let value = fail(binding(), epoch);
-  const before = providerRetryPrompt(value.retry, "Original reference");
+  const before = providerRetryContext(value.retry);
+  assert.equal(providerRetryContext({ ...value.retry, failedNativeTurnId: undefined }), undefined);
   const firstId = providerRetryAttemptId(value.retry);
   const due = Date.parse(value.retry.nextEligibleAt);
   value = admitProviderRetry(value, { attemptId: firstId, at: due });
@@ -187,7 +188,7 @@ test("busy admission has a fresh transport identity without spending a model att
   value = deferProviderRetry(value, due);
   assert.equal(value.retry.attempts, 0);
   assert.notEqual(providerRetryAttemptId(value.retry), firstId);
-  assert.equal(providerRetryPrompt(value.retry, "Original reference"), before);
+  assert.equal(providerRetryContext(value.retry), before);
   const nextId = providerRetryAttemptId(value.retry);
   const nextAt = Date.parse(value.retry.nextEligibleAt);
   value = admitProviderRetry(value, { attemptId: nextId, at: nextAt });

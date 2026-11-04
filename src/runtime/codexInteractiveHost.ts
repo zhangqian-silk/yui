@@ -240,8 +240,8 @@ export async function runCodexInteractiveHost(
   }
 }
 
-/** Native user input owns previews/titles. Application context is a separate
- * protocol field, including on steer; never prepend metadata to content parts. */
+/** Keep application metadata out of native user input, including on steer.
+ * Formal titles are synchronized separately; no automatic-title heuristic is assumed. */
 export function codexInteractiveSkillInput(
   notice: ReturnType<typeof createSessionSkillNotice>,
   environment: Readonly<Record<string, string | undefined>>,

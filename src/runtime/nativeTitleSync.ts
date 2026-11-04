@@ -93,6 +93,7 @@ export async function synchronizeNativeTitle(request: NativeTitleSyncRequest): P
     if (current !== previous && !(request.newThread && current === null && receipt === undefined)) {
       const pollution = [current, thread.preview].some(value => typeof value === "string"
         && (value.startsWith("Yui Host checked current Skills;")
+          || value.startsWith("Yui Session Manifest:")
           || value.startsWith("<!-- yui:skills-checked -->")));
       return result("preserved", pollution
         ? "Historical Skill-prefix title/preview candidate; no native ownership proof, so no repair submitted."

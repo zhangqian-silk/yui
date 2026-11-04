@@ -53,7 +53,7 @@ is required.
 Both include `test/core` and `test/platform`. For an already built checkout,
 `npm run test:business` runs only `test/core` and `npm run test:platform` runs
 only `test/platform`; neither rebuilds. CI owns one explicit build per job.
-The stable suite owns current storage 1.27 and its declared 1.0 through 1.27 minor
+The stable suite owns current storage 1.28 and its declared 1.0 through 1.27 minor
 transition. It contains no undeclared historical format compatibility path.
 
 Current coverage includes:

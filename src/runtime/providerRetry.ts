@@ -217,15 +217,15 @@ export function providerRetryAttemptId(retry: ProviderRetry): string {
   return `provider-retry:${retry.chainId}/${retry.transportSequence + 1}`;
 }
 
-export function providerRetryPrompt(retry: ProviderRetry, original: string): string {
-  if (retry.failedNativeTurnId === undefined) return original;
+/** Recovery guidance only. User input is delivered separately, once. */
+export function providerRetryContext(retry: ProviderRetry): string | undefined {
+  if (retry.failedNativeTurnId === undefined) return undefined;
   return [
     "Yui infrastructure recovery, not new user authorization.",
     `Continue the existing input after failed attempt ${retry.failureAttemptId}`,
     `(native Turn ${retry.failedNativeTurnId}; failure ${retry.failureRef}).`,
     "Read current authorized context and the original input. Inspect existing work and receipts first;",
-    "continue only unfinished work. Preserve local changes and do not repeat confirmed side effects.",
-    original
+    "continue only unfinished work. Preserve local changes and do not repeat confirmed side effects."
   ].join("\n");
 }
 

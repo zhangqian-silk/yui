@@ -56,6 +56,7 @@ test("Host checks live Skills without repeated model checks; only accepted notic
     assert.ok(next.text.endsWith(body), "Keep the business input verbatim.");
     assert.equal(next.text, body,
       "Ordinary input is byte-for-byte unchanged, without notices, markers or separators.");
+    assert.equal(next.context, undefined, "Unchanged checks must not produce model context.");
     next.commit();
   }
   writeFileSync(join(source, "VERSION"), "2\n");
@@ -66,7 +67,8 @@ test("Host checks live Skills without repeated model checks; only accepted notic
     "A version change should only repeat the affected Skill pointer.");
   changed.commit();
   assert.match(notice.prepare("new thread", env, "thread-2").text, /sample/);
-  assert.match(notice.prepare("recovery", env, "thread-1", { recovery: true }).text, /sample/);
+  notice.invalidate(); // Explicit attachment/context loss, not an ordinary failed-Turn retry.
+  assert.match(notice.prepare("recovery", env, "thread-1").text, /sample/);
   const compacted = notice.prepare("after compact", env, "thread-1", { contextEpoch: 1 });
   compacted.commit();
   assert.doesNotMatch(notice.prepare("same epoch", env, "thread-1", { contextEpoch: 1 }).text, /sample/);
@@ -77,9 +79,9 @@ test("Host checks live Skills without repeated model checks; only accepted notic
     "A late acceptance must not erase a recovery boundary.");
   const renewed = notice.prepare("ready", env, "thread-1");
   renewed.commit();
-  const compacted = { method: "item/completed", params: { threadId: "thread-1", item: { type: "contextCompaction" } } };
-  assert.equal(isNativeContextRecovery("codex", "other-thread", compacted), false);
-  assert.equal(isNativeContextRecovery("codex", "thread-1", compacted), true);
+  const compactedEvent = { method: "item/completed", params: { threadId: "thread-1", item: { type: "contextCompaction" } } };
+  assert.equal(isNativeContextRecovery("codex", "other-thread", compactedEvent), false);
+  assert.equal(isNativeContextRecovery("codex", "thread-1", compactedEvent), true);
   const afterCompaction = notice.prepare("after compaction", env, "thread-1", { contextEpoch: 1 });
   assert.equal(afterCompaction.inputText, "after compaction");
   assert.match(afterCompaction.context, /sample/);

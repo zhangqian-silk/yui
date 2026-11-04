@@ -6,17 +6,23 @@ No shared-daemon `thread/name/set` call has been restored.
 
 ## Current path
 
-- Codex user input remains unchanged. Skill-check/loading notices and retry
-  recovery guidance use `additionalContext` with `kind: "application"`, on
-  both start and steer. Native input parts (including images) and other client
-  context are preserved. This contract was checked against schemas generated
+- Codex user input remains unchanged. Necessary Skill-loading notices and retry
+  recovery guidance use `additionalContext` with `kind: "application"`.
+  Start and steer preserve native input parts (including images) and other client
+  context. This contract was checked against schemas generated
   by the installed `codex-cli 0.159.2`, without a model request.
+- Routine checks stay inside the Host: unchanged input sends no Skill context,
+  marker or success report. Only cold attachment, explicit context loss/compaction
+  or changed Skill metadata supplies actionable loading pointers. A failed Turn
+  on the same attachment does not imply lost context. Recovery instructions are
+  separate from the original user input and never duplicate it as application
+  instructions. Guidance does not encode retry policy; engineering owns it.
 - Title proposals reuse existing Role/Task/Draft/instance-code formatters.
   Proposals are not application receipts and never acquire native ownership.
-- The title observer uses task-161's `createNonBlockingChecks` lane verbatim
-  from `1f1bc39d`; explicit compaction classification/context epochs reuse
-  task-161's `0270fe26` interface. This change does not replace either of
-  task-161's lifecycle state machines or edit its workspace.
+- Upstream task-161 (`9d6a585e`, PR #497) is integrated. The title observer reuses
+  its `createNonBlockingChecks` lane and explicit context epochs. Its two
+  lifecycle state machines, safe Host upgrade and on-demand Skill hook remain
+  authoritative; this change does not replace them or edit its workspace.
 - A new Thread is observed after accepted input (when native history can be
   materialized); a resumed Thread is observed after business startup. A
   standalone `app-server --listen stdio://` **process**, not `app-server proxy`,
@@ -37,12 +43,14 @@ No shared-daemon `thread/name/set` call has been restored.
   Confirmed receipt history permits later format changes without claiming
   arbitrary existing names. Receipt identity includes scope, Task (if any),
   Role, Agent, Thread and native account; logs expose status, attempt and path.
-  The Home transition is 1.26 → 1.27 with no historical data rewrite.
+  The Home transition is 1.27 → 1.28 with no historical data rewrite.
+  Upstream's existing 1.26 → 1.27 Host-upgrade transition is preserved.
 
 ## Historical pollution and repair
 
-An observed name/preview beginning with `Yui Host checked current Skills;` or
-`<!-- yui:skills-checked -->` is a **candidate**, not proof of ownership.
+An observed name/preview beginning with `Yui Host checked current Skills;`,
+`Yui Session Manifest:` or `<!-- yui:skills-checked -->` is a **candidate**,
+not proof of ownership.
 The Host reports it without mutation when no confirmed generated-name
 provenance exists. An unnamed resumed Thread is not treated as a new Thread.
 Users may deliberately choose identical wording; prefixes alone must never
@@ -78,14 +86,20 @@ race cannot be made atomic by this client. No stronger concurrent-edit
 guarantee is claimed. Older native servers that do not implement
 `additionalContext` are outside this verified protocol contract; there is no
 fallback that silently reinserts metadata into user input.
+Field separation does not establish that every native auto-title heuristic
+ignores application context. Readability instead relies on the existing
+canonical title formatter and a separately confirmed explicit native name;
+unknown naming outcomes remain diagnostics, not a success claim.
 
 ## Local delivery evidence
 
-On Linux x64 / Node 24.20.0, `npm test` completed with 1,025 passed,
-8 optional-driver skips and no failures (test phase 29.82 seconds).
+On Linux x64 / Node 24.20.0, `npm test` completed with 1,045 passed,
+8 optional-driver skips and no failures (test phase 30.11 seconds).
 The assembled-package `smoke-runtime-package.mjs --profile full` passed in
-114.16 seconds, including the actual trusted-local Task title receipt and
-native fixture readback, application-context separation, lifecycle and cleanup.
+116.66 seconds, including the actual trusted-local Task title receipt and
+native fixture readback, zero-notice warm inputs, application-context separation,
+safe Host upgrade, lifecycle and cleanup. The real Host/Controller recovery
+fixture also verifies unchanged original input and no repeated Skill context.
 The fixture Home/processes and temporary assembly were released. This is
 Leader self-review and isolated verification, not independent review or
 production-native compatibility certification.

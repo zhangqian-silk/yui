@@ -32,11 +32,10 @@ export function createSessionSkillNotice(home: string) {
       text: string,
       environment: Readonly<Record<string, string | undefined>>,
       sessionKey: string,
-      options: { recovery?: boolean; contextEpoch?: number } = {}
+      options: { contextEpoch?: number } = {}
     ): { text: string; inputText: string; context?: string; commit(): void } {
       const manifest = environment.YUI_SESSION_MANIFEST;
       if (manifest === undefined) return { text, inputText: text, commit() {} };
-      if (options.recovery) invalidate();
       let current: ReturnType<typeof checkSessionSkills>;
       try {
         current = checkSessionSkills(home, manifest);
@@ -57,12 +56,12 @@ export function createSessionSkillNotice(home: string) {
       const lines: string[] = [];
       if (cold || changed.length > 0 || removed) {
         lines.push(`Yui Session Manifest: ${manifest}`,
-          "This attachment uses Host-managed input checks. Unchanged inputs carry no Skill notice; do not repeat or narrate the Host's checks. A detached or unmediated client must use the Manifest check fallback; conversation reuse alone does not establish Host mediation.",
+          "Host-managed Skill checks are active; unchanged input has no notice. Detached/unmediated clients must use the Manifest check fallback.",
           cold
-            ? `First input or recovered attachment: read the exact Role profile at ${current.roleProfileRef.path} and the full current listed Skill entry points. Follow references only for the action you are taking, not to restore every previously used procedure. A Task role-profile projection is not this profile.`
+            ? `Read the exact Role profile at ${current.roleProfileRef.path} (not a Task projection) and all current Skill entry points below. Follow references only for the current action.`
             : "Skill metadata changed: load affected entries and applicable references; retain other complete instructions.",
           `Current Skill pointers: [${(removed ? [...skills.values()] : changed).join(",")}]`,
-          "Metadata is not a loading receipt. Read each required file through EOF; if output is truncated, finish the missing ranges. Recover missing instructions for the current task, not the whole manual. Keep routine role, Skill-version and empty-inbox checks internal; report only business progress or actionable failures.");
+          "Read required files through EOF. Metadata is not loaded instructions. Keep routine checks internal.");
       }
       const preparedGeneration = generation;
       return {

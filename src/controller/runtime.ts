@@ -78,7 +78,7 @@ import {
   validateRuntimeProcessExitObservation
 } from "../runtime/processExitObservation.js";
 import { replayRuntimeProcessExitOutbox } from "../runtime/processExitOutbox.js";
-import { providerRetryPrompt } from "../runtime/providerRetry.js";
+import { providerRetryContext } from "../runtime/providerRetry.js";
 import {
   createRuntimeObservation,
   runtimeObservationFromTaskEvent
@@ -1077,7 +1077,8 @@ export function createRuntimeLifecycleDispatcher(
       const retry = binding?.retry;
       return { recorded: true, ...(retry?.currentAttemptId === value.attemptId && value.boundedText !== undefined
         ? { retryInput: {
-            text: providerRetryPrompt(retry, value.boundedText),
+            text: value.boundedText,
+            ...(retry.failedNativeTurnId === undefined ? {} : { context: providerRetryContext(retry) }),
             ...(retry.failedNativeTurnId === undefined ? {} : { expectedFailedNativeTurnId: retry.failedNativeTurnId })
           } } : {}) };
     }
