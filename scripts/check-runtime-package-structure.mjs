@@ -9,7 +9,7 @@ const result = JSON.parse(readFileSync(manifestPath, "utf8"));
 const entries = result[0]?.files ?? [];
 const files = new Set(entries.map(({ path }) => path));
 const nativeTargets = process.env.YUI_PACKAGE_ALL_PLATFORMS === "1"
-  ? ["linux-x64", "darwin-x64", "darwin-arm64"] : [`${process.platform}-${process.arch}`];
+  ? ["linux-x64", "darwin-arm64"] : [`${process.platform}-${process.arch}`];
 const nativeFiles = nativeTargets.flatMap(target => [
   `dist/runtime/native/${target}/claude-process-owner`,
   ...(target.startsWith("darwin-") ? [`dist/runtime/native/${target}/process-identity`] : [])
@@ -43,7 +43,8 @@ for (const path of required) {
 }
 for (const path of files) {
   if (/^(?:test|scripts|tools|node_modules)\//u.test(path)
-    || path.startsWith("dist/storage/migrations/")) {
+    || path.startsWith("dist/storage/migrations/")
+    || path.startsWith("dist/runtime/native/darwin-x64/")) {
     throw new Error(`runtime package contains forbidden path ${path}`);
   }
 }

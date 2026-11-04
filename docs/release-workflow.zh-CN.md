@@ -36,7 +36,29 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 不能将不兼容冒称为兼容，也不为回避版本选择新增历史兼容机制。包版本与协议、
 持久存储契约仍然独立：兼容性检查和必要迁移要求不变，下文存储规则不授予发版权限。
 
-### 2.24.0 兼容性及迁移说明
+### 2.25.0 兼容性及迁移说明
+
+本次 minor 版本移除 macOS Intel 支持。仅支持 Linux x64（glibc）和使用原生
+arm64 Node.js 的 macOS Apple Silicon。macOS x64（包括 Apple Silicon 上通过
+Rosetta 运行的 x64 Node.js）会在加载任一 CLI 产品或打开 Home 前明确拒绝。
+Intel Mac 用户须停留在 2.23.0；Apple Silicon 用户须先切换到原生 arm64 Node.js。
+合并 npm 包的 OS/CPU 字段不能表达平台配对，因此不支持的组合仍可能安装成功，
+但启动时会明确失败；不新增安装脚本、备用 helper 或首次使用下载。
+既有 updater 的目标包预检也会在停止 Controller、替换全局二进制或迁移存储前拒绝。
+
+原生构建、包内容、Core CI 和发布冒烟同步收敛到上述两个平台。
+保留全部受支持 Node 20/22/24/26 的全新安装门禁（8 组），各平台 Node 24
+仍验证真实进程生命周期。保留 `v2.24.0` tag 作为未发布证据：
+必需的 Intel 冒烟作业未能获得 hosted runner，npm 和 GitHub Release 均未发布。
+2.25.0 包含下文完整的 Git 预算配置及错误保真变更。
+
+存储仍为 **1.29**，移除平台本身不新增迁移；从 2.23.0 升级仍执行已声明的
+Git 配置 **1.28 → 1.29** 迁移。升级前备份 Home，使用正常升级／迁移路径，
+不要用旧二进制打开已迁移的 Home。Controller/Host 协议仍为 v1。
+发布本身不更新全局 CLI、不迁移生产数据，也不重启共享服务。
+确定性安装包及 OS 检查不证明真实模型或真实远端服务器行为。
+
+### 2.24.0 未发布 tag：Git 预算及迁移
 
 Git 工作区和产物操作使用可配置的本地总耗时预算，与 clone、远程 fetch 和需要连接
 远端的 `ls-remote` 分离。在 `yui config tools` 或 Web 设置中配置
@@ -843,7 +865,7 @@ yui task grant revoke task-15 capability-grant-1
 确切 commit，只增加发布所需的产物装配、全新安装和 provenance 检查。
 
 业务契约与完整 Jobs/Schedules 链路仅在 Core CI 的 Linux Node 24 执行一次。
-发布仍在三平台 × Node 20/22/24/26 全部安装同一个已校验 tarball：每组都验证
+发布仍在两个受支持平台 × Node 20/22/24/26 全部安装同一个已校验 tarball：每组都验证
 CLI/setup/原生 helper、Doctor/PTY 和真实 SQLite SQL/GC；各平台 Node 24 额外验证
 真实进程生命周期。参见[分层覆盖表](testing/verification-levels.zh-CN.md#ci-与发布)。
 依赖安装不再隐含构建，每个源码作业只构建一次，再验证原生依赖；smoke 输出分段耗时。

@@ -5,7 +5,7 @@
 [![Core CI](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../LICENSE)
 ![Node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-brightgreen.svg)
-![Platform](https://img.shields.io/badge/platform-Linux%20x64%20%28glibc%29%20%7C%20macOS%20x64%2Farm64-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20x64%20%28glibc%29%20%7C%20macOS%20arm64-blue.svg)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#参与开发)
 
 让 Agent 持续推进你的任务，而不只是回答一轮对话。
@@ -37,10 +37,14 @@ Yui 是面向编程 Agent 的本地控制面。你只需用自然语言把目标
 
 ## 快速开始
 
-npm 包包含 Linux x64、Mac Intel 和 Apple Silicon 的 Yui 预编译程序。
-同一份包在三个平台验证后发布，运行时只选择对应平台的程序。
+npm 包包含 Linux x64 和 macOS Apple Silicon 的 Yui 预编译程序。
+同一份包在两个平台验证后发布，运行时只选择对应平台的程序。
+从 2.25.0 开始不再支持 macOS Intel，也不支持通过 Rosetta 运行的 x64 Node.js。
+Intel Mac 用户须停留在 2.23.0；Apple Silicon 用户须使用原生 arm64 Node.js。
+npm 的 OS/CPU 字段不能表达这种平台配对，因此不支持的组合仍可能安装成功，
+但 Yui 会在加载任一 CLI 产品或打开 Home 前明确拒绝，不新增安装脚本。
 
-需要 Linux x64 / glibc 或 macOS（x64 或 Apple Silicon）、Git 2.29.0 或更新版本、tmux，以及
+需要 Linux x64 / glibc 或 macOS Apple Silicon（使用原生 arm64 Node.js）、Git 2.29.0 或更新版本、tmux，以及
 Node.js `^20.17.0`、`^22.9.0`、`^24.0.0` 或 `^26.0.0`。macOS 上可用
 `brew install tmux` 安装 tmux。最简单的方式是先安装 Codex CLI 或 Claude
 Code CLI，并确保它已经可以使用你自己的账号正常工作。Yui 负责协调 Agent，

@@ -101,17 +101,17 @@ package-start 检查跟随已安装树中的本地 Skill 引用，包括跨 Role
 ## CI 与发布
 
 `ci.yml` 在 PR 和 master 上执行。业务契约与完整业务链路仅在 Linux x64/Node 24
-运行一次；平台测试在 Linux Node 24/26、Intel/Apple Silicon Mac Node 24 上运行。
+运行一次；平台测试在 Linux Node 24/26、Apple Silicon Mac Node 24 上运行。
 每个作业只构建一次，不重复 lint 或隐含 pretest 构建。保留现有作业名称；发布仍要求
 精确 master SHA 的整个 Core CI 成功，不复用另一源码的结果。
 
 | 证据 | PR/master | 精确发布 tarball |
 | --- | --- | --- |
 | 业务、状态、授权契约（`test/core`） | Linux 24 一次 | 复用精确 SHA 的成功 Core CI |
-| OS/helper/PTY/Git/SQLite（`test/platform`） | Linux 24/26、双 Mac 24 | 12 组真实 SQL/GC；其余安装边界见下 |
+| OS/helper/PTY/Git/SQLite（`test/platform`） | Linux 24/26、Apple Silicon Mac 24 | 8 组真实 SQL/GC；其余安装边界见下 |
 | `full`：Jobs/Schedules 业务链路 + lifecycle + compatibility | Linux 24 一次 | 复用精确 SHA 业务证据 |
-| `lifecycle`：重启、Session/Host 交接、归档 + compatibility | 双 Mac 24，Linux 已在 full 内 | 三平台 Node 24 |
-| `compatibility`：setup、CLI/bin、helper、Doctor/PTY/SQLite | Linux 26，其余已包含 | 三平台 × Node 20/22/24/26，24 已包含在 lifecycle 内 |
+| `lifecycle`：重启、Session/Host 交接、归档 + compatibility | Apple Silicon Mac 24，Linux 已在 full 内 | 两平台 Node 24 |
+| `compatibility`：setup、CLI/bin、helper、Doctor/PTY/SQLite | Linux 26，其余已包含 | 两平台 × Node 20/22/24/26，24 已包含在 lifecycle 内 |
 
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` 经过真实
 CLI/Controller/Host/SQLite 与隔离 tmux，仅用确定性夹具替换外部 Provider。它验证

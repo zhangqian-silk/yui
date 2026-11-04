@@ -51,7 +51,36 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
-### 2.24.0 compatibility and migration notes
+### 2.25.0 compatibility and migration notes
+
+This minor release removes macOS Intel support. Supported runtimes are now
+Linux x64 (glibc) and macOS Apple Silicon with native arm64 Node.js. macOS x64,
+including x64 Node.js under Rosetta on Apple Silicon, is rejected before either
+CLI product is loaded or the Home is opened. Intel Macs must remain on 2.23.0;
+Apple Silicon users must switch to native arm64 Node.js before upgrading.
+The combined npm manifest cannot express OS/CPU pairs, so npm installation can
+still succeed on an unsupported combination. Runtime startup fails explicitly;
+no install scripts, fallback helpers or first-use downloads are added.
+The existing updater's staged-target preflight also rejects that runtime before
+Controller shutdown, global binary activation or storage migration.
+
+Native builds, package contents, Core CI and release smoke now cover only those
+two platforms. Every supported Node 20/22/24/26 install remains gated (8 rows),
+with process lifecycle coverage on Node 24 for each platform. The `v2.24.0`
+tag is retained as unpublished evidence: required Intel smoke jobs did not
+acquire hosted runners, and neither npm nor GitHub Release was published.
+2.25.0 includes its complete configurable Git budget/error-handling changes
+described below.
+
+Storage remains **1.29**; the platform removal adds no migration. Updating from
+2.23.0 still applies the declared **1.28 → 1.29** Git configuration migration.
+Back up the Home and use the normal upgrade/migration path; do not open a
+migrated Home with an older binary. Controller/Host protocols remain v1.
+Publication does not update the global CLI, migrate production data or restart
+shared services. Deterministic package/OS checks do not establish real-model
+or real remote-server behavior.
+
+### 2.24.0 unpublished tag: Git budgets and migration
 
 Git workspace and artifact operations now use a configurable local total
 budget, independent of clone, remote fetch and network `ls-remote`. Configure
@@ -793,7 +822,7 @@ protection and valid exact-identity caches remain normal runtime behavior.
 
 Stable releases use npm `latest`; prereleases use `next`, never the stable
 default. The release workflow builds one runtime archive, verifies it across
-supported Node versions on Linux x64, macOS x64 and macOS arm64, publishes that exact archive to npm, then creates the
+supported Node versions on Linux x64 and macOS arm64, publishes that exact archive to npm, then creates the
 matching GitHub Release. Every release carries the runtime archive, checksum and
 provenance. A stable tag becomes GitHub latest; a prerelease does not.
 
@@ -1118,7 +1147,7 @@ It reuses the exact commit that passed core CI and adds only artifact assembly,
 fresh installation, and provenance checks required to publish.
 
 Business contracts and full Jobs/Schedules wiring run once in Core CI on Linux
-Node 24. Release still installs the same checksummed archive on all three
+Node 24. Release still installs the same checksummed archive on both supported
 platforms × Node 20/22/24/26: every install checks CLI/setup/native helpers,
 Doctor/PTY and real SQLite SQL/GC. Node 24 additionally checks real process
 lifecycle on each platform. See the [coverage table](testing/verification-levels.md#ci-and-release).

@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 
+import { unsupportedPlatformMessage } from "./runtime/platform.js";
+
 // No static control-plane imports: the product never resolves/initializes Yui Home.
 const arguments_ = process.argv.slice(2);
 let commandOffset = 0;
 while (arguments_[commandOffset] === '--json') commandOffset++;
 const commandArguments = arguments_.slice(commandOffset);
-if (commandArguments[0] === 'agent' || (commandArguments[0] === 'help' && commandArguments[1] === 'agent')) {
+const platformFailure = unsupportedPlatformMessage();
+if (platformFailure !== undefined) {
+  process.stderr.write(`${arguments_.includes("--json")
+    ? JSON.stringify({ ok: false, code: "unsupported_platform", message: platformFailure })
+    : platformFailure}\n`);
+  process.exitCode = 1;
+} else if (commandArguments[0] === 'agent' || (commandArguments[0] === 'help' && commandArguments[1] === 'agent')) {
   let outputFailed = false;
   // Cover early help/config writes as well as execution UI disconnection.
   process.stdout.on('error', () => { outputFailed = true; process.exitCode = 1; });
