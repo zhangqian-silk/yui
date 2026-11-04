@@ -176,6 +176,14 @@ export const SETTINGS_STYLES = `
 .agent-field-grid>.settings-field>.agent-field-help{order:4;flex:1 1 100%;display:none}
 .agent-field-grid>.settings-field:focus-within>.agent-field-help{display:block}
 .agent-section-heading p,.agent-native-head p,.agent-native-note{display:none}
+/* Long text (description, instructions, one-item-per-line lists) spans the
+   detail, sizes to its content between two and eight lines, and opens a full
+   editor beside the saved text. */
+.agent-field-grid>.settings-field[data-text]{grid-column:1/-1}
+.agent-field-grid>.settings-field[data-text]>label.field>textarea{min-height:calc(2lh + 18px);max-height:calc(8lh + 18px);field-sizing:content;resize:vertical;line-height:1.5}
+.agent-field-grid>.settings-field[data-text]>button.agent-text-expand.btn-link{order:2;flex:0 0 auto;margin-left:auto;padding:0;border:0;background:none;color:var(--accent);font:inherit;font-size:var(--fs-2xs);font-weight:500;cursor:pointer}
+.agent-field-grid>.settings-field[data-text]>button.agent-text-expand:hover{text-decoration:underline}
+.agent-field-grid>.settings-field[data-text]:has(textarea:placeholder-shown)>button.agent-text-expand{display:none}
 /* Core block: short choices are one line each (label · control · reset), two
    per row when the detail is wide enough. Help and the saved-value note stay
    available on focus / hover instead of taking lines. */
@@ -243,19 +251,28 @@ export const SETTINGS_STYLES = `
 .profile-text-toggle{padding:0;border:0;background:none;color:var(--accent);font:inherit;font-size:var(--fs-xs);font-weight:500;letter-spacing:0;cursor:pointer;white-space:nowrap}
 .profile-text-toggle:hover{text-decoration:underline}
 /* Side-by-side comparison for long instruction text. */
-.text-compare{width:min(1080px,calc(100vw - 24px));height:min(760px,calc(100dvh - 24px));padding:0;border:1px solid var(--line-2);border-radius:var(--r-lg);background:var(--surface);color:var(--ink);box-shadow:var(--shadow-2)}
+.text-compare{width:min(1080px,calc(100vw - 24px));max-height:min(760px,calc(100dvh - 24px));padding:0;border:1px solid var(--line-2);border-radius:var(--r-lg);background:var(--surface);color:var(--ink);box-shadow:var(--shadow-2)}
 .text-compare::backdrop{background:rgba(0,0,0,.35)}
 .text-compare[open]{display:flex;flex-direction:column}
 .text-compare-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
 .text-compare-head h2{font-size:var(--fs-md);font-weight:650}
-.text-compare-grid{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:1fr 1fr}
+.text-compare-grid{flex:1 1 auto;min-height:min(320px,calc(100dvh - 200px));display:grid;grid-template-columns:1fr 1fr;overflow:hidden}
 .text-compare-pane{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--line)}
 .text-compare-pane:last-child{border-right:0}
 .text-compare-pane h3{flex:none;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--surface-2);color:var(--ink-3);font-size:var(--fs-2xs);font-weight:650;letter-spacing:.04em}
 .text-compare-pane:last-child h3{color:var(--accent)}
 .text-compare-body{flex:1 1 auto;min-height:0;margin:0;padding:14px 18px;overflow:auto;color:var(--ink);font-family:inherit;font-size:var(--fs-sm);line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
 .text-compare-pane>.profile-text-empty{padding:14px 18px}
-@media(max-width:720px){.text-compare-grid{grid-template-columns:1fr;grid-template-rows:1fr 1fr}.text-compare-pane{border-right:0;border-bottom:1px solid var(--line)}.text-compare-pane:last-child{border-bottom:0}}
+.text-compare-head .spacer{flex:1 1 auto}
+.text-compare-head h2{flex:0 1 auto;min-width:0}
+.text-compare[data-panes="1"]{width:min(760px,calc(100vw - 24px))}
+.text-compare[data-panes="1"] .text-compare-grid{grid-template-columns:1fr;grid-template-rows:auto;min-height:min(160px,calc(100dvh - 200px));overflow:auto}
+.text-compare-input{flex:1 1 auto;min-height:0;width:100%;margin:0;padding:14px 18px;border:0;border-radius:0;background:var(--surface);color:var(--ink);font:inherit;font-size:var(--fs-sm);line-height:1.6;resize:none;outline:none}
+.text-compare-input:focus-visible{box-shadow:inset 0 0 0 2px var(--accent-soft)}
+.text-compare-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:12px 18px;border-top:1px solid var(--line)}
+.text-compare-note{flex:1 1 auto;color:var(--ink-4);font-size:var(--fs-2xs)}
+/* Narrow: the panes stack at their natural height and the body scrolls as one. */
+@media(max-width:720px){.text-compare-grid{display:flex;flex-direction:column;overflow:auto}.text-compare-pane{flex:none;border-right:0;border-bottom:1px solid var(--line)}.text-compare-pane:last-child{border-bottom:0}.text-compare-body{overflow:visible}.text-compare-input{flex:none;min-height:40dvh}}
 .profile-copy-note{margin:0;color:var(--ink-3);font-size:var(--fs-2xs)}
 .profile-dialog-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding-top:4px;border-top:1px solid var(--line)}
 .profile-dialog-foot .spacer{flex:1 1 auto}
@@ -382,6 +399,8 @@ export const SETTINGS_STYLES = `
   .access-head-actions .btn,.access-detail-bar .btn,.agent-action-buttons .btn,.agent-inspector .btn{min-height:40px}
   .access-detail-bar .access-back{min-width:40px}
   .agent-inspector details>summary{min-height:40px;display:flex;align-items:center}
+  .agent-field-grid>.settings-field[data-text]>button.agent-text-expand.btn-link{min-height:40px;min-width:44px;margin-block:-12px;padding:0 4px}
+  .text-compare .btn,.text-compare .guide-close,.profile-text-toggle{min-height:40px;min-width:40px}
 }
 /* Opening and closing a detail on wide layouts: the list glides to its new
    column while the detail slides in from the side (client accessTransition

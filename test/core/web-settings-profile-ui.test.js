@@ -205,3 +205,26 @@ test("execution configs show the model a new Session launches with, using the la
   assert.match(text(row("agent/codex")), /routed/, "an Agent row names the Roles that use it");
   assert.equal(vm.runInContext("accessLayout.dataset.detail", context), "closed", "a Role detail does not stay open on the Agents page");
 });
+
+test("long execution text is edited one item per line and in a saved-beside-edited editor", () => {
+  const { context, state } = mount();
+  const constraints = ["No writes", "Ask before real-resource checks"];
+  context.renderGroup(state, { id: "role/worker", revision: "r", agentId: "fixture", fields: [
+    { key: "systemPrompt", label: "Instructions", kind: "multiline", value: "Inspect first." },
+    { key: "constraints", label: "Constraints", kind: "json", value: constraints, reset: true }] });
+  const item = key => state.editors.find(editor => editor.field.key === key);
+  assert.equal(item("constraints").control.value, constraints.join("\n"), "a list reads one item per line, not as JSON");
+  const expand = key => walk(state.content).find(node => node.dataset.textExpand === key);
+  const cancelled = expand("constraints").handlers.click();
+  const area = walk(cancelled).find(node => node.tagName === "TEXTAREA");
+  assert.match(text(cancelled), /settings.text.saved.*No writes.*settings.text.edited/s, "the saved text sits beside the editable one");
+  area.value = "Changed";
+  walk(cancelled).find(node => node.tagName === "BUTTON" && node.children.includes("models.cancel")).handlers.click();
+  assert.equal(item("constraints").changed(), false, "cancel discards the dialog edit");
+  const edited = expand("constraints").handlers.click();
+  walk(edited).find(node => node.tagName === "TEXTAREA").value = "No writes\n\n  Keep drafts  ";
+  walk(edited).find(node => node.tagName === "BUTTON" && node.children.includes("settings.text.done")).handlers.click();
+  assert.equal(JSON.stringify(item("constraints").change()), JSON.stringify({ key: "constraints", value: ["No writes", "Keep drafts"] }), "Done writes back a trimmed list");
+  item("constraints").control.value = "";
+  assert.equal(JSON.stringify(item("constraints").change()), JSON.stringify({ key: "constraints", reset: true }), "an emptied list clears the saved setting");
+});

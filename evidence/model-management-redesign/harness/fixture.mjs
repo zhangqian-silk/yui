@@ -62,12 +62,19 @@ store.transaction(w => {
   w.saveGlobalRole(role("leader", codex, "gpt-6-astra", "medium"));
   w.saveGlobalRole(role("worker", codex, "gpt-6.1-sol", "medium"));
   if (mode !== "empty") {
-    w.saveGlobalRole(role("operator", codex, "gpt-6.1-sol", "medium"));
+    w.saveGlobalRole(role("operator", codex, "gpt-6.1-sol", "medium", {
+      responsibilities: ["处理用户的直接请求并路由到对应 Task", "维护全局 Role 与 Agent 配置"],
+      constraints: ["处理任何由 Task Leader 发起、需要 Operator 或用户选择的消息或 InputRequest 时，如无更新且更具体的用户指令，应直接选择在既定 Task 目标与边界内最推荐的选项，并记录理由。",
+        "不修改个人配置、线上服务或全局 CLI；需要真实资源验证时先取得用户明确授权。"],
+      skills: ["yui-operator"] }));
     w.saveGlobalRole(role("reviewer", codex, "gpt-6.1-sol", "max"));
     w.saveGlobalRole(role("ui-developer", claude, "", "", { description: "Independent product and frontend design work." }));
     w.saveAgentProfile(createAgentProfile({ id: "reader", runtime: { source: "global-worker" }, description: "Read-only research template" }, now));
     w.saveAgentProfile(createAgentProfile({ id: "designer", runtime: { source: "explicit", agentId: "claude", model: "opus", effort: "high" }, description: "Design and frontend work",
       instructions: "You own product and frontend design.\nStart from the user's scenario, not from the existing layout.\nPrefer one clear primary action per view.\nKeep copy short and concrete; avoid explanations users must read before acting.\nVerify every change in a real browser at desktop, tablet and phone widths.\nNever change production configuration or personal settings." }, now));
+    w.saveAgentProfile(createAgentProfile({ id: "reviewer", runtime: { source: "explicit", agentId: "codex", model: "gpt-6.1-sol", effort: "max" },
+      description: "Review one candidate against the user's core outcome, supported behavior, and direct evidence.",
+      instructions: "Start from user intent and acceptance criteria. Inspect the complete relevant change and report only reachable, material, actionable problems with direct evidence. Separate defects from verification gaps, and prefer the smallest sufficient correction. Follow the bound Project's Policy and Knowledge for build, test, migration, release, and review expectations; do not import rules from another Project or Task. Do not turn speculative or extreme edge cases into new state, retries, fallbacks, or protocol. Never push, integrate, mutate Task state, touch another workspace or stable checkout. Expose evidence and options to the Leader, who decides." }, now));
     w.saveAgentProfile(createAgentProfile({ id: "fast-fix", runtime: { source: "explicit", agentId: "codex", model: "gpt-6-astra", effort: "low" } }, now));
   }
   const config = { schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION, defaultAgent: "codex", defaultWorkspace: ws };
