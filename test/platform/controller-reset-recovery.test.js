@@ -51,8 +51,12 @@ async function resetFixture(t, holdOldProcess, unknownGeneration = false) {
     const connect = net.createConnection;
     // Observe the actual OS error; do not replace callController or its socket.
     t.mock.method(net, "createConnection", (...args) => {
+      const origin = new Error("Controller fixture connection origin");
       const socket = connect(...args);
-      socket.on("error", error => errors.push(error.code));
+      socket.on("error", error => {
+        errors.push(error.code);
+        error.fixtureConnectionOrigin = origin.stack;
+      });
       return socket;
     });
     const lstat = filesystem.lstat;
