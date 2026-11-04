@@ -762,14 +762,20 @@ try {
       "--request-id", "update-pending").message;
     const notificationTask = json("task", "create", "update notification fixture").task;
     json("task", "cancel", notificationTask.id, "--summary", "Notify the busy Operator.");
+    // Only one unsent engineering notice is allowed. Earlier fixture facts may
+    // already own it; the new cancellation then coalesces in the mailbox rather
+    // than rewriting that original. Preserve whichever exact notice is queued.
+    const isEngineeringNotice = message => message.id !== queued.id
+      && message.inputControl?.requestId?.startsWith("operator-notice:");
     let queuedBefore = [];
     await waitFor(() => {
       queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
-      return queuedBefore.some(message => message.id !== queued.id && message.body.includes(notificationTask.id));
+      return queuedBefore.some(isEngineeringNotice);
     },
-      "The Task fact did not produce a pending engineering notice.");
-    assert.ok(queuedBefore.some(message => message.id !== queued.id && message.body.includes(notificationTask.id)),
-      "The pending engineering notice must reference this exact Task fact.");
+      "No pending engineering notice was queued.",
+      () => JSON.stringify(queuedBefore));
+    assert.equal(queuedBefore.filter(isEngineeringNotice).length, 1,
+      "Handover must preserve the one original engineering notice alongside the queued user input.");
     assert.equal(context().nativeTurn.status, "accepted", "Busy Desktop input must fence queued delivery.");
     const beforeUpdate = updatePorts.controllerStatus(yuiHome);
     assert.equal(beforeUpdate.running, true);
