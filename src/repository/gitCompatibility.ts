@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { resolveExecutable } from "../external/pinnedCommandRunner.js";
+import { DEFAULT_GIT_LOCAL_TIMEOUT_SECONDS } from "../config/gitConfig.js";
 
 // The fetch isolation boundary needs --no-write-fetch-head. Older Git cannot
 // implement it by saving/restoring FETCH_HEAD without racing another writer.
@@ -23,7 +24,7 @@ export function gitVersionSupport(output: string): Readonly<{
 let cached: { identity: string; path: string; version: string } | undefined;
 
 /** Pin the executable checked, reusing only an unchanged on-disk identity. */
-export function supportedGit(): Readonly<{ path: string; version: string }> {
+export function supportedGit(timeoutMs = DEFAULT_GIT_LOCAL_TIMEOUT_SECONDS * 1_000): Readonly<{ path: string; version: string }> {
   const selected = resolveExecutable("git", process.env.PATH);
   if (selected === undefined) throw new Error("Git executable not found in PATH; install a supported Git before retrying. No Git operation was started.");
   const path = realpathSync(selected);
@@ -31,7 +32,7 @@ export function supportedGit(): Readonly<{ path: string; version: string }> {
   const identity = `${path}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
   if (cached?.identity === identity) return cached;
   const output = execFileSync(path, ["--version"], {
-    encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"]
+    encoding: "utf8", timeout: timeoutMs, stdio: ["ignore", "pipe", "pipe"]
   });
   const support = gitVersionSupport(output);
   if (!support.supported) {

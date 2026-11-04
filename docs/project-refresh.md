@@ -80,7 +80,8 @@ upstream is left untouched and carries no such promise.
 
 ## Scope of adoption
 
-This operation adds no persistent Yui schema or migration. Installing code
-that implements it does not itself refresh a real Project. A normal authorized
+Refresh bookkeeping adds no persistent Yui schema. The shared remote Git
+budget settings require storage 1.29; see [configuration](roles-and-configuration.md#git-operation-budgets).
+Installing this code does not itself refresh a real Project. A normal authorized
 refresh applies the behavior; Task completion, integration, publication and
 archive remain separate operations.

@@ -152,7 +152,7 @@ export class GitIntegrationService {
   constructor(
     home: string,
     readonly store: TaskStore,
-    readonly git: GitWorkspacePort = new NodeGitWorkspace(),
+    readonly git: GitWorkspacePort = new NodeGitWorkspace(() => store.getConfig()),
     readonly now: () => Date = () => new Date(),
     environment: NodeJS.ProcessEnv = process.env,
     runtimeIsolation: TaskRuntimeIsolationPort = defaultIntegrationRuntimeIsolation(

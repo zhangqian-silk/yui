@@ -1,14 +1,15 @@
-import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { promisify } from "node:util";
+import {
+  resolveGitLocalTimeoutSeconds, resolveGitRemoteInactivityTimeoutSeconds, resolveGitRemoteTimeoutSeconds, type GitConfig
+} from "../config/gitConfig.js";
 import { cleanupFailure } from "../workspace/cleanupInspection.js";
 import { externalProgramConfigViolations } from "../artifacts/managedGit.js";
 import { compatibleGitArguments, gitOutputLine, supportedGit } from "./gitCompatibility.js";
 import { gitPath, readGitWorktrees } from "./gitWorktreeInventory.js";
+import { executeGitCommand, GitCommandError, type GitCommandBudget } from "./gitCommand.js";
 
-const executeFile = promisify(execFile);
 const isolatedFetchOptions = [
   "--no-tags", "--no-prune", "--no-prune-tags", "--no-recurse-submodules",
   "--no-auto-gc", "--no-write-commit-graph", "--no-write-fetch-head", "--refmap="
@@ -333,8 +334,30 @@ export interface GitWorkspacePort {
 
 /** The small Git boundary used by project registration and Task workspaces. */
 export class NodeGitWorkspace implements GitWorkspacePort {
+  constructor(readonly getConfig: () => GitConfig = () => ({})) {}
+
+  #localBudget(): GitCommandBudget {
+    return { totalMs: resolveGitLocalTimeoutSeconds(this.getConfig().gitLocalTimeoutSeconds) * 1_000 };
+  }
+
+  #gitPath(cwd: string, args: string[]): Promise<string> {
+    return gitPath(cwd, args, this.#localBudget());
+  }
+
+  #readGitWorktrees(cwd: string) {
+    return readGitWorktrees(cwd, this.#localBudget());
+  }
+
+  #remoteBudget(): GitCommandBudget {
+    const config = this.getConfig();
+    return {
+      inactivityMs: resolveGitRemoteInactivityTimeoutSeconds(config.gitRemoteInactivityTimeoutSeconds) * 1_000,
+      totalMs: resolveGitRemoteTimeoutSeconds(config.gitRemoteTimeoutSeconds) * 1_000
+    };
+  }
+
   async resolveTree(repositoryPath: string, commit: string): Promise<string> {
-    return gitLine([
+    return this.#gitLine([
       "-C", repositoryPath,
       "rev-parse", "--verify", "--end-of-options", `${commit}^{tree}`
     ]);
@@ -351,7 +374,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const sourceTree = await this.resolveTree(input.repositoryPath, source);
     const pageSize = 1000;
     for (let skip = 0; ; skip += pageSize) {
-      const output = await git([
+      const output = await this.#git([
         "-C", input.repositoryPath,
         "log", `--max-count=${pageSize}`, `--skip=${skip}`,
         "--format=%H%x09%T", history
@@ -386,7 +409,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     paths: readonly string[];
   }>): Promise<boolean> {
     if (input.paths.length === 0) return false;
-    return gitSucceeds([
+    return this.#gitSucceeds([
       "-C", input.repositoryPath,
       "--literal-pathspecs",
       "diff", "--quiet",
@@ -404,7 +427,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     fromCommit: string;
     toCommit: string;
   }>): Promise<string[]> {
-    const output = await git([
+    const output = await this.#git([
       "-C", input.repositoryPath,
       "diff", "--name-only",
       input.fromCommit, input.toCommit
@@ -419,7 +442,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     toCommit: string;
     exact?: boolean;
   }>): Promise<string> {
-    return git([
+    return this.#git([
       "-C", input.repositoryPath,
       "diff", "--no-color", "--no-ext-diff",
       ...(input.exact ? ["--no-textconv", "--binary", "--full-index", "--no-renames"] : []),
@@ -433,7 +456,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     fromCommit: string;
     toCommit: string;
   }>): Promise<{ addedLines: number; deletedLines: number }> {
-    const output = await git([
+    const output = await this.#git([
       "-C", input.repositoryPath,
       "diff", "--numstat",
       input.fromCommit, input.toCommit
@@ -471,11 +494,11 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     branch: string;
   }>): Promise<GitRemoteHead> {
     const remote = safeRemote(input.remoteUrl);
-    const configuredBranch = await safeFetchBranch(input.branch);
+    const configuredBranch = await this.#safeFetchBranch(input.branch);
     const branch = configuredBranch === "HEAD"
-      ? await resolveRemoteHeadBranch(remote)
+      ? await this.#resolveRemoteHeadBranch(remote, this.#remoteBudget())
       : configuredBranch;
-    const commit = await resolveRemoteBranchCommit(remote, branch);
+    const commit = await this.#resolveRemoteBranchCommit(remote, branch, this.#remoteBudget());
     return { branch, commit };
   }
 
@@ -489,7 +512,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     try {
       return { branch: fetched.branch, commit: fetched.commit };
     } finally {
-      await gitSucceeds(["-C", input.repositoryPath, "update-ref", "-d", fetched.fetchedRef]);
+      await this.#gitSucceeds(["-C", input.repositoryPath, "update-ref", "-d", fetched.fetchedRef]);
     }
   }
 
@@ -500,22 +523,22 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   }>): Promise<FetchedGitRemoteHead> {
     const repositoryPath = (await this.inspect(input.repositoryPath, "HEAD")).root;
     const remote = safeRemote(input.remoteUrl);
-    const configuredBranch = await safeFetchBranch(input.branch);
+    const configuredBranch = await this.#safeFetchBranch(input.branch);
     const branch = configuredBranch === "HEAD"
-      ? await resolveRemoteHeadBranch(remote, repositoryPath)
+      ? await this.#resolveRemoteHeadBranch(remote, this.#remoteBudget(), repositoryPath)
       : configuredBranch;
     const fetchedRef = remoteBaselineRef(remote, branch);
     try {
-      await git([
+      await this.#git([
         "-C", repositoryPath,
-        "fetch", ...isolatedFetchOptions,
+        "fetch", "--progress", ...isolatedFetchOptions,
         remote,
         `refs/heads/${branch}:${fetchedRef}`
-      ]);
-      const commit = await resolveFetchedCommit(repositoryPath, fetchedRef);
+      ], { budget: this.#remoteBudget() });
+      const commit = await this.#resolveFetchedCommit(repositoryPath, fetchedRef);
       return { branch, commit, fetchedRef };
     } catch (error) {
-      await gitSucceeds(["-C", repositoryPath, "update-ref", "-d", fetchedRef]);
+      await this.#gitSucceeds(["-C", repositoryPath, "update-ref", "-d", fetchedRef]).catch(() => false);
       throw error;
     }
   }
@@ -526,7 +549,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     stableRef: string;
   }>): Promise<GitWorkspaceRefresh> {
     const remote = safeRemote(input.remoteUrl);
-    const configuredStableRef = await safeFetchBranch(input.stableRef);
+    const configuredStableRef = await this.#safeFetchBranch(input.stableRef);
     const initial = await this.inspect(input.repositoryPath, "HEAD");
     await this.#assertRefreshCheckout(
       initial.root,
@@ -534,15 +557,15 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       initial.baseCommit
     );
     const stableBranch = configuredStableRef === "HEAD"
-      ? await resolveRemoteHeadBranch(remote, initial.root)
+      ? await this.#resolveRemoteHeadBranch(remote, this.#remoteBudget(), initial.root)
       : configuredStableRef;
     if (stableBranch !== configuredStableRef) {
       await this.#assertRefreshCheckout(initial.root, stableBranch, initial.baseCommit);
     }
 
-    const mapping = await resolveFetchTracking(initial.root, remote, stableBranch);
+    const mapping = await this.#resolveFetchTracking(initial.root, remote, stableBranch);
     const previous = mapping.status === "managed"
-      ? await readDirectTrackingRef(initial.root, mapping.ref)
+      ? await this.#readDirectTrackingRef(initial.root, mapping.ref)
       : null;
     let tracking: GitRefreshTracking = mapping.status === "managed"
       ? { status: "current", remoteName: mapping.remoteName, ref: mapping.ref,
@@ -554,7 +577,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     let failure: unknown;
     let cleanupFailed = false;
     const assertMapping = async (): Promise<void> => {
-      const current = await resolveFetchTracking(initial.root, remote, stableBranch);
+      const current = await this.#resolveFetchTracking(initial.root, remote, stableBranch);
       if (JSON.stringify(current) !== JSON.stringify(mapping)) {
         throw new Error("Project fetch URL or tracking mapping changed during refresh.");
       }
@@ -562,12 +585,12 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     try {
       // An empty refmap disables opportunistic tracking updates even when the
       // Project URL is a named remote. Ignore configured prune/submodule effects.
-      await git([
-        "-C", initial.root, "fetch", ...isolatedFetchOptions,
+      await this.#git([
+        "-C", initial.root, "fetch", "--progress", ...isolatedFetchOptions,
         remote, `refs/heads/${stableBranch}:${temporaryRef}`
-      ]);
-      fetchedCommit = await resolveFetchedCommit(initial.root, temporaryRef);
-      const advertisedCommit = await resolveRemoteBranchCommit(remote, stableBranch, initial.root);
+      ], { budget: this.#remoteBudget() });
+      fetchedCommit = await this.#resolveFetchedCommit(initial.root, temporaryRef);
+      const advertisedCommit = await this.#resolveRemoteBranchCommit(remote, stableBranch, this.#remoteBudget(), initial.root);
       if (fetchedCommit !== advertisedCommit) {
         throw new Error(
           `Project remote stable branch changed while it was fetched: ${stableBranch}.`
@@ -582,17 +605,17 @@ export class NodeGitWorkspace implements GitWorkspacePort {
             `Project checkout cannot be fast-forwarded from ${initial.baseCommit} to ${fetchedCommit}.`
           );
         }
-        await git(["-C", initial.root, "merge", "--ff-only", "--no-edit", fetchedCommit]);
+        await this.#git(["-C", initial.root, "merge", "--ff-only", "--no-edit", fetchedCommit]);
       }
       await this.#assertRefreshCheckout(initial.root, stableBranch, fetchedCommit);
       await assertMapping();
       if (mapping.status === "managed") {
         // Do not follow a symbolic tracking ref into somebody else's branch.
-        await readDirectTrackingRef(initial.root, mapping.ref);
+        await this.#readDirectTrackingRef(initial.root, mapping.ref);
         const old = previous ?? "0".repeat(fetchedCommit.length);
         // Verify the stable branch and CAS the one configured destination in
         // the same Git transaction. HEAD/index/worktree still use normal ff.
-        await git(["-C", initial.root, "update-ref", "--stdin"], { input: [
+        await this.#git(["-C", initial.root, "update-ref", "--stdin"], { input: [
           "option no-deref",
           `verify refs/heads/${stableBranch} ${fetchedCommit}`,
           "option no-deref",
@@ -608,16 +631,16 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       await this.#assertRefreshCheckout(initial.root, stableBranch, fetchedCommit);
       await assertMapping();
       if (mapping.status === "managed"
-        && await readDirectTrackingRef(initial.root, mapping.ref) !== fetchedCommit) {
+        && await this.#readDirectTrackingRef(initial.root, mapping.ref) !== fetchedCommit) {
         throw new Error(`Project tracking ref changed after refresh: ${mapping.ref}.`);
       }
     } catch (error) {
       failure = error;
     } finally {
       if (fetchedCommit !== undefined) {
-        cleanupFailed = !await gitSucceeds([
+        cleanupFailed = !await this.#gitSucceeds([
           "-C", initial.root, "update-ref", "--no-deref", "-d", temporaryRef, fetchedCommit
-        ]);
+        ]).catch(error => { failure ??= error; return false; });
         if (cleanupFailed && failure === undefined) {
           failure = new Error(`Project refresh temporary ref cleanup failed: ${temporaryRef}.`);
         }
@@ -630,7 +653,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
         tracking = {
           status: "failed", remoteName: mapping.remoteName, ref: mapping.ref,
           fromCommit: previous,
-          toCommit: await readDirectTrackingRef(initial.root, mapping.ref).catch(() => null),
+          toCommit: await this.#readDirectTrackingRef(initial.root, mapping.ref).catch(() => null),
           reason: detail
         };
       }
@@ -665,24 +688,24 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     developmentRef: string;
   }>): Promise<GitRemoteBaseline> {
     const remote = safeRemote(input.remoteUrl);
-    const configuredRef = await safeFetchBranch(input.developmentRef);
+    const configuredRef = await this.#safeFetchBranch(input.developmentRef);
     const repository = await this.inspect(input.repositoryPath, "HEAD");
     const branch = configuredRef === "HEAD"
-      ? await resolveRemoteHeadBranch(remote, repository.root)
+      ? await this.#resolveRemoteHeadBranch(remote, this.#remoteBudget(), repository.root)
       : configuredRef;
     const temporaryRef = remoteBaselineRef(remote, branch);
     try {
-      await git([
+      await this.#git([
         "-C", repository.root,
-        "fetch", ...isolatedFetchOptions,
+        "fetch", "--progress", ...isolatedFetchOptions,
         remote,
         `refs/heads/${branch}:${temporaryRef}`
-      ]);
-      const fetchedCommit = await gitLine([
+      ], { budget: this.#remoteBudget() });
+      const fetchedCommit = await this.#gitLine([
         "-C", repository.root,
         "rev-parse", "--verify", "--end-of-options", `${temporaryRef}^{commit}`
       ]);
-      const advertisedCommit = await resolveRemoteBranchCommit(remote, branch, repository.root);
+      const advertisedCommit = await this.#resolveRemoteBranchCommit(remote, branch, this.#remoteBudget(), repository.root);
       if (fetchedCommit.toLowerCase() !== advertisedCommit) {
         throw new Error(
           `Project remote development branch changed while it was fetched: ${branch}.`
@@ -696,10 +719,10 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       // A temporary namespace keeps the fetch independent from the stable
       // branch and FETCH_HEAD.  Cleanup is best effort so the original fetch
       // or consistency error remains the actionable diagnosis.
-      await gitSucceeds([
+      await this.#gitSucceeds([
         "-C", repository.root,
         "update-ref", "-d", temporaryRef
-      ]);
+      ]).catch(() => false);
     }
   }
 
@@ -709,7 +732,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     branch?: string;
     localBranch?: string;
   }>): Promise<GitRepositoryInspection> {
-    supportedGit();
+    supportedGit(this.#localBudget().totalMs);
     const remote = safeRemote(input.remoteUrl);
     requireText(input.destination, "Project destination");
     const destination = resolve(input.destination);
@@ -724,22 +747,26 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     await mkdir(destination, { mode: 0o700 });
     const createdDirectory = await lstat(destination);
     try {
-      await git([
-        "clone",
+      await this.#git([
+        "clone", "--progress",
         ...(branch === undefined ? [] : ["--branch", branch]),
         "--",
         remote,
         destination
-      ]);
+      ], { budget: this.#remoteBudget() });
       if (input.localBranch !== undefined) {
         const localBranch = safeRef(input.localBranch);
-        if (!await gitSucceeds(["check-ref-format", "--branch", localBranch])) {
+        if (!await this.#gitSucceeds(["check-ref-format", "--branch", localBranch])) {
           throw new Error(`Local clone branch is invalid: ${localBranch}.`);
         }
-        await git(["-C", destination, "branch", "-M", "--", localBranch]);
+        await this.#git(["-C", destination, "branch", "-M", "--", localBranch]);
       }
       return await this.inspect(destination, "HEAD");
     } catch (error) {
+      if (error instanceof AggregateError && error.cause instanceof GitCommandError) {
+        error.message += ` Temporary clone retained at ${destination}; transport termination is unconfirmed.`;
+        throw error;
+      }
       try {
         const current = await lstat(destination).catch(failure => {
           if (isErrno(failure, "ENOENT")) return undefined;
@@ -771,12 +798,12 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     } catch (originalError) {
       const root = (await this.inspect(repositoryPath, "HEAD")).root;
       const name = safeRef(branch);
-      if (!await gitSucceeds(["check-ref-format", "--branch", name])) throw originalError;
+      if (!await this.#gitSucceeds(["check-ref-format", "--branch", name])) throw originalError;
       const remoteRef = `refs/remotes/origin/${name}`;
-      if (!await gitSucceeds([
+      if (!await this.#gitSucceeds([
         "-C", root, "show-ref", "--verify", "--quiet", remoteRef
       ])) throw originalError;
-      await git(["-C", root, "branch", "--", name, remoteRef]);
+      await this.#git(["-C", root, "branch", "--", name, remoteRef]);
       return this.inspect(root, name);
     }
   }
@@ -785,14 +812,14 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const requested = await canonicalDirectory(repositoryPath, "Project");
     const ref = safeRef(baseRef);
     const root = await canonicalDirectory(
-      await gitPath(requested, ["--show-toplevel"]),
+      await this.#gitPath(requested, ["--show-toplevel"]),
       "Project root"
     );
     const gitDirectory = await canonicalDirectory(
-      await gitPath(root, ["--git-common-dir"]),
+      await this.#gitPath(root, ["--git-common-dir"]),
       "Git common directory"
     );
-    const baseCommit = await gitLine([
+    const baseCommit = await this.#gitLine([
       "-C", root, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`
     ]);
     if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/i.test(baseCommit)) {
@@ -816,7 +843,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     // ref still points at <old>.  Using the same commit for both new and old
     // makes it a pure compare-and-swap probe — the ref does not move, but a
     // concurrent advance between the last read and this call is detected.
-    await git([
+    await this.#git([
       "-C", root, "update-ref",
       safeRef(ref),
       expectedCommit,
@@ -826,7 +853,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
 
   async refExists(repositoryPath: string, ref: string): Promise<boolean> {
     const root = (await this.inspect(repositoryPath)).root;
-    return gitSucceeds([
+    return this.#gitSucceeds([
       "-C", root, "rev-parse", "--verify", "--quiet", "--end-of-options",
       `${safeRef(ref)}^{commit}`
     ]);
@@ -834,7 +861,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
 
   async listRefs(repositoryPath: string, pattern: string): Promise<string[]> {
     const root = (await this.inspect(repositoryPath)).root;
-    const output = await git([
+    const output = await this.#git([
       "-C", root, "for-each-ref", "--format=%(refname)", "--", safeRef(pattern)
     ]);
     return output.length === 0 ? [] : output.split("\n").map((line) => line.trim())
@@ -856,9 +883,9 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const snapshots = [];
     for (const ref of refs) {
       const name = safeRef(ref);
-      const commit = await resolveRefCommit(source.root, name);
+      const commit = await this.#resolveRefCommit(source.root, name);
       if (await this.refExists(destination.root, name)) {
-        const existing = await resolveRefCommit(destination.root, name);
+        const existing = await this.#resolveRefCommit(destination.root, name);
         if (existing !== commit) {
           throw new Error(`Destination ref already exists at a different commit: ${name}.`);
         }
@@ -871,12 +898,12 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     try {
       for (const [index, snapshot] of snapshots.entries()) {
         const importedRef = `${importRoot}/${index}`;
-        await git([
+        await this.#git([
           "-C", destination.root,
           "fetch", ...isolatedFetchOptions, "--",
           source.root, `${snapshot.ref}:${importedRef}`
         ]);
-        const imported = await resolveRefCommit(destination.root, importedRef);
+        const imported = await this.#resolveRefCommit(destination.root, importedRef);
         if (imported !== snapshot.commit) {
           throw new Error(`Imported ref did not preserve its exact commit: ${snapshot.ref}.`);
         }
@@ -886,20 +913,20 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       // Freeze the source snapshots through publication. A moving local ref is
       // never silently copied under an earlier/later identity.
       for (const snapshot of snapshots) {
-        if (await resolveRefCommit(source.root, snapshot.ref) !== snapshot.commit) {
+        if (await this.#resolveRefCommit(source.root, snapshot.ref) !== snapshot.commit) {
           throw new Error(`Source ref changed while it was being copied: ${snapshot.ref}.`);
         }
       }
       for (const snapshot of snapshots) {
         if (await this.refExists(destination.root, snapshot.ref)) {
-          if (await resolveRefCommit(destination.root, snapshot.ref) !== snapshot.commit) {
+          if (await this.#resolveRefCommit(destination.root, snapshot.ref) !== snapshot.commit) {
             throw new Error(
               `Destination ref changed while it was being copied: ${snapshot.ref}.`
             );
           }
           continue;
         }
-        await git([
+        await this.#git([
           "-C", destination.root,
           "update-ref", "--no-deref", snapshot.ref, snapshot.commit,
           "0".repeat(snapshot.commit.length)
@@ -909,7 +936,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     } finally {
       for (const entry of temporary) {
         if (await this.refExists(destination.root, entry.ref)) {
-          await git([
+          await this.#git([
             "-C", destination.root,
             "update-ref", "-d", "--no-deref", entry.ref, entry.commit
           ]);
@@ -926,13 +953,13 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const root = (await this.inspect(input.repositoryPath)).root;
     const source = safeRef(input.sourceRef);
     const target = safeRef(input.archiveRef);
-    const commit = (await gitLine([
+    const commit = (await this.#gitLine([
       "-C", root, "rev-parse", "--verify", "--end-of-options", `${source}^{commit}`
     ])).toLowerCase();
     if (await this.refExists(root, target)) {
       // Resumable: a previous attempt already created the archive ref. Only
       // the same commit may be resumed; a different archive fails closed.
-      const archived = (await gitLine([
+      const archived = (await this.#gitLine([
         "-C", root, "rev-parse", "--verify", "--end-of-options", `${target}^{commit}`
       ])).toLowerCase();
       if (archived !== commit) {
@@ -942,14 +969,14 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       }
     } else {
       // Create the archive ref only if it does not exist yet (old value zero).
-      await git([
+      await this.#git([
         "-C", root, "update-ref", "--no-deref", target, commit, "0".repeat(commit.length)
       ]);
     }
     // Delete the source only if it still exists and still points at the
     // archived commit; an already-deleted source makes the archive a no-op.
     if (await this.refExists(root, source)) {
-      await git([
+      await this.#git([
         "-C", root, "update-ref", "-d", "--no-deref", source, commit
       ]);
     }
@@ -968,7 +995,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const excluded = input.excludeWorktreePath === undefined
       ? undefined
       : await realpath(resolve(input.excludeWorktreePath)).catch(() => undefined);
-    const records = await readGitWorktrees(root);
+    const records = await this.#readGitWorktrees(root);
     for (const record of records) {
       // A dead registration (its directory is gone) occupies nothing; a
       // worktree on another ref or a detached HEAD does not occupy this one.
@@ -991,7 +1018,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     descendant: string
   ): Promise<boolean> {
     const root = (await this.inspect(repositoryPath)).root;
-    return gitSucceeds([
+    return this.#gitSucceeds([
       "-C", root,
       "merge-base", "--is-ancestor",
       safeRef(ancestor),
@@ -1005,8 +1032,8 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     branch: string;
   }>): Promise<GitRemoteTrackingRef | null> {
     const root = (await this.inspect(input.repositoryPath)).root;
-    const branch = await safeFetchBranch(input.branch);
-    const mapping = await resolveFetchTracking(root, safeRemote(input.remoteUrl), branch);
+    const branch = await this.#safeFetchBranch(input.branch);
+    const mapping = await this.#resolveFetchTracking(root, safeRemote(input.remoteUrl), branch);
     if (mapping.status !== "managed") return null;
     if (!await this.refExists(root, mapping.ref)) return null;
     return {
@@ -1023,7 +1050,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     rightCommit: string;
   }>): Promise<string> {
     const root = (await this.inspect(input.repositoryPath)).root;
-    return gitLine([
+    return this.#gitLine([
       "-C", root,
       "merge-base",
       safeRef(input.leftCommit),
@@ -1033,19 +1060,19 @@ export class NodeGitWorkspace implements GitWorkspacePort {
 
   async headRef(repositoryPath: string): Promise<string> {
     const requested = await canonicalDirectory(repositoryPath, "Project");
-    return gitLine(["-C", requested, "rev-parse", "--abbrev-ref", "HEAD"]);
+    return this.#gitLine(["-C", requested, "rev-parse", "--abbrev-ref", "HEAD"]);
   }
 
   async isClean(repositoryPath: string): Promise<boolean> {
     const root = (await this.inspect(repositoryPath)).root;
-    const status = await git(["--no-optional-locks", "-C", root,
+    const status = await this.#git(["--no-optional-locks", "-C", root,
       "status", "--porcelain=v1", "--untracked-files=all"]);
     return status.length === 0;
   }
 
   async inspectClean(repositoryPath: string): Promise<boolean> {
     const root = (await this.inspect(repositoryPath)).root;
-    const status = await readWorktreeStatus(root);
+    const status = await this.#readWorktreeStatus(root);
     return status.length === 0;
   }
 
@@ -1065,10 +1092,10 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       // Merge all selected Lane heads in one Git transaction.  A conflict in
       // any Lane therefore aborts the complete Candidate materialization
       // instead of leaving an earlier Lane merged into the WorkItem target.
-      await git(["-C", target, "merge", "--no-edit", "--no-ff", ...sources]);
+      await this.#git(["-C", target, "merge", "--no-edit", "--no-ff", ...sources]);
     } catch (error) {
       try {
-        await git(["-C", target, "merge", "--abort"]);
+        await this.#git(["-C", target, "merge", "--abort"]);
       } catch (abortError) {
         throw new Error(
           `Git merge failed and conflict cleanup could not be completed for ${target}.`,
@@ -1100,7 +1127,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       );
     }
     try {
-      await git(["-C", target, "reset", "--hard", restoreHead]);
+      await this.#git(["-C", target, "reset", "--hard", restoreHead]);
       const restoredHead = (await this.inspect(target, "HEAD")).baseCommit;
       if (restoredHead !== restoreHead || !await this.isClean(target)) {
         throw new Error(`Git reset target did not restore its exact head: ${target}.`);
@@ -1129,8 +1156,8 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       throw new Error(`Project checkout changed before reset: ${root} (${currentHead}).`);
     }
     // Verify the target commit resolves before moving the branch.
-    await gitLine(["-C", root, "rev-parse", "--verify", "--end-of-options", `${targetCommit}^{commit}`]);
-    await git(["-C", root, "reset", "--hard", targetCommit]);
+    await this.#gitLine(["-C", root, "rev-parse", "--verify", "--end-of-options", `${targetCommit}^{commit}`]);
+    await this.#git(["-C", root, "reset", "--hard", targetCommit]);
     const restoredHead = (await this.inspect(root, "HEAD")).baseCommit;
     if (restoredHead.toLowerCase() !== targetCommit.toLowerCase() || !await this.isClean(root)) {
       throw new Error(`Project checkout did not reset to the exact target commit: ${root}.`);
@@ -1139,7 +1166,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
 
   async listWorktrees(repositoryPath: string): Promise<readonly string[]> {
     const root = await canonicalDirectory(repositoryPath, "Project");
-    return (await readGitWorktrees(root)).map(entry => entry.path);
+    return (await this.#readGitWorktrees(root)).map(entry => entry.path);
   }
 
   async listCommitsBetween(input: Readonly<{
@@ -1149,7 +1176,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   }>): Promise<readonly string[]> {
     const root = await canonicalDirectory(input.repositoryPath, "Project");
     const range = `${requireText(input.baseCommit, "Base commit")}..${requireText(input.headCommit, "Head commit")}`;
-    const output = await git(["-C", root, "log", "--oneline", range]);
+    const output = await this.#git(["-C", root, "log", "--oneline", range]);
     return output
       .split(/\r?\n/u)
       .map((line) => line.trim())
@@ -1237,9 +1264,9 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       // A worktree already created before a crash remains usable even if the
       // original base branch/tag is later deleted.
       const project = await this.inspect(input.repositoryPath);
-      await assertOwnedWorktree(project, container, path);
-      await assertExpectedBranch(path, identity.branch, input.allowRebase);
-      const head = await gitLine([
+      await this.#assertOwnedWorktree(project, container, path);
+      await this.#assertExpectedBranch(path, identity.branch, input.allowRebase);
+      const head = await this.#gitLine([
         "-C", path, "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"
       ]);
       return { path, branch: identity.branch, baseCommit: head.toLowerCase() };
@@ -1249,19 +1276,19 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     await canonicalContainer(dirname(path), true);
 
     const branchRef = `refs/heads/${identity.branch}`;
-    const branchExists = await gitSucceeds([
+    const branchExists = await this.#gitSucceeds([
       "-C", project.root, "show-ref", "--verify", "--quiet", branchRef
     ]);
-    await git(branchExists
+    await this.#git(branchExists
       ? ["-C", project.root, "worktree", "add", "--", path, identity.branch]
       : [
           "-C", project.root, "worktree", "add", "-b", identity.branch,
           "--", path, project.baseCommit
         ]);
 
-    await assertOwnedWorktree(project, container, path);
-    await assertExpectedBranch(path, identity.branch);
-    const head = await gitLine([
+    await this.#assertOwnedWorktree(project, container, path);
+    await this.#assertExpectedBranch(path, identity.branch);
+    const head = await this.#gitLine([
       "-C", path, "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"
     ]);
     return { path, branch: identity.branch, baseCommit: head.toLowerCase() };
@@ -1283,14 +1310,14 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const project = await this.inspect(input.repositoryPath);
     if (state === "missing") {
       if (input.deleteBranch === true) {
-        await removeMissingWorktreeRegistration(project.root, path, branch);
-        await deleteBranchIfPresent(project.root, branch);
+        await this.#removeMissingWorktreeRegistration(project.root, path, branch);
+        await this.#deleteBranchIfPresent(project.root, branch);
       }
       return state;
     }
-    await git(["-C", project.root, "worktree", "remove", "--", path]);
+    await this.#git(["-C", project.root, "worktree", "remove", "--", path]);
     if (input.deleteBranch === true) {
-      await deleteBranchIfPresent(project.root, branch);
+      await this.#deleteBranchIfPresent(project.root, branch);
     }
     return "removed";
   }
@@ -1316,9 +1343,9 @@ export class NodeGitWorkspace implements GitWorkspacePort {
         throw new Error("Expected a linked worktree, not a standalone clone.");
       }
       const project = await this.inspect(path, "HEAD");
-      await assertOwnedWorktree(project, resolve(identity.container), path);
+      await this.#assertOwnedWorktree(project, resolve(identity.container), path);
       const branch = worktreeIdentity(identity.taskSegment, identity.roleName).branch;
-      await assertExpectedBranch(path, branch);
+      await this.#assertExpectedBranch(path, branch);
       if (project.baseCommit !== identity.expectedCommit) {
         throw new Error("Unadopted worktree HEAD changed since preparation; retained.");
       }
@@ -1326,10 +1353,10 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       // Use the worktree's proven common directory, never the changed catalog.
       // Git still enforces locks/submodule restrictions. A Git error is not
       // authority for direct filesystem deletion, even for unadopted work.
-      await git(["--git-dir", project.gitDirectory, "worktree", "remove", "--", path]);
+      await this.#git(["--git-dir", project.gitDirectory, "worktree", "remove", "--", path]);
       worktreeRemoved = true;
       if (identity.deleteBranch === true) {
-        await git(["--git-dir", project.gitDirectory, "update-ref", "-d", `refs/heads/${branch}`, identity.expectedCommit]);
+        await this.#git(["--git-dir", project.gitDirectory, "update-ref", "-d", `refs/heads/${branch}`, identity.expectedCommit]);
       }
       return "removed";
     } catch (error) {
@@ -1349,7 +1376,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const state = await this.inspectTaskClone(input);
     if (state !== "clean") return state;
     if (input.expectedCommit !== undefined
-      && await resolveRefCommit(input.path, "HEAD") !== input.expectedCommit) {
+      && await this.#resolveRefCommit(input.path, "HEAD") !== input.expectedCommit) {
       throw new Error(`Unadopted Task clone HEAD changed since preparation; retained at ${input.path}.`);
     }
     await rm(managedPath(resolve(input.container), input.directory), { recursive: true });
@@ -1379,9 +1406,9 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       cleanupFailure("workspace-identity-mismatch", "Task clone Git ownership cannot be established.",
         "exact root and Git directory", "different Git ownership");
     }
-    await assertExpectedBranch(expected, input.branch);
+    await this.#assertExpectedBranch(expected, input.branch);
     if (!await this.inspectClean(expected)) return "dirty";
-    const worktrees = await readGitWorktrees(expected);
+    const worktrees = await this.#readGitWorktrees(expected);
     if (worktrees.length !== 1 || worktrees[0]!.path !== expected) {
       cleanupFailure("git-worktree-registrations", "Task clone still owns Git worktree registrations; retained.",
         1, worktrees.length);
@@ -1398,7 +1425,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     taskSegment: string;
     roleName: string;
   }>): Promise<GitWorkspaceState> {
-    const inspected = await inspectExactRecordedWorktree(input);
+    const inspected = await this.#inspectExactRecordedWorktree(input);
     return inspected?.state ?? "missing";
   }
 
@@ -1414,7 +1441,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
   }>): Promise<GitWorkspaceRemoval> {
     let inspected: ExactRecordedWorktree | undefined;
     try {
-      inspected = await inspectExactRecordedWorktree(input);
+      inspected = await this.#inspectExactRecordedWorktree(input);
     } catch (error) {
       // A deleted external checkout takes the worktree's common dir with it,
       // so every git op against the worktree fails. When the Project
@@ -1428,16 +1455,16 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     if (inspected.state === "dirty") return "dirty";
     // Revalidate immediately before asking the worktree's own Git common-dir
     // to remove it. This never relies on the Project catalog's former path.
-    const current = await inspectExactRecordedWorktree(input);
+    const current = await this.#inspectExactRecordedWorktree(input);
     if (current === undefined) return "missing";
     if (current.state === "dirty") return "dirty";
-    await retainCommitRef(current.destinationRoot, input.retainedRef, current.head);
-    await git(["-C", current.path, "worktree", "remove", "--", current.path]);
+    await this.#retainCommitRef(current.destinationRoot, input.retainedRef, current.head);
+    await this.#git(["-C", current.path, "worktree", "remove", "--", current.path]);
     if (await pathKind(current.path) !== undefined) {
       throw new Error(`Recorded managed worktree remained after removal: ${current.path}.`);
     }
     if (current.gitDirectory !== current.destinationGitDirectory) {
-      await git([
+      await this.#git([
         `--git-dir=${current.gitDirectory}`,
         "update-ref", "-d", "--no-deref", `refs/heads/${safeRef(input.branch)}`,
         current.head
@@ -1461,7 +1488,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     const branch = input.expectedBranch ?? worktreeIdentity(input.taskSegment, input.roleName).branch;
     if (kind === undefined) {
       const project = await this.inspect(input.repositoryPath);
-      await inspectMissingWorktreeRegistration(project.root, path, branch, input.expectedBranch !== undefined);
+      await this.#inspectMissingWorktreeRegistration(project.root, path, branch, input.expectedBranch !== undefined);
       return "missing";
     }
     if (kind === "symlink") cleanupFailure("workspace-identity-mismatch",
@@ -1469,9 +1496,9 @@ export class NodeGitWorkspace implements GitWorkspacePort {
 
     const canonicalContainerPath = await canonicalContainer(container, false);
     const project = await this.inspect(input.repositoryPath);
-    await assertOwnedWorktree(project, canonicalContainerPath, path);
-    await assertExpectedBranch(path, branch, input.expectedBranch !== undefined);
-    const porcelain = await readWorktreeStatus(path);
+    await this.#assertOwnedWorktree(project, canonicalContainerPath, path);
+    await this.#assertExpectedBranch(path, branch, input.expectedBranch !== undefined);
+    const porcelain = await this.#readWorktreeStatus(path);
     return porcelain.length > 0 ? "dirty" : "clean";
   }
 
@@ -1508,67 +1535,512 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     if (kind === "symlink") throw new Error("Managed worktree path must not be a symbolic link.");
     const repository = await this.inspect(input.repositoryPath);
     if (kind === undefined) {
-      await removeMissingWorktreeRegistration(repository.root, path, input.identity.branch, true);
+      await this.#removeMissingWorktreeRegistration(repository.root, path, input.identity.branch, true);
     }
     if (kind === "directory") {
       const canonicalContainerPath = await canonicalContainer(container, false);
-      await assertOwnedWorktree(repository, canonicalContainerPath, path);
-      await assertExpectedBranch(path, input.identity.branch, true);
+      await this.#assertOwnedWorktree(repository, canonicalContainerPath, path);
+      await this.#assertExpectedBranch(path, input.identity.branch, true);
       if (input.discardChanges === true) {
-        await git(["-C", repository.root, "worktree", "remove", "--force", "--", path]);
+        await this.#git(["-C", repository.root, "worktree", "remove", "--force", "--", path]);
       } else {
-        const porcelain = await readWorktreeStatus(path);
+        const porcelain = await this.#readWorktreeStatus(path);
         if (porcelain.length > 0) return "dirty";
         if (
           input.expectedBaseCommit !== undefined
           && input.allowCommittedChanges !== true
         ) {
-          const head = await gitLine([
+          const head = await this.#gitLine([
             "-C", path, "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"
           ]);
           if (head.toLowerCase() !== input.expectedBaseCommit.toLowerCase()) return "dirty";
         }
-        await git(["-C", repository.root, "worktree", "remove", "--", path]);
+        await this.#git(["-C", repository.root, "worktree", "remove", "--", path]);
       }
     }
     const branchRef = `refs/heads/${input.identity.branch}`;
-    if (await gitSucceeds([
+    if (await this.#gitSucceeds([
       "-C", repository.root, "show-ref", "--verify", "--quiet", branchRef
     ])) {
-      await git(["-C", repository.root, "branch", "-D", "--", input.identity.branch]);
+      await this.#git(["-C", repository.root, "branch", "-D", "--", input.identity.branch]);
     }
     return kind === "directory" ? "removed" : "missing";
   }
-}
 
-/** Missing paths do not imply missing Git metadata. Never prune another
- * workspace's registration as a side effect of cleaning this exact owner.
- */
-async function removeMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string, allowDetached = false): Promise<void> {
-  if (!await inspectMissingWorktreeRegistration(repositoryRoot, path, branch, allowDetached)) return;
-  if (await pathKind(path) !== undefined) throw new Error(`Worktree reappeared before metadata cleanup: ${path}.`);
-  await git(["-C", repositoryRoot, "worktree", "remove", "--force", "--", path]);
-}
-
-async function inspectMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string, allowDetached = false): Promise<boolean> {
-  const entry = (await readGitWorktrees(repositoryRoot)).find(record => record.path === path);
-  if (entry === undefined) return false;
-  const pinnedDetached = allowDetached && entry.detached
-    && await gitSucceeds(["-C", repositoryRoot, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])
-    && entry.head === await resolveRefCommit(repositoryRoot, `refs/heads/${branch}`);
-  if ((entry.branch !== `refs/heads/${branch}` && !pinnedDetached) || entry.locked) {
-    cleanupFailure("git-registration-mismatch", "Missing worktree has uncertain or locked Git ownership; metadata retained.",
-      { branch, locked: false }, { branch: entry.branch ?? null, locked: entry.locked });
+  /** Missing paths do not imply missing Git metadata. Never prune another
+   * workspace's registration as a side effect of cleaning this exact owner.
+   */
+  async #removeMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string, allowDetached = false): Promise<void> {
+    if (!await this.#inspectMissingWorktreeRegistration(repositoryRoot, path, branch, allowDetached)) return;
+    if (await pathKind(path) !== undefined) throw new Error(`Worktree reappeared before metadata cleanup: ${path}.`);
+    await this.#git(["-C", repositoryRoot, "worktree", "remove", "--force", "--", path]);
   }
-  return true;
-}
 
-async function deleteBranchIfPresent(repositoryRoot: string, branch: string): Promise<void> {
-  const branchRef = `refs/heads/${branch}`;
-  if (!await gitSucceeds([
-    "-C", repositoryRoot, "show-ref", "--verify", "--quiet", branchRef
-  ])) return;
-  await git(["-C", repositoryRoot, "branch", "-D", "--", branch]);
+  async #inspectMissingWorktreeRegistration(repositoryRoot: string, path: string, branch: string, allowDetached = false): Promise<boolean> {
+    const entry = (await this.#readGitWorktrees(repositoryRoot)).find(record => record.path === path);
+    if (entry === undefined) return false;
+    const pinnedDetached = allowDetached && entry.detached
+      && await this.#gitSucceeds(["-C", repositoryRoot, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`])
+      && entry.head === await this.#resolveRefCommit(repositoryRoot, `refs/heads/${branch}`);
+    if ((entry.branch !== `refs/heads/${branch}` && !pinnedDetached) || entry.locked) {
+      cleanupFailure("git-registration-mismatch", "Missing worktree has uncertain or locked Git ownership; metadata retained.",
+        { branch, locked: false }, { branch: entry.branch ?? null, locked: entry.locked });
+    }
+    return true;
+  }
+
+  async #deleteBranchIfPresent(repositoryRoot: string, branch: string): Promise<void> {
+    const branchRef = `refs/heads/${branch}`;
+    if (!await this.#gitSucceeds([
+      "-C", repositoryRoot, "show-ref", "--verify", "--quiet", branchRef
+    ])) return;
+    await this.#git(["-C", repositoryRoot, "branch", "-D", "--", branch]);
+  }
+
+  async #assertExpectedBranch(path: string, expected: string, allowRebase = false): Promise<void> {
+    if (allowRebase && !await this.#gitSucceeds(["-C", path, "symbolic-ref", "--quiet", "HEAD"])) {
+      // Rebase temporarily detaches HEAD. Git's per-worktree metadata must still
+      // identify this exact Integration branch; unrelated detachment is invalid.
+      for (const backend of ["rebase-merge", "rebase-apply"]) {
+        const headNamePath = await this.#gitPath(path, ["--git-path", `${backend}/head-name`]);
+        let headName: string;
+        try { headName = (await readFile(headNamePath, "utf8")).trim(); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw error;
+        }
+        if (headName === `refs/heads/${expected}`) return;
+        throw new Error(`Managed worktree is rebasing an unexpected branch: ${headName}.`);
+      }
+      // A terminal Integration can legitimately retain a detached checkout.
+      // Its exact owned path/common-dir were checked by the caller; require its
+      // retained branch to pin the same commit before allowing clean removal.
+      if (await this.#resolveRefCommit(path, "HEAD") === await this.#resolveRefCommit(path, `refs/heads/${expected}`)) return;
+      cleanupFailure("workspace-identity-mismatch", "Detached worktree is not pinned by its owned branch or rebase.",
+        expected, "unproven detached HEAD");
+    }
+    const branch = await this.#gitLine(["-C", path, "symbolic-ref", "--short", "HEAD"]);
+    if (branch !== expected) {
+      cleanupFailure("workspace-identity-mismatch", "Managed worktree is on an unexpected branch.", expected, branch);
+    }
+  }
+
+  async #assertOwnedWorktree(
+    project: GitRepositoryInspection,
+    container: string,
+    path: string
+  ): Promise<void> {
+    const canonicalPath = await canonicalDirectory(path, "Managed worktree");
+    assertContained(container, canonicalPath);
+    if (canonicalPath !== path) throw new Error("Managed worktree resolves through a symbolic link.");
+    const root = await canonicalDirectory(
+      await this.#gitPath(path, ["--show-toplevel"]),
+      "Managed worktree root"
+    );
+    if (root !== path) throw new Error("Managed worktree root does not match its deterministic path.");
+    const common = await canonicalDirectory(
+      await this.#gitPath(path, ["--git-common-dir"]),
+      "Managed Git common directory"
+    );
+    if (common !== project.gitDirectory) {
+      cleanupFailure("workspace-identity-mismatch", "Managed worktree belongs to another project.",
+        "Task main Git common directory", "different Git common directory");
+    }
+  }
+
+  async #inspectExactRecordedWorktree(input: Readonly<{
+    repositoryPath: string;
+    container: string;
+    directory: string;
+    path: string;
+    branch: string;
+    taskSegment: string;
+    roleName: string;
+  }>): Promise<ExactRecordedWorktree | undefined> {
+    const container = await canonicalContainer(input.container, false);
+    const expectedBranch = worktreeIdentity(input.taskSegment, input.roleName).branch;
+    const expectedPath = managedPath(container, input.directory);
+    if (resolve(input.path) !== expectedPath || input.branch !== expectedBranch) {
+      throw new Error("Recorded managed worktree identity is invalid.");
+    }
+    const kind = await pathKind(expectedPath);
+    if (kind === undefined) return undefined;
+    if (kind === "symlink") {
+      throw new Error("Recorded managed worktree path must not be a symbolic link.");
+    }
+
+    const canonicalContainerPath = await canonicalContainer(container, false);
+    const path = await canonicalDirectory(expectedPath, "Recorded managed worktree");
+    assertContained(canonicalContainerPath, path);
+    if (path !== expectedPath) {
+      throw new Error("Recorded managed worktree resolves through a symbolic link.");
+    }
+    const root = await canonicalDirectory(
+      await this.#gitPath(path, ["--show-toplevel"]),
+      "Recorded managed worktree root"
+    );
+    if (root !== path) {
+      throw new Error("Recorded managed worktree root does not match its deterministic path.");
+    }
+    const branch = await this.#gitLine(["-C", path, "symbolic-ref", "--short", "HEAD"]);
+    if (branch !== input.branch) {
+      throw new Error(`Recorded managed worktree is on an unexpected branch: ${branch}.`);
+    }
+    const gitDirectory = await canonicalDirectory(
+      await this.#gitPath(path, ["--git-common-dir"]),
+      "Recorded managed Git common directory"
+    );
+    const destination = await this.inspect(input.repositoryPath);
+    const head = await this.#resolveRefCommit(path, "HEAD");
+    const retained = await this.#resolveRefCommit(destination.root, `refs/heads/${input.branch}`);
+    if (retained !== head) {
+      throw new Error(
+        `Recorded managed worktree is not retained by the current Project: ${input.branch}.`
+      );
+    }
+    const status = await this.#git(["-C", path, "status", "--porcelain=v1", "--untracked-files=all"]);
+    return {
+      path,
+      gitDirectory,
+      destinationGitDirectory: destination.gitDirectory,
+      destinationRoot: destination.root,
+      head,
+      state: status.length === 0 ? "clean" : "dirty"
+    };
+  }
+
+  async #resolveRefCommit(repositoryPath: string, ref: string): Promise<string> {
+    const commit = (await this.#gitLine([
+      "-C", repositoryPath,
+      "rev-parse", "--verify", "--end-of-options", `${safeRef(ref)}^{commit}`
+    ])).toLowerCase();
+    if (!isCommit(commit)) throw new Error("Git returned an invalid ref commit.");
+    return commit;
+  }
+
+  async #retainCommitRef(
+    repositoryPath: string,
+    ref: string,
+    commit: string
+  ): Promise<void> {
+    const target = safeRef(ref);
+    if (await this.#gitSucceeds([
+      "-C", repositoryPath,
+      "rev-parse", "--verify", "--quiet", "--end-of-options", `${target}^{commit}`
+    ])) {
+      if (await this.#resolveRefCommit(repositoryPath, target) !== commit) {
+        throw new Error(`Retained ref already exists at a different commit: ${target}.`);
+      }
+      return;
+    }
+    await this.#git([
+      "-C", repositoryPath,
+      "update-ref", "--no-deref", target, commit, "0".repeat(commit.length)
+    ]);
+  }
+
+  /** Status can execute clean/process filters to compare equal-size changed
+   * files. Preserve native normalization: report unknown instead of disabling
+   * a filter and misclassifying its output as clean/dirty. Include scopes so a
+   * native global/worktree include cannot hide the same execution requirement.
+   */
+  async #readWorktreeStatus(path: string): Promise<string> {
+    await this.#assertStatusProgramsAbsent(path);
+    return this.#readStatusGit(path, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  }
+
+  async #readStatusGit(path: string, args: readonly string[]): Promise<string> {
+    return this.#git(["--no-optional-locks", "-c", "core.fsmonitor=",
+      "-c", "protocol.allow=never", "-c", "protocol.file.allow=never",
+      "-C", path, ...args], { environment: { GIT_NO_LAZY_FETCH: "1" } });
+  }
+
+  async #assertStatusProgramsAbsent(path: string): Promise<void> {
+    const configuration = await this.#readStatusGit(path, ["config", "--list", "--null", "--includes"]);
+    const filters = externalProgramConfigViolations(configuration)
+      .filter(key => key.startsWith("filter.") && (key.endsWith(".clean") || key.endsWith(".process")));
+    const files = (await this.#readStatusGit(path, ["ls-files", "--stage", "-z"])).split("\0");
+    if (filters.length > 0) {
+      // Merely having native LFS configured globally is not a violation. Only
+      // filters selected by tracked regular files' effective attributes can run
+      // during status. check-attr reads those selections without executing them.
+      const configured = new Set(filters.map(key => key.slice(7, key.lastIndexOf("."))));
+      const tracked = [...new Set(files.filter(line => line.startsWith("100"))
+        .map(line => line.slice(line.indexOf("\t") + 1)))];
+      for (let offset = 0; offset < tracked.length; offset += 128) {
+        const attributes = (await this.#readStatusGit(path, ["check-attr", "-z", "filter", "--",
+          ...tracked.slice(offset, offset + 128)])).split("\0");
+        for (let index = 2; index < attributes.length; index += 3) {
+          if (!configured.has(attributes[index]!.toLowerCase())) continue;
+          cleanupFailure("git-status-requires-filter", "Git status may execute a selected filter program; read-only inspection will not run it.",
+            "status without external filter execution",
+            { trackedPath: attributes[index - 2], filter: attributes[index] }, "unknown");
+        }
+      }
+    }
+    // Status also examines initialized submodules. Inspect their configuration
+    // before asking Git to recurse; uninitialized gitlinks execute nothing.
+    for (const record of files.filter(line => line.startsWith("160000 "))) {
+      const child = join(path, record.slice(record.indexOf("\t") + 1));
+      assertContained(path, child);
+      const gitEntry = await lstat(join(child, ".git")).catch(error => {
+        if (isErrno(error, "ENOENT")) return undefined;
+        throw error;
+      });
+      if (gitEntry === undefined) continue;
+      if (await realpath(child) !== child
+        || (await this.#readStatusGit(child, ["rev-parse", "--show-toplevel"])).trimEnd() !== child) {
+        cleanupFailure("workspace-identity-mismatch", "Submodule identity cannot be safely inspected.",
+          "owned submodule directory", "different or symbolic root");
+      }
+      await this.#assertStatusProgramsAbsent(child);
+    }
+  }
+
+  async #git(
+    args: readonly string[],
+    options: Readonly<{ input?: string; environment?: NodeJS.ProcessEnv; budget?: GitCommandBudget }> = {}
+  ): Promise<string> {
+    const localBudget = this.#localBudget();
+    const program = supportedGit(localBudget.totalMs);
+    const invocation = compatibleGitArguments(args);
+    const result = await executeGitCommand(program.path, invocation, {
+      ...options,
+      budget: options.budget ?? localBudget,
+      stderrTail: options.budget?.inactivityMs !== undefined,
+      ...(options.environment === undefined ? {} : { environment: { ...process.env, ...options.environment } })
+    });
+    return result.stdout.toString("utf8");
+  }
+
+  async #gitSucceeds(args: readonly string[]): Promise<boolean> {
+    supportedGit(this.#localBudget().totalMs);
+    try {
+      await this.#git(args);
+      return true;
+    } catch (error) {
+      if (error instanceof GitCommandError && error.timeoutKind === undefined
+        && error.signal === null && typeof error.code === "number") return false;
+      throw error;
+    }
+  }
+
+  async #gitLine(args: readonly string[]): Promise<string> {
+    const lines = gitOutputLine(await this.#git(args)).split("\n");
+    if (lines.length !== 1 || lines[0]?.length === 0 || lines[0]?.includes("\0")) {
+      throw new Error("Git returned invalid output.");
+    }
+    return lines[0];
+  }
+
+  async #parseFetchSpec(value: string): Promise<FetchSpec | null> {
+    const negative = value.startsWith("^");
+    const text = value.replace(/^[+^]/u, "");
+    const parts = text.split(":");
+    const source = parts[0]!;
+    const destination = parts[1] || undefined;
+    if (parts.length > 2 || (negative && parts.length !== 1)
+      || !source.startsWith("refs/")
+      || !await this.#gitSucceeds(["check-ref-format", "--refspec-pattern", source])
+      || (destination !== undefined && (
+        !destination.startsWith("refs/")
+        || !await this.#gitSucceeds(["check-ref-format", "--refspec-pattern", destination])
+        || source.includes("*") !== destination.includes("*")
+      ))) return null;
+    return { source, ...(destination === undefined ? {} : { destination }), negative };
+  }
+
+  async #gitConfigValues(root: string, key: string): Promise<string[]> {
+    try {
+      return (await this.#git(["-C", root, "config", "--null", "--get-all", key]))
+        .split("\0").filter((value) => value.length > 0);
+    } catch (error) {
+      const cause = error instanceof Error ? error.cause : undefined;
+      if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === 1) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Prove a unique configured fetch destination, never infer it from a remote
+   * name. Git resolves insteadOf aliases; push URLs are deliberately irrelevant.
+   * Unsafe/ambiguous configurations remain usable for HEAD-only refresh.
+   */
+  async #resolveFetchTracking(
+    root: string, remote: string, branch: string
+  ): Promise<FetchTrackingMapping> {
+    const wantedUrl = await this.#gitLine(["-C", root, "ls-remote", "--get-url", "--", remote]);
+    const names = (await this.#git(["-C", root, "remote"])).trim().split("\n").filter(Boolean).sort();
+    const remotes = await Promise.all(names.map(async (name) => ({
+      name,
+      urls: (await this.#git(["-C", root, "remote", "get-url", "--all", "--", name])).trimEnd().split("\n"),
+      specs: await this.#gitConfigValues(root, `remote.${name}.fetch`)
+    })));
+    const evidence = JSON.stringify({ wantedUrl, remotes });
+    const unmanaged = (reason: string): FetchTrackingMapping => ({ status: "unmanaged", reason, evidence });
+    const matching = remotes.filter(({ urls }) => urls[0] === wantedUrl);
+    if (matching.length !== 1 || matching[0]!.urls.length !== 1) {
+      return unmanaged("Project fetch URL does not identify exactly one single-URL Git remote.");
+    }
+    const selected = matching[0]!;
+    const candidates = await Promise.all(remotes.map(async (entry) => ({
+      ...entry, parsed: await Promise.all(entry.specs.map(value => this.#parseFetchSpec(value)))
+    })));
+    if (candidates.some(({ parsed: specs }) => specs.some((spec) => spec === null))) {
+      return unmanaged("A configured fetch refspec is outside the supported full-ref exact/one-star mapping.");
+    }
+    const parsed = candidates.map((entry) => ({
+      ...entry, parsed: entry.parsed.filter((spec): spec is FetchSpec => spec !== null)
+    }));
+    const source = `refs/heads/${branch}`;
+    const excluded = (specs: readonly FetchSpec[], ref: string): boolean =>
+      specs.some((spec) => spec.negative && refspecCapture(spec.source, ref) !== null);
+    const selectedSpecs = parsed.find(({ name }) => name === selected.name)!.parsed;
+    if (excluded(selectedSpecs, source)) return unmanaged(`Fetch refspec excludes ${source}.`);
+    const destinations = new Set<string>();
+    for (const spec of selectedSpecs) {
+      if (spec.negative || spec.destination === undefined) continue;
+      const capture = refspecCapture(spec.source, source);
+      if (capture !== null) destinations.add(spec.destination.replace("*", capture));
+    }
+    if (destinations.size !== 1) {
+      return unmanaged(`Fetch refspec does not map ${source} to exactly one destination.`);
+    }
+    const ref = [...destinations][0]!;
+    if (!ref.startsWith("refs/remotes/") || !await this.#gitSucceeds(["check-ref-format", ref])) {
+      return unmanaged(`Fetch destination is not a supported remote-tracking ref: ${ref}.`);
+    }
+    for (const entry of parsed) {
+      for (const spec of entry.parsed) {
+        if (spec.negative || spec.destination === undefined) continue;
+        const capture = refspecCapture(spec.destination, ref);
+        if (capture === null) continue;
+        const otherSource = spec.source.replace("*", capture);
+        if (!excluded(entry.parsed, otherSource)
+          && (entry.name !== selected.name || otherSource !== source)) {
+          return unmanaged(`Another fetch source also manages ${ref}.`);
+        }
+      }
+    }
+    try {
+      await this.#readDirectTrackingRef(root, ref);
+    } catch (error) {
+      return unmanaged(error instanceof Error ? error.message : String(error));
+    }
+    return { status: "managed", remoteName: selected.name, remoteUrl: wantedUrl, ref, evidence };
+  }
+
+  async #readDirectTrackingRef(root: string, ref: string): Promise<string | null> {
+    const output = await this.#git([
+      "-C", root, "for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)", "--", ref
+    ]);
+    const record = output.split("\n").find((line) => line.split("\t")[0] === ref);
+    if (record === undefined) {
+      // for-each-ref omits dangling symbolic refs. Never treat those as absent.
+      if (await this.#gitSucceeds(["-C", root, "symbolic-ref", "--quiet", ref])) {
+        throw new Error(`Tracking destination is symbolic: ${ref}.`);
+      }
+      return null;
+    }
+    const [, commit, symbolic] = record.split("\t");
+    if (symbolic !== "" || commit === undefined || !isCommit(commit)) {
+      throw new Error(`Tracking destination is not a direct object ref: ${ref}.`);
+    }
+    return commit.toLowerCase();
+  }
+
+  async #safeFetchBranch(value: string): Promise<string> {
+    supportedGit(this.#localBudget().totalMs);
+    const configuredRef = safeRef(value);
+    if (configuredRef === "HEAD") return configuredRef;
+    const branchPrefix = "refs/heads/";
+    const branch = configuredRef.startsWith(branchPrefix)
+      ? configuredRef.slice(branchPrefix.length)
+      : configuredRef;
+    if (!await this.#gitSucceeds(["check-ref-format", "--branch", branch])) {
+      throw new Error("Git stable branch is invalid.");
+    }
+    return branch;
+  }
+
+  async #resolveRemoteHeadBranch(remote: string, budget: GitCommandBudget, repositoryPath?: string): Promise<string> {
+    let output: string;
+    try {
+      output = await this.#git([
+        ...(repositoryPath === undefined ? [] : ["-C", repositoryPath]),
+        "ls-remote", "--symref", remote, "HEAD"
+      ], { budget });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "Git command failed.";
+      throw new Error(`Project remote HEAD could not be resolved: ${detail}`, { cause: error });
+    }
+
+    const symbolicLines = output.split("\n").filter((line) => line.startsWith("ref: "));
+    const prefix = "ref: refs/heads/";
+    const suffix = "\tHEAD";
+    const symbolic = symbolicLines.length === 1 ? symbolicLines[0]! : "";
+    if (!symbolic.startsWith(prefix) || !symbolic.endsWith(suffix)) {
+      throw invalidRemoteHead();
+    }
+    const branch = symbolic.slice(prefix.length, -suffix.length);
+    if (branch === "HEAD") throw invalidRemoteHead();
+    try {
+      return await this.#safeFetchBranch(branch);
+    } catch (error) {
+      if (error instanceof GitCommandError) throw error;
+      throw invalidRemoteHead();
+    }
+  }
+
+  async #resolveRemoteBranchCommit(
+    remote: string, branch: string, budget: GitCommandBudget, repositoryPath?: string
+  ): Promise<string> {
+    const target = `refs/heads/${branch}`;
+    let output: string;
+    try {
+      output = await this.#git([
+        ...(repositoryPath === undefined ? [] : ["-C", repositoryPath]),
+        "ls-remote", "--refs", remote, target
+      ], { budget });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "Git command failed.";
+      throw new Error(
+        `Project remote development branch could not be resolved: ${branch}: ${detail}`,
+        { cause: error }
+      );
+    }
+    const matches = output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => line.split(/\s+/u))
+      .filter(([commit, ref]) => ref === target && commit !== undefined);
+    if (matches.length !== 1) {
+      throw new Error(
+        `Project remote development branch could not be resolved: ${branch}.`
+      );
+    }
+    const commit = matches[0]![0]!;
+    if (!isCommit(commit)) {
+      throw new Error(
+        `Project remote development branch returned an invalid commit: ${branch}.`
+      );
+    }
+    return commit.toLowerCase();
+  }
+
+  async #resolveFetchedCommit(repositoryPath: string, fetchedRef: string): Promise<string> {
+    const commit = (await this.#gitLine([
+      "-C", repositoryPath,
+      "rev-parse", "--verify", "--end-of-options", `${fetchedRef}^{commit}`
+    ])).toLowerCase();
+    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(commit)) {
+      throw new Error("Git returned an invalid fetched remote commit.");
+    }
+    return commit;
+  }
 }
 
 export function worktreeIdentity(
@@ -1606,57 +2078,6 @@ function gitRefSegment(identity: string): string {
   return `encoded-${digest}`;
 }
 
-async function assertExpectedBranch(path: string, expected: string, allowRebase = false): Promise<void> {
-  if (allowRebase && !await gitSucceeds(["-C", path, "symbolic-ref", "--quiet", "HEAD"])) {
-    // Rebase temporarily detaches HEAD. Git's per-worktree metadata must still
-    // identify this exact Integration branch; unrelated detachment is invalid.
-    for (const backend of ["rebase-merge", "rebase-apply"]) {
-      const headNamePath = await gitPath(path, ["--git-path", `${backend}/head-name`]);
-      let headName: string;
-      try { headName = (await readFile(headNamePath, "utf8")).trim(); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
-      }
-      if (headName === `refs/heads/${expected}`) return;
-      throw new Error(`Managed worktree is rebasing an unexpected branch: ${headName}.`);
-    }
-    // A terminal Integration can legitimately retain a detached checkout.
-    // Its exact owned path/common-dir were checked by the caller; require its
-    // retained branch to pin the same commit before allowing clean removal.
-    if (await resolveRefCommit(path, "HEAD") === await resolveRefCommit(path, `refs/heads/${expected}`)) return;
-    cleanupFailure("workspace-identity-mismatch", "Detached worktree is not pinned by its owned branch or rebase.",
-      expected, "unproven detached HEAD");
-  }
-  const branch = await gitLine(["-C", path, "symbolic-ref", "--short", "HEAD"]);
-  if (branch !== expected) {
-    cleanupFailure("workspace-identity-mismatch", "Managed worktree is on an unexpected branch.", expected, branch);
-  }
-}
-
-async function assertOwnedWorktree(
-  project: GitRepositoryInspection,
-  container: string,
-  path: string
-): Promise<void> {
-  const canonicalPath = await canonicalDirectory(path, "Managed worktree");
-  assertContained(container, canonicalPath);
-  if (canonicalPath !== path) throw new Error("Managed worktree resolves through a symbolic link.");
-  const root = await canonicalDirectory(
-    await gitPath(path, ["--show-toplevel"]),
-    "Managed worktree root"
-  );
-  if (root !== path) throw new Error("Managed worktree root does not match its deterministic path.");
-  const common = await canonicalDirectory(
-    await gitPath(path, ["--git-common-dir"]),
-    "Managed Git common directory"
-  );
-  if (common !== project.gitDirectory) {
-    cleanupFailure("workspace-identity-mismatch", "Managed worktree belongs to another project.",
-      "Task main Git common directory", "different Git common directory");
-  }
-}
-
 type ExactRecordedWorktree = Readonly<{
   path: string;
   gitDirectory: string;
@@ -1665,76 +2086,6 @@ type ExactRecordedWorktree = Readonly<{
   head: string;
   state: "clean" | "dirty";
 }>;
-
-async function inspectExactRecordedWorktree(input: Readonly<{
-  repositoryPath: string;
-  container: string;
-  directory: string;
-  path: string;
-  branch: string;
-  taskSegment: string;
-  roleName: string;
-}>): Promise<ExactRecordedWorktree | undefined> {
-  const container = await canonicalContainer(input.container, false);
-  const expectedBranch = worktreeIdentity(input.taskSegment, input.roleName).branch;
-  const expectedPath = managedPath(container, input.directory);
-  if (resolve(input.path) !== expectedPath || input.branch !== expectedBranch) {
-    throw new Error("Recorded managed worktree identity is invalid.");
-  }
-  const kind = await pathKind(expectedPath);
-  if (kind === undefined) return undefined;
-  if (kind === "symlink") {
-    throw new Error("Recorded managed worktree path must not be a symbolic link.");
-  }
-
-  const canonicalContainerPath = await canonicalContainer(container, false);
-  const path = await canonicalDirectory(expectedPath, "Recorded managed worktree");
-  assertContained(canonicalContainerPath, path);
-  if (path !== expectedPath) {
-    throw new Error("Recorded managed worktree resolves through a symbolic link.");
-  }
-  const root = await canonicalDirectory(
-    await gitPath(path, ["--show-toplevel"]),
-    "Recorded managed worktree root"
-  );
-  if (root !== path) {
-    throw new Error("Recorded managed worktree root does not match its deterministic path.");
-  }
-  const branch = await gitLine(["-C", path, "symbolic-ref", "--short", "HEAD"]);
-  if (branch !== input.branch) {
-    throw new Error(`Recorded managed worktree is on an unexpected branch: ${branch}.`);
-  }
-  const gitDirectory = await canonicalDirectory(
-    await gitPath(path, ["--git-common-dir"]),
-    "Recorded managed Git common directory"
-  );
-  const destination = await new NodeGitWorkspace().inspect(input.repositoryPath);
-  const head = await resolveRefCommit(path, "HEAD");
-  const retained = await resolveRefCommit(destination.root, `refs/heads/${input.branch}`);
-  if (retained !== head) {
-    throw new Error(
-      `Recorded managed worktree is not retained by the current Project: ${input.branch}.`
-    );
-  }
-  const status = await git(["-C", path, "status", "--porcelain=v1", "--untracked-files=all"]);
-  return {
-    path,
-    gitDirectory,
-    destinationGitDirectory: destination.gitDirectory,
-    destinationRoot: destination.root,
-    head,
-    state: status.length === 0 ? "clean" : "dirty"
-  };
-}
-
-async function resolveRefCommit(repositoryPath: string, ref: string): Promise<string> {
-  const commit = (await gitLine([
-    "-C", repositoryPath,
-    "rev-parse", "--verify", "--end-of-options", `${safeRef(ref)}^{commit}`
-  ])).toLowerCase();
-  if (!isCommit(commit)) throw new Error("Git returned an invalid ref commit.");
-  return commit;
-}
 
 /**
  * Classify a recorded worktree whose Project repository can no longer be
@@ -1769,27 +2120,6 @@ async function recordedWorktreeWithoutRepository(
     + `The Project repository is gone, so the worktree's Git state cannot be verified; `
     + `remove the directory manually once its contents are safe.`
   );
-}
-
-async function retainCommitRef(
-  repositoryPath: string,
-  ref: string,
-  commit: string
-): Promise<void> {
-  const target = safeRef(ref);
-  if (await gitSucceeds([
-    "-C", repositoryPath,
-    "rev-parse", "--verify", "--quiet", "--end-of-options", `${target}^{commit}`
-  ])) {
-    if (await resolveRefCommit(repositoryPath, target) !== commit) {
-      throw new Error(`Retained ref already exists at a different commit: ${target}.`);
-    }
-    return;
-  }
-  await git([
-    "-C", repositoryPath,
-    "update-ref", "--no-deref", target, commit, "0".repeat(commit.length)
-  ]);
 }
 
 async function canonicalContainer(path: string, create: boolean): Promise<string> {
@@ -1852,108 +2182,6 @@ async function pathKind(path: string): Promise<"directory" | "symlink" | undefin
   }
 }
 
-/** Status can execute clean/process filters to compare equal-size changed
- * files. Preserve native normalization: report unknown instead of disabling
- * a filter and misclassifying its output as clean/dirty. Include scopes so a
- * native global/worktree include cannot hide the same execution requirement.
- */
-async function readWorktreeStatus(path: string): Promise<string> {
-  await assertStatusProgramsAbsent(path);
-  return readStatusGit(path, ["status", "--porcelain=v1", "--untracked-files=all"]);
-}
-
-async function readStatusGit(path: string, args: readonly string[]): Promise<string> {
-  return git(["--no-optional-locks", "-c", "core.fsmonitor=",
-    "-c", "protocol.allow=never", "-c", "protocol.file.allow=never",
-    "-C", path, ...args], { environment: { GIT_NO_LAZY_FETCH: "1" } });
-}
-
-async function assertStatusProgramsAbsent(path: string): Promise<void> {
-  const configuration = await readStatusGit(path, ["config", "--list", "--null", "--includes"]);
-  const filters = externalProgramConfigViolations(configuration)
-    .filter(key => key.startsWith("filter.") && (key.endsWith(".clean") || key.endsWith(".process")));
-  const files = (await readStatusGit(path, ["ls-files", "--stage", "-z"])).split("\0");
-  if (filters.length > 0) {
-    // Merely having native LFS configured globally is not a violation. Only
-    // filters selected by tracked regular files' effective attributes can run
-    // during status. check-attr reads those selections without executing them.
-    const configured = new Set(filters.map(key => key.slice(7, key.lastIndexOf("."))));
-    const tracked = [...new Set(files.filter(line => line.startsWith("100"))
-      .map(line => line.slice(line.indexOf("\t") + 1)))];
-    for (let offset = 0; offset < tracked.length; offset += 128) {
-      const attributes = (await readStatusGit(path, ["check-attr", "-z", "filter", "--",
-        ...tracked.slice(offset, offset + 128)])).split("\0");
-      for (let index = 2; index < attributes.length; index += 3) {
-        if (!configured.has(attributes[index]!.toLowerCase())) continue;
-        cleanupFailure("git-status-requires-filter", "Git status may execute a selected filter program; read-only inspection will not run it.",
-          "status without external filter execution",
-          { trackedPath: attributes[index - 2], filter: attributes[index] }, "unknown");
-      }
-    }
-  }
-  // Status also examines initialized submodules. Inspect their configuration
-  // before asking Git to recurse; uninitialized gitlinks execute nothing.
-  for (const record of files.filter(line => line.startsWith("160000 "))) {
-    const child = join(path, record.slice(record.indexOf("\t") + 1));
-    assertContained(path, child);
-    const gitEntry = await lstat(join(child, ".git")).catch(error => {
-      if (isErrno(error, "ENOENT")) return undefined;
-      throw error;
-    });
-    if (gitEntry === undefined) continue;
-    if (await realpath(child) !== child
-      || (await readStatusGit(child, ["rev-parse", "--show-toplevel"])).trimEnd() !== child) {
-      cleanupFailure("workspace-identity-mismatch", "Submodule identity cannot be safely inspected.",
-        "owned submodule directory", "different or symbolic root");
-    }
-    await assertStatusProgramsAbsent(child);
-  }
-}
-
-async function git(
-  args: readonly string[],
-  options: Readonly<{ input?: string; environment?: NodeJS.ProcessEnv }> = {}
-): Promise<string> {
-  const program = supportedGit();
-  const invocation = compatibleGitArguments(args);
-  try {
-    const execution = executeFile(program.path, invocation, {
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-      timeout: 30_000,
-      ...(options.environment === undefined ? {} : { env: { ...process.env, ...options.environment } })
-    });
-    if (options.input !== undefined) execution.child.stdin!.end(options.input);
-    const result = await execution;
-    return result.stdout;
-  } catch (error) {
-    const stderr = typeof error === "object" && error !== null && "stderr" in error
-      ? String((error as { stderr?: unknown }).stderr).trim()
-      : "";
-    throw new Error(stderr.length === 0 ? "Git command failed." : `Git command failed: ${stderr}`, {
-      cause: error
-    });
-  }
-}
-
-async function gitSucceeds(args: readonly string[]): Promise<boolean> {
-  supportedGit();
-  try {
-    await git(args);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function gitLine(args: readonly string[]): Promise<string> {
-  const lines = gitOutputLine(await git(args)).split("\n");
-  if (lines.length !== 1 || lines[0]?.length === 0 || lines[0]?.includes("\0")) {
-    throw new Error("Git returned invalid output.");
-  }
-  return lines[0];
-}
-
 type FetchSpec = Readonly<{ source: string; destination?: string; negative: boolean }>;
 type FetchTrackingMapping = (
   | Readonly<{ status: "managed"; remoteName: string; remoteUrl: string; ref: string }>
@@ -1971,124 +2199,6 @@ function refspecCapture(pattern: string, ref: string): string | null {
     ? ref.slice(prefix.length, ref.length - suffix.length) : null;
 }
 
-async function parseFetchSpec(value: string): Promise<FetchSpec | null> {
-  const negative = value.startsWith("^");
-  const text = value.replace(/^[+^]/u, "");
-  const parts = text.split(":");
-  const source = parts[0]!;
-  const destination = parts[1] || undefined;
-  if (parts.length > 2 || (negative && parts.length !== 1)
-    || !source.startsWith("refs/")
-    || !await gitSucceeds(["check-ref-format", "--refspec-pattern", source])
-    || (destination !== undefined && (
-      !destination.startsWith("refs/")
-      || !await gitSucceeds(["check-ref-format", "--refspec-pattern", destination])
-      || source.includes("*") !== destination.includes("*")
-    ))) return null;
-  return { source, ...(destination === undefined ? {} : { destination }), negative };
-}
-
-async function gitConfigValues(root: string, key: string): Promise<string[]> {
-  try {
-    return (await git(["-C", root, "config", "--null", "--get-all", key]))
-      .split("\0").filter((value) => value.length > 0);
-  } catch (error) {
-    const cause = error instanceof Error ? error.cause : undefined;
-    if (typeof cause === "object" && cause !== null && "code" in cause && cause.code === 1) {
-      return [];
-    }
-    throw error;
-  }
-}
-
-/**
- * Prove a unique configured fetch destination, never infer it from a remote
- * name. Git resolves insteadOf aliases; push URLs are deliberately irrelevant.
- * Unsafe/ambiguous configurations remain usable for HEAD-only refresh.
- */
-async function resolveFetchTracking(
-  root: string, remote: string, branch: string
-): Promise<FetchTrackingMapping> {
-  const wantedUrl = await gitLine(["-C", root, "ls-remote", "--get-url", "--", remote]);
-  const names = (await git(["-C", root, "remote"])).trim().split("\n").filter(Boolean).sort();
-  const remotes = await Promise.all(names.map(async (name) => ({
-    name,
-    urls: (await git(["-C", root, "remote", "get-url", "--all", "--", name])).trimEnd().split("\n"),
-    specs: await gitConfigValues(root, `remote.${name}.fetch`)
-  })));
-  const evidence = JSON.stringify({ wantedUrl, remotes });
-  const unmanaged = (reason: string): FetchTrackingMapping => ({ status: "unmanaged", reason, evidence });
-  const matching = remotes.filter(({ urls }) => urls[0] === wantedUrl);
-  if (matching.length !== 1 || matching[0]!.urls.length !== 1) {
-    return unmanaged("Project fetch URL does not identify exactly one single-URL Git remote.");
-  }
-  const selected = matching[0]!;
-  const candidates = await Promise.all(remotes.map(async (entry) => ({
-    ...entry, parsed: await Promise.all(entry.specs.map(parseFetchSpec))
-  })));
-  if (candidates.some(({ parsed: specs }) => specs.some((spec) => spec === null))) {
-    return unmanaged("A configured fetch refspec is outside the supported full-ref exact/one-star mapping.");
-  }
-  const parsed = candidates.map((entry) => ({
-    ...entry, parsed: entry.parsed.filter((spec): spec is FetchSpec => spec !== null)
-  }));
-  const source = `refs/heads/${branch}`;
-  const excluded = (specs: readonly FetchSpec[], ref: string): boolean =>
-    specs.some((spec) => spec.negative && refspecCapture(spec.source, ref) !== null);
-  const selectedSpecs = parsed.find(({ name }) => name === selected.name)!.parsed;
-  if (excluded(selectedSpecs, source)) return unmanaged(`Fetch refspec excludes ${source}.`);
-  const destinations = new Set<string>();
-  for (const spec of selectedSpecs) {
-    if (spec.negative || spec.destination === undefined) continue;
-    const capture = refspecCapture(spec.source, source);
-    if (capture !== null) destinations.add(spec.destination.replace("*", capture));
-  }
-  if (destinations.size !== 1) {
-    return unmanaged(`Fetch refspec does not map ${source} to exactly one destination.`);
-  }
-  const ref = [...destinations][0]!;
-  if (!ref.startsWith("refs/remotes/") || !await gitSucceeds(["check-ref-format", ref])) {
-    return unmanaged(`Fetch destination is not a supported remote-tracking ref: ${ref}.`);
-  }
-  for (const entry of parsed) {
-    for (const spec of entry.parsed) {
-      if (spec.negative || spec.destination === undefined) continue;
-      const capture = refspecCapture(spec.destination, ref);
-      if (capture === null) continue;
-      const otherSource = spec.source.replace("*", capture);
-      if (!excluded(entry.parsed, otherSource)
-        && (entry.name !== selected.name || otherSource !== source)) {
-        return unmanaged(`Another fetch source also manages ${ref}.`);
-      }
-    }
-  }
-  try {
-    await readDirectTrackingRef(root, ref);
-  } catch (error) {
-    return unmanaged(error instanceof Error ? error.message : String(error));
-  }
-  return { status: "managed", remoteName: selected.name, remoteUrl: wantedUrl, ref, evidence };
-}
-
-async function readDirectTrackingRef(root: string, ref: string): Promise<string | null> {
-  const output = await git([
-    "-C", root, "for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)", "--", ref
-  ]);
-  const record = output.split("\n").find((line) => line.split("\t")[0] === ref);
-  if (record === undefined) {
-    // for-each-ref omits dangling symbolic refs. Never treat those as absent.
-    if (await gitSucceeds(["-C", root, "symbolic-ref", "--quiet", ref])) {
-      throw new Error(`Tracking destination is symbolic: ${ref}.`);
-    }
-    return null;
-  }
-  const [, commit, symbolic] = record.split("\t");
-  if (symbolic !== "" || commit === undefined || !isCommit(commit)) {
-    throw new Error(`Tracking destination is not a direct object ref: ${ref}.`);
-  }
-  return commit.toLowerCase();
-}
-
 function safeIdentity(value: string, label: string): string {
   const identity = requireText(value, label);
   if ([".", "..", "__proto__", "prototype", "constructor"].includes(identity)
@@ -2102,96 +2212,6 @@ function safeRef(value: string): string {
   const ref = requireText(value, "Git base ref");
   if (ref.startsWith("-") || /[\r\n]/.test(ref)) throw new Error("Git base ref is invalid.");
   return ref;
-}
-
-async function safeFetchBranch(value: string): Promise<string> {
-  supportedGit();
-  const configuredRef = safeRef(value);
-  if (configuredRef === "HEAD") return configuredRef;
-  const branchPrefix = "refs/heads/";
-  const branch = configuredRef.startsWith(branchPrefix)
-    ? configuredRef.slice(branchPrefix.length)
-    : configuredRef;
-  if (!await gitSucceeds(["check-ref-format", "--branch", branch])) {
-    throw new Error("Git stable branch is invalid.");
-  }
-  return branch;
-}
-
-async function resolveRemoteHeadBranch(remote: string, repositoryPath?: string): Promise<string> {
-  let output: string;
-  try {
-    output = await git([
-      ...(repositoryPath === undefined ? [] : ["-C", repositoryPath]),
-      "ls-remote", "--symref", remote, "HEAD"
-    ]);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "Git command failed.";
-    throw new Error(`Project remote HEAD could not be resolved: ${detail}`, { cause: error });
-  }
-
-  const symbolicLines = output.split("\n").filter((line) => line.startsWith("ref: "));
-  const prefix = "ref: refs/heads/";
-  const suffix = "\tHEAD";
-  const symbolic = symbolicLines.length === 1 ? symbolicLines[0]! : "";
-  if (!symbolic.startsWith(prefix) || !symbolic.endsWith(suffix)) {
-    throw invalidRemoteHead();
-  }
-  const branch = symbolic.slice(prefix.length, -suffix.length);
-  if (branch === "HEAD") throw invalidRemoteHead();
-  try {
-    return await safeFetchBranch(branch);
-  } catch {
-    throw invalidRemoteHead();
-  }
-}
-
-async function resolveRemoteBranchCommit(
-  remote: string, branch: string, repositoryPath?: string
-): Promise<string> {
-  const target = `refs/heads/${branch}`;
-  let output: string;
-  try {
-    output = await git([
-      ...(repositoryPath === undefined ? [] : ["-C", repositoryPath]),
-      "ls-remote", "--refs", remote, target
-    ]);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "Git command failed.";
-    throw new Error(
-      `Project remote development branch could not be resolved: ${branch}: ${detail}`,
-      { cause: error }
-    );
-  }
-  const matches = output
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => line.split(/\s+/u))
-    .filter(([commit, ref]) => ref === target && commit !== undefined);
-  if (matches.length !== 1) {
-    throw new Error(
-      `Project remote development branch could not be resolved: ${branch}.`
-    );
-  }
-  const commit = matches[0]![0]!;
-  if (!isCommit(commit)) {
-    throw new Error(
-      `Project remote development branch returned an invalid commit: ${branch}.`
-    );
-  }
-  return commit.toLowerCase();
-}
-
-async function resolveFetchedCommit(repositoryPath: string, fetchedRef: string): Promise<string> {
-  const commit = (await gitLine([
-    "-C", repositoryPath,
-    "rev-parse", "--verify", "--end-of-options", `${fetchedRef}^{commit}`
-  ])).toLowerCase();
-  if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(commit)) {
-    throw new Error("Git returned an invalid fetched remote commit.");
-  }
-  return commit;
 }
 
 function remoteBaselineRef(remote: string, branch: string): string {

@@ -51,6 +51,33 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.24.0 compatibility and migration notes
+
+Git workspace and artifact operations now use a configurable local total
+budget, independent of clone, remote fetch and network `ls-remote`. Configure
+`git-local-timeout-seconds` (default 30),
+`git-remote-inactivity-timeout-seconds` (default 120), and
+`git-remote-timeout-seconds` (default 1800) under `yui config tools` or Web
+settings. Each accepts integer seconds from 1 to 86400. Changes apply to the
+next command, including Controller-owned commands; in-flight budgets do not
+change. See [Git operation budgets](roles-and-configuration.md#git-operation-budgets).
+
+Clone/fetch request progress without a terminal. Output resets only the
+inactivity clock, never the total deadline; activity is not semantic progress
+proof. Remote stderr keeps a bounded tail. Timeout errors retain their kind
+and budget, elapsed time, exit code, signal and stderr instead of reporting
+only the last progress line. Deadline termination includes the invocation's
+owned transport helpers; no automatic Git retry or rollback is introduced.
+
+Storage advances **1.28 → 1.29** through the centralized additive migration
+for the three optional settings. Existing config bytes remain unchanged and
+missing values use runtime defaults. Back up the Home and use the normal
+upgrade/migration path; do not open a migrated Home with an older binary.
+Controller/Host protocols remain v1. Exact-merge Core CI and the same runtime
+archive's fresh-install matrix gate publication. These deterministic checks
+do not establish real remote-server or real-model behavior. Publication does
+not update the global CLI, migrate production data or restart shared services.
+
 ### 2.23.0 compatibility and migration notes
 
 Host upgrades use explicit lifecycle signals and safe drain/reattachment

@@ -182,7 +182,7 @@ export function createWebTaskSurface(
     }),
     artifacts: async (taskId: string, selectedCommit?: string, offset = 0) => {
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
-      const repo = openTaskArtifactRepository(store.rootDirectory(), taskId);
+      const repo = openTaskArtifactRepository(store.rootDirectory(), taskId, () => store.getConfig());
       if (selectedCommit !== undefined && !repo.exists()) throw new WebRequestRejected("Artifact revision unavailable.");
       const commit = selectedCommit ?? await repo.head();
       const entries = commit === null ? [] : await repo.list(commit);
@@ -194,12 +194,12 @@ export function createWebTaskSurface(
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
       // The browser always names a fixed revision. Never substitute HEAD after
       // a missing object, and never execute/render artifact HTML as an app.
-      return readArtifactPreview(store.rootDirectory(), taskId, { taskId, relativePath, commit }, offset);
+      return readArtifactPreview(store.rootDirectory(), taskId, { taskId, relativePath, commit }, offset, () => store.getConfig());
     },
     artifactDiff: async (taskId: string, relativePath: string, commit: string, beforeCommit: string, offset = 0) => {
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
       return compareTextArtifacts(store.rootDirectory(), taskId,
-        { taskId, relativePath, commit: beforeCommit }, { taskId, relativePath, commit }, offset);
+        { taskId, relativePath, commit: beforeCommit }, { taskId, relativePath, commit }, offset, () => store.getConfig());
     },
     globalState: (roleName: string) => {
       const role = store.getGlobalRole(roleName);

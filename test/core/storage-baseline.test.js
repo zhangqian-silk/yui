@@ -23,12 +23,12 @@ import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
 import { usePre19Layout, usePre114Layout, usePre124Layout } from "../helpers/pre19Storage.mjs";
 
-test("fresh storage creates only the current 1.28 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.28");
+test("fresh storage creates only the current 1.29 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.29");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.28");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.29");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -43,6 +43,30 @@ test("fresh storage creates only the current 1.28 contract", () => {
     db.exec("DROP INDEX idx_mailboxes_ready");
     assert.throws(() => schema.validateSqliteSchema(db), /idx_mailboxes_ready/);
   } finally { db.close(); }
+});
+
+test("1.28 upgrade preserves config bytes and admits independently stored Git budgets", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-git-budget-upgrade-"));
+  let store;
+  let db;
+  t.after(() => { store?.close(); db?.close(); rmSync(home, { recursive: true, force: true }); });
+  store = new SqliteTaskStore(home);
+  store.saveConfig({ schemaVersion: 1, defaultWorkspace: join(home, "workspace") });
+  store.close(); store = undefined;
+  db = new Database(join(home, "yui.db"));
+  const before = db.prepare("SELECT payload FROM config").get().payload;
+  db.prepare("UPDATE storage_schema SET minor=28").run();
+  assert.deepEqual(schema.storageMinorUpgradePlan("1.28").map(step => step.name), ["git-command-budgets"]);
+  schema.applySqliteMinorUpgrades(db, home);
+  assert.equal(db.prepare("SELECT payload FROM config").get().payload, before);
+  db.close(); db = undefined;
+  store = new SqliteTaskStore(home);
+  assert.equal(store.getConfig().gitRemoteTimeoutSeconds, undefined);
+  store.saveConfig({ ...store.getConfig(), gitLocalTimeoutSeconds: 45, gitRemoteInactivityTimeoutSeconds: 60, gitRemoteTimeoutSeconds: 600 });
+  assert.equal(store.getConfig().gitLocalTimeoutSeconds, 45);
+  assert.equal(store.getConfig().gitRemoteTimeoutSeconds, 600);
+  assert.throws(() => store.saveConfig({ ...store.getConfig(), gitRemoteTimeoutSeconds: 0 }), /integer/);
+  assert.equal(store.getConfig().gitRemoteTimeoutSeconds, 600);
 });
 
 test("1.23 upgrade preserves history and starts transaction-owned read revisions", async t => {
@@ -129,7 +153,7 @@ test("1.25 upgrade preserves permission bytes and admits optional workspace temp
   store.close();
   assert.throws(() => new SqliteTaskStore(home), /not current/);
   const plan = schema.storageMinorUpgradePlan("1.25");
-  assert.equal(plan.length, 3);
+  assert.equal(plan.length, 4);
   assert.equal(plan[0].sourceChecksum, plan[0].targetChecksum);
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
   const current = new SqliteTaskStore(home);
@@ -235,7 +259,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.24", "1.25", "role-instance-code-session-titles"],
         ["1.25", "1.26", "codex-workspace-temp-exclusions"],
         ["1.26", "1.27", "host-upgrade-lifecycle-signals"],
-        ["1.27", "1.28", "native-title-effect-receipts"]]);
+        ["1.27", "1.28", "native-title-effect-receipts"],
+        ["1.28", "1.29", "git-command-budgets"]]);
   }
   finally { current.close(); }
 });

@@ -1372,14 +1372,14 @@ export async function main(): Promise<void> {
         let data: unknown;
         if (action === "list") {
           if (resolved.length !== 4) throw usageError(usage);
-          data = await listArtifactsCapability(home, taskId);
+          data = await listArtifactsCapability(home, taskId, () => store.getConfig());
         } else if (action === "read") {
           const relativePath = resolved[4];
           const commit = resolved[5];
           if (relativePath === undefined || resolved.length > 6) throw usageError(usage);
           data = await readArtifactCapability(home, taskId, {
             relativePath, ...(commit === undefined ? {} : { commit })
-          });
+          }, () => store.getConfig());
         } else {
           // save: a delivery-authoritative action; a managed Task caller must be the current Leader.
           taskLocalActor(store, process.env, taskId);
@@ -1401,7 +1401,7 @@ export async function main(): Promise<void> {
             relativePath, content, ...(encoding === undefined ? {} : { encoding }),
             ...(message === undefined ? {} : { message }),
             ...(expectedHead === undefined ? {} : { expectedHead })
-          });
+          }, () => store.getConfig());
         }
         emit(JSON.stringify(data, null, 2), false, data);
         return;
@@ -3062,7 +3062,7 @@ async function deltaRecheckPreflightForTaskCommand(
     repositoryPaths,
     previousRound: previous,
     candidate: actualTaskReviewCandidate,
-    git: new NodeGitWorkspace()
+    git: new NodeGitWorkspace(() => store.getConfig())
   });
   if (assessment.kind === "ineligible") {
     throw usageError(

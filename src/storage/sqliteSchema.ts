@@ -331,6 +331,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Additive exact-identity intent/confirmation files under runtime/native-titles.
   // Never invent native ownership or replay history during migration.
   sql: ""
+}, {
+  fromVersion: "1.28",
+  toVersion: "1.29",
+  name: "git-command-budgets",
+  introducedIn: "2.24.0",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional local/remote Git budgets in config. Absence uses runtime defaults;
+  // preserve every existing payload byte rather than persisting defaults.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

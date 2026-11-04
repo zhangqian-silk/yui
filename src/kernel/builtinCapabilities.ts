@@ -348,12 +348,12 @@ export function createBuiltinCapabilities(
         ...(params.encoding === undefined ? {} : { encoding: params.encoding as "utf8" | "base64" }),
         ...(params.message === undefined ? {} : { message: params.message as string }),
         ...(params.expectedHead === undefined ? {} : { expectedHead: params.expectedHead as string })
-      });
+      }, () => store.getConfig());
       if (name === "artifact.read") return readArtifactCapability(store.rootDirectory(), taskId, {
         relativePath: params.relativePath as string,
         ...(params.commit === undefined ? {} : { commit: params.commit as string })
-      });
-      if (name === "artifact.list") return listArtifactsCapability(store.rootDirectory(), taskId);
+      }, () => store.getConfig());
+      if (name === "artifact.list") return listArtifactsCapability(store.rootDirectory(), taskId, () => store.getConfig());
       if (name === "environment.prepare") return resources.prepare(taskId, params.plan as EnvironmentPlan);
       if (name === "environment.adopt") return resources.adopt(taskId, params.preparationId as string);
       if (name === "environment.bind") {

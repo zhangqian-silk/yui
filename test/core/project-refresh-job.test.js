@@ -27,7 +27,7 @@ test("automatic refresh shares the manual maintenance fence and rejects changed 
   let project = createProject("project-1", "fixture", join(home, "projects", "project-1"),
     { stable: "main", development: "main" }, new Date(),
     { ownership: "managed", remoteUrl: join(home, "remote.git") });
-  const store = { rootDirectory: () => home, listProjects: () => [project] };
+  const store = { rootDirectory: () => home, listProjects: () => [project], getConfig: () => ({}) };
   const digest = projectRefreshTargetDigest(project);
   const release = await acquireProjectMaintenanceLock(home, project.id);
   t.after(release);

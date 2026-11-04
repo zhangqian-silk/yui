@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { supportedGit } from "../repository/gitCompatibility.js";
-
-const executeFile = promisify(execFile);
+import { executeGitCommand, GitCommandError, LOCAL_GIT_TIMEOUT_MS } from "../repository/gitCommand.js";
+import { resolveGitLocalTimeoutSeconds, type GitConfig } from "../config/gitConfig.js";
 
 /**
  * Hardened, isolated Git runner for per-Task artifact repositories.
@@ -71,7 +69,9 @@ export class ManagedGitError extends Error {
   readonly stderr: string;
   readonly args: readonly string[];
   constructor(args: readonly string[], stderr: string, cause?: unknown) {
-    super(stderr.length === 0 ? "Managed git command failed." : `Managed git command failed: ${stderr}`, { cause });
+    super(cause instanceof Error
+      ? cause.message.replace(/^Git command/u, "Managed git command")
+      : stderr.length === 0 ? "Managed git command failed." : `Managed git command failed: ${stderr}`, { cause });
     this.name = "ManagedGitError";
     this.stderr = stderr;
     this.args = args;
@@ -79,9 +79,11 @@ export class ManagedGitError extends Error {
 }
 
 export type ManagedGitOptions = Readonly<{
-  /** Upper bound on combined stdout+stderr. Defaults to 16 MiB. */
+  /** Upper bound on each output stream. Defaults to 16 MiB. */
   maxBuffer?: number;
-  /** Kill the process after this many milliseconds. Defaults to 30s. */
+  /** Durable local budget, read before each invocation. */
+  getConfig?: () => GitConfig;
+  /** Explicit invocation override for isolated consumers. */
   timeoutMs?: number;
 }>;
 
@@ -142,17 +144,17 @@ async function spawnManagedGit(
   options?: ManagedGitOptions
 ): Promise<{ stdout: Buffer; stderr: Buffer }> {
   assertSafeArguments(args);
-  const program = supportedGit();
+  const timeoutMs = options?.timeoutMs ?? (options?.getConfig === undefined
+    ? LOCAL_GIT_TIMEOUT_MS : resolveGitLocalTimeoutSeconds(options.getConfig().gitLocalTimeoutSeconds) * 1_000);
+  const program = supportedGit(timeoutMs);
   try {
-    const result = await executeFile(
+    const result = await executeGitCommand(
       program.path,
       [...HARDENING_FLAGS, "-C", repoPath, ...args],
       {
-        encoding: "buffer",
-        env: managedGitEnvironment(),
+        environment: managedGitEnvironment(),
         maxBuffer: options?.maxBuffer ?? 16 * 1024 * 1024,
-        timeout: options?.timeoutMs ?? 30_000,
-        windowsHide: true
+        budget: { totalMs: timeoutMs }
       }
     );
     return { stdout: result.stdout as Buffer, stderr: result.stderr as Buffer };
@@ -191,7 +193,7 @@ export async function managedGitBuffer(
   return stdout;
 }
 
-/** Run a managed Git command purely for its exit status; never throws on non-zero. */
+/** Return false for a completed non-zero exit, but preserve timeouts/process failures. */
 export async function managedGitSucceeds(
   repoPath: string,
   args: readonly string[],
@@ -201,7 +203,9 @@ export async function managedGitSucceeds(
     await spawnManagedGit(repoPath, args, options);
     return true;
   } catch (error) {
-    if (error instanceof ManagedGitError) return false;
+    if (error instanceof ManagedGitError && error.cause instanceof GitCommandError
+      && error.cause.timeoutKind === undefined && error.cause.signal === null
+      && typeof error.cause.code === "number") return false;
     throw error;
   }
 }

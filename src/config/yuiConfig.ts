@@ -116,6 +116,15 @@ export const MAX_CONTROLLER_TASK_CONCURRENCY = 32;
 export const DEFAULT_AGENT_LAUNCH_INACTIVITY_TIMEOUT_SECONDS = 300;
 export const DEFAULT_DELIVERY_TIMEOUT_SECONDS = 120;
 export const DEFAULT_TMUX_HISTORY_LIMIT = 100_000;
+export {
+  DEFAULT_GIT_LOCAL_TIMEOUT_SECONDS,
+  DEFAULT_GIT_REMOTE_INACTIVITY_TIMEOUT_SECONDS,
+  DEFAULT_GIT_REMOTE_TIMEOUT_SECONDS,
+  resolveGitLocalTimeoutSeconds,
+  resolveGitRemoteInactivityTimeoutSeconds,
+  resolveGitRemoteTimeoutSeconds,
+  type GitConfig
+} from "./gitConfig.js";
 
 export type RuntimeHealthConfig = Readonly<{
   quietAfterSeconds?: number;
