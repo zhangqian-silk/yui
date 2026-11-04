@@ -5,6 +5,7 @@ import { HostUpgradeCoordinator } from "../../dist/controller/hostUpgrade.js";
 import { isNativeContextRecovery } from "../../dist/runtime/contextRecovery.js";
 import { runUpdate } from "../../dist/cli/updateOrchestrator.js";
 import { runtimeCleanupDisposition, isRuntimeCleanupReason } from "../../dist/runtime/lifecycleReservation.js";
+import { createHostLifecycleChecks } from "../../dist/controller/hostLifecycleChecks.js";
 
 const fence = { requestId: "upgrade-one", nativeSessionId: "thread-one",
   processInstanceId: "process-one", hostGeneration: "old" };
@@ -117,6 +118,83 @@ test("Upgrade survives Controller restart and queued input without changing nati
   assert.equal(f.mailbox.pending, null);
   assert.equal((await f.coordinator().request())[0].status, "current");
   assert.equal(f.resumes, 1);
+});
+
+test("Lifecycle hints discover old Hosts without update; duplicates, missing events and pause remain safe", async () => {
+  const f = fixture();
+  const checks = createHostLifecycleChecks(f.coordinator());
+  const tick = () => new Promise(resolve => setImmediate(resolve));
+  checks.notify("startup");
+  await tick();
+  assert.ok(f.mailbox, "Startup discovers the version difference without an explicit update request.");
+  assert.equal(f.finishes, 0);
+  f.setBusy(false);
+  f.setEnabled(false);
+  checks.notify("events-persisted");
+  await tick();
+  assert.equal(f.finishes, 0);
+  f.setEnabled(true);
+  checks.notify("periodic"); // background-completion hint was missed
+  await tick();
+  assert.equal(f.finishes, 1);
+  checks.close(); // Controller interrupted after the persisted drain receipt
+  const replacement = createHostLifecycleChecks(f.coordinator());
+  for (const hint of ["startup", "host-observed", "events-persisted", "signal", "periodic"]) replacement.notify(hint);
+  await tick();
+  assert.equal(f.resumes, 1);
+  for (let i = 0; i < 100; i++) replacement.notify("signal");
+  await tick();
+  assert.equal(f.resumes, 1, "Late/duplicate hints reread current truth, never replay an input or startup.");
+  replacement.close();
+});
+
+test("Incomplete lifecycle readiness is not a version mismatch and never fences current input", async () => {
+  const f = fixture();
+  f.setSnapshot({ hostImplementation: f.target, endpointImplementation: f.ports.endpoint(),
+    state: "settling", eventDelivery: { ...cleanEvents, unpersisted: 1 } });
+  const checks = createHostLifecycleChecks(f.coordinator());
+  checks.notify("signal");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.mailbox, null);
+  assert.equal(f.prepares, 0);
+  checks.close();
+});
+
+test("Changed target never silently retargets an admitted request; stopped ownership never restarts", async () => {
+  const f = fixture();
+  await f.coordinator().request();
+  const replacement = new HostUpgradeCoordinator(f.store, { ...f.target, generation: "another-target" }, f.ports);
+  f.setBusy(false);
+  const blocked = (await replacement.request())[0];
+  assert.equal(blocked.status, "waiting");
+  assert.match(blocked.detail, /pinned update target/);
+  assert.equal(f.finishes, 0);
+  f.mailbox.pending.reasons.push("runtime-cleanup-required");
+  const stopped = createHostLifecycleChecks(f.coordinator());
+  stopped.notify("host-observed");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.resumes, 0);
+  assert.equal(f.finishes, 0);
+  stopped.close();
+});
+
+test("Controller shutdown revokes an in-flight discovery before it can admit an upgrade", async () => {
+  const f = fixture();
+  const inspect = f.ports.inspect;
+  let release;
+  f.ports.inspect = async (...args) => {
+    await new Promise(resolve => { release = resolve; });
+    return inspect(...args);
+  };
+  const coordinator = f.coordinator();
+  const request = coordinator.request();
+  await new Promise(resolve => setImmediate(resolve));
+  coordinator.stop();
+  release();
+  await request;
+  await coordinator.close();
+  assert.equal(f.mailbox, null);
+  assert.equal(f.prepares, 0);
 });
 
 test("Unsupported, paused, changed and failed Hosts preserve exact intent rather than guessing success", async () => {

@@ -9,6 +9,7 @@ import type { AgentHostLaunchPayload } from "./launchBroker.js";
 import { openCodexInteractiveConnection } from "./structuredProviderHost.js";
 import { createSessionSkillNotice } from "../context/sessionSkillNotice.js";
 import { isNativeContextRecovery } from "./contextRecovery.js";
+import { createHostLifecycle, type HostLifecycleEvent } from "./hostLifecycle.js";
 
 /**
  * Keep the native TUI and its transparent App Server attachment in one pane.
@@ -40,8 +41,17 @@ export async function runCodexInteractiveHost(
     throw new Error("Codex proxy base arguments are invalid.");
   }
   const expectedId = environment.YUI_NATIVE_SESSION_ID;
+  const lifecycle = createHostLifecycle();
+  lifecycle.send({ type: "launch" });
   let snapshot: AgentHostSnapshot = {
-    schemaVersion: 1, state: "starting", adapterId: "codex", updatedAt: new Date().toISOString()
+    schemaVersion: 1, state: lifecycle.state, adapterId: "codex", updatedAt: new Date().toISOString()
+  };
+  const transition = (event: HostLifecycleEvent, fields: Partial<Pick<AgentHostSnapshot,
+    "nativeSessionId" | "conversationId" | "detail">> = {}) => {
+    const result = lifecycle.send(event);
+    if (result.status === "ignored") return;
+    if (result.status === "invalid") throw new Error(result.reason);
+    snapshot = { ...snapshot, ...fields, state: result.state, updatedAt: new Date().toISOString() };
   };
   const control = await openAgentHostControl(home, payload, () => snapshot, async (request) => {
     if (request.type !== "status") {
@@ -59,11 +69,9 @@ export async function runCodexInteractiveHost(
   const stop = () => { child?.kill("SIGTERM"); };
   const fail = (error: unknown) => {
     if (closing || snapshot.state === "failed") return;
-    snapshot = {
-      ...snapshot, state: "failed",
-      detail: error instanceof Error ? error.message : String(error),
-      updatedAt: new Date().toISOString()
-    };
+    transition({ type: "failure", outcome: "failed" }, {
+      detail: error instanceof Error ? error.message : String(error)
+    });
     process.stderr.write(`Yui Codex attachment failed: ${snapshot.detail}\n`);
     client?.terminate();
     stop();
@@ -165,12 +173,13 @@ export async function runCodexInteractiveHost(
         if (client?.readyState !== WebSocket.OPEN) throw new Error("Codex TUI attachment is closed.");
         client.send(JSON.stringify(message), (error) => {
           if (error) { fail(error); return; }
-          if (nativeSessionId === undefined || snapshot.state === "failed") return;
+          if (nativeSessionId === undefined || closing || snapshot.state === "failed") return;
           startupRequestId = undefined;
-          snapshot = {
-            ...snapshot, state: "ready", nativeSessionId, conversationId: nativeSessionId,
-            updatedAt: new Date().toISOString()
-          };
+          // Ready here means the native TUI attachment is ready, not a managed
+          // AgentRun acceptance or proof that the native Thread is idle.
+          transition({ type: "interactive-connected", nativeSessionId }, {
+            nativeSessionId, conversationId: nativeSessionId
+          });
         });
       } catch (error) {
         fail(error);
@@ -190,6 +199,7 @@ export async function runCodexInteractiveHost(
     });
     for (const signal of signals) process.on(signal, stop);
     const [code] = await once(child, "exit");
+    transition({ type: "exit" });
     return typeof code === "number" ? code : 1;
   } catch (error) {
     fail(error);

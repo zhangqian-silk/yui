@@ -11,7 +11,8 @@ const modules = [
   "agentHost.js", "agentHostProtocol.js", "agentHostImplementation.js",
   "codexInteractiveHost.js", "../controller/structuredProviderObservation.js",
   "../controller/runtimeEventInbox.js", "../context/sessionSkillNotice.js",
-  "../context/sessionBootstrapManifest.js", "../context/currentSkills.js", "contextRecovery.js", "hostUpgradeGate.js"
+  "../context/sessionBootstrapManifest.js", "../context/currentSkills.js", "contextRecovery.js", "hostUpgradeGate.js",
+  "hostLifecycle.js", "lifecycleChecks.js"
 ];
 export const AGENT_HOST_IMPLEMENTATION: ImplementationRef = Object.freeze({
   id: "yui.agent-host",

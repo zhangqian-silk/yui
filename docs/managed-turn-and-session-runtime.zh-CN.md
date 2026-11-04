@@ -2,6 +2,31 @@
 
 # Session、AgentRun 与通知
 
+## Host 生命周期与非阻塞检查
+
+Host 生命周期状态由明确的事件、guard 和转换表管理，不由版本检查管理。
+launch／submit 进入 `starting`；附件事实选择 `idle`、`busy`、
+`ready`（持有输入）或 `delivery-unknown`；接受输入进入 `ready`；
+原生执行进入 `busy`；终态处理进入 `settling`；持久化结清后回到观测到的
+`idle`／`busy`。断连进入 `starting`，分类失败保留对应失败状态，退出进入
+`exited`，只有显式 launch 可离开它。原生 TUI 附件就绪有独立事件，
+其 `ready` 不证明原生执行静止。非法边不改变状态；过期的进程、attempt、
+终态 Turn 事实被忽略。精确 writer／资源 guard 仍在命令准入处执行。
+状态机仅在进程内从现有 launch 和原生事实恢复，不新增持久 Session 权威或升级流程状态机。
+
+可组合的前／后检查接收不可变观测，各自异步执行并合并重复提示
+（每项最多一个执行中和一个最新待处理观测）。“前”表示转换来源，不是等待完成的前置条件。
+慢检查或失败不能否决转换、阻塞事件折叠或输入投递；检查回调必须异步等待 I/O，
+并在请求副作用前响应取消。它们只能向独立的、受精确栅栏保护的升级协调器提出请求。
+
+Controller 启动、Host 连接／退出观测、Host 状态变化 signal 和事件持久化均可触发版本检查，
+不依赖显式 `update`。现有周期对账覆盖丢失提示、无法可靠提供后台执行结束事件的提供方，
+以及无法在退出后发出提示的优雅退出。
+比较对象是实际加载的 Host／Endpoint 实现与当前 Controller 已加载的目标，不查询 npm `latest`。
+版本匹配但就绪证据未齐不是升级理由。关闭时停止检查，已准入工作仍保留现有持久 mailbox；
+请求固定的目标与当前 Controller 不同时保持等待，交由显式恢复，不静默改目标。
+检查不会复活明确停止的 Session。
+
 ## Host 升级与上下文检查
 
 `update` 分别报告程序安装、Controller 启动核验及逐 Host 的状态。
@@ -40,7 +65,8 @@ interrupt-owned 输入仍保留原处理路径。
 目标／请求标签仅保存哈希；每组最多保留 16 个近期样本、16 个活动样本及最慢完成样本。
 in-flight 请求数不是排队数，服务端不能独自测量客户端到路由的完整等待。
 观测不能反推旧事故的唯一根因，
-也不构成静止证明；重启 Controller 不会刷新存活 Host。
+也不构成静止证明；Controller 重启本身不证明 Host 已替换，
+异步生命周期检查仍须经过安全排空和后继实际握手。
 
 `observations.commands.routes.transport` 使用与 route service time 相同的请求哈希，
 分别关联 socket accept→route、完整帧 receive→route、route→本地 flush。

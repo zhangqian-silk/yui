@@ -133,6 +133,7 @@ import {
 } from "./fileSchedulerStoreAdapter.js";
 import { deliverGlobalInputs } from "./globalInputDelivery.js";
 import { HostUpgradeCoordinator } from "./hostUpgrade.js";
+import { createHostLifecycleChecks } from "./hostLifecycleChecks.js";
 import { AGENT_HOST_IMPLEMENTATION } from "../runtime/agentHostImplementation.js";
 import { builtinAgentEndpointImplementation } from "../runtime/agentEndpointIdentity.js";
 import { sendAgentHostUpgradeControl } from "../runtime/agentHost.js";
@@ -480,6 +481,7 @@ async function createFileTaskControllerRuntime(
         }, assertCurrent);
       }
     });
+    const hostLifecycleChecks = createHostLifecycleChecks(hostUpgrades, options.onError);
     // One inventory scan per scheduler pass. When the inventory worker is active
     // the blocking /proc scan runs there; otherwise it runs on the main thread.
     const scanInventory = (panes: readonly RuntimePaneFact[]) => inventoryClient !== undefined
@@ -794,7 +796,13 @@ async function createFileTaskControllerRuntime(
         : method === "task.role-capabilities"
         ? readTaskAgentCapabilities(store, catalogs, params)
         : method === "web.start" || method === "web.stop" || method === "web.status"
-          ? web.dispatch(method, params) : lifecycleDispatcher(method, params),
+          ? web.dispatch(method, params) : Promise.resolve(lifecycleDispatcher(method, params)).then(result => {
+            if (["runtime.ensure-role-session", "runtime.process-exit-observe",
+              "runtime.host-observation-apply", "runtime.observation-apply"].includes(method)) {
+              hostLifecycleChecks.notify("host-observed");
+            }
+            return result;
+          }),
       {
         intervalMs: options.intervalMs
           ?? reconciliationIntervalMilliseconds(store.getConfig().reconciliationIntervalSeconds),
@@ -814,6 +822,7 @@ async function createFileTaskControllerRuntime(
         diagnosticMetrics: options.diagnosticMetrics,
         onRequestDiagnostic: options.onRequestDiagnostic,
         lifecycleHost,
+        lifecycleChecks: hostLifecycleChecks,
         providerRetry: createProviderRetryHooks(home, store, {
           now: options.now,
           onError: options.onError,
@@ -838,11 +847,6 @@ async function createFileTaskControllerRuntime(
           ? await asyncStoreClient!.invokeObserver("reconcileMessageHealth", [now, messageHealthHosts]) as MessageHealthSnapshot
           : reconcileMessageHealth(store, now, messageHealthHosts),
         hostTerminalRecovery: async () => {
-          const upgrades = await hostUpgrades.reconcile();
-          for (const entry of upgrades) {
-            if (entry.status === "failed" || entry.status === "unknown") options.onError?.(
-              new Error(`Host upgrade ${entry.owner.roleName}/${entry.nativeSessionId}: ${entry.detail}`));
-          }
           messageHealthHosts = [];
           messageHealthHosts = await recoverTaskHostTerminals(home, store, options.onError ?? (() => undefined));
         },
@@ -921,7 +925,8 @@ async function createFileTaskControllerRuntime(
     }
     let resourceClose: Promise<void> | undefined;
     const closeResources = (): Promise<void> => {
-      resourceClose ??= closeTelemetry().finally(() => Promise.all([
+      hostLifecycleChecks.close();
+      resourceClose ??= hostUpgrades.close().then(() => closeTelemetry()).finally(() => Promise.all([
         web.close(),
         kernel.close(),
         asyncStoreClient?.close() ?? Promise.resolve(),

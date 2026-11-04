@@ -57,6 +57,9 @@ import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 import { AGENT_HOST_IMPLEMENTATION } from "./agentHostImplementation.js";
 import { closeAgentHostEndpoints } from "./agentHostCleanup.js";
 import { createHostUpgradeGate, type HostUpgradeFence, type HostUpgradeObservation } from "./hostUpgradeGate.js";
+import { createHostLifecycle, type HostLifecycleEvent, type HostLifecycleState,
+  type HostLifecycleTransition } from "./hostLifecycle.js";
+import { createNonBlockingChecks } from "./lifecycleChecks.js";
 import {
   readAgentRunConfigurationObservation,
   unknownAgentRunConfiguration,
@@ -196,16 +199,7 @@ export type AgentHostNativeControl = Readonly<{
   model?: string;
 }>;
 
-export type AgentHostProviderState =
-  | "idle"
-  | "starting"
-  | "ready"
-  | "settling"
-  | "delivery-unknown"
-  | "busy"
-  | "rejected"
-  | "failed"
-  | "exited";
+export type AgentHostProviderState = HostLifecycleState;
 
 export type AgentHostSnapshot = Readonly<{
   /** Confirmed native naming effect of this Provider connection. */
@@ -393,6 +387,13 @@ export async function runAgentHost(input: Readonly<{
     });
   };
   let snapshot = hostSnapshot("idle");
+  const lifecycleChecks = createNonBlockingChecks<HostLifecycleTransition>([{
+    id: "controller-lifecycle-hint",
+    run: (_transition, signal) => {
+      if (!signal.aborted) return signalRoleMailbox(input.home, sessionPayload ?? payload);
+    }
+  }]);
+  const lifecycle = createHostLifecycle({ after: lifecycleChecks });
   let dispatchTail = Promise.resolve();
   let promptHuman = (): void => {};
   let humanConsole: ReturnType<typeof createInterface> | undefined;
@@ -405,10 +406,22 @@ export async function runAgentHost(input: Readonly<{
   }>();
   await replayExitOutbox(input.home);
 
-  const updateSnapshot = (next: AgentHostSnapshot): void => {
-    const { appliedGeneratedTitle: _oldTitle, ...rest } = next;
+  type SnapshotFields = Omit<AgentHostSnapshot, "schemaVersion" | "state" | "updatedAt">;
+  const hostEvent = (event: HostLifecycleEvent, fields: SnapshotFields) => ({
+    event: { ...event, processInstanceId: fields.processInstanceId, nativeSessionId: fields.nativeSessionId,
+      attemptId: fields.attemptId, nativeTurnId: fields.nativeTurnId } as HostLifecycleEvent,
+    fields
+  });
+  const updateSnapshot = (next: ReturnType<typeof hostEvent>): void => {
+    // Validate the payload before committing the FSM; an invalid observation
+    // must not leave the public snapshot and lifecycle on different states.
+    validateSnapshot(hostSnapshot(lifecycle.state, next.fields));
+    const result = lifecycle.send(next.event);
+    if (result.status === "ignored") return;
+    if (result.status === "invalid") throw new Error(result.reason);
+    const { appliedGeneratedTitle: _oldTitle, ...rest } = next.fields;
     snapshot = validateSnapshot({
-      ...rest,
+      ...hostSnapshot(result.state, rest),
       ...(session?.appliedGeneratedTitle === undefined ? {} : {
         appliedGeneratedTitle: session.appliedGeneratedTitle
       })
@@ -438,7 +451,7 @@ export async function runAgentHost(input: Readonly<{
       await publishStructuredProviderAccepted({
         home: input.home, environment: observedPayload.environment, receipt
       });
-      updateSnapshot(hostSnapshot("ready", {
+      updateSnapshot(hostEvent({ type: "accepted" }, {
         adapterId: session!.adapterId,
         processInstanceId: session!.processInstanceId,
         nativeSessionId: receipt.nativeSessionId,
@@ -468,7 +481,7 @@ export async function runAgentHost(input: Readonly<{
   ): void => {
     if (started.clientOwned || observedPayload === undefined) return;
     const observedAuthority = authority === undefined ? undefined : { ...authority };
-    updateSnapshot(hostSnapshot("busy", {
+    updateSnapshot(hostEvent({ type: "native-started" }, {
       adapterId: observedPayload.providerControl?.adapterId,
       processInstanceId: session?.processInstanceId,
       nativeSessionId: started.nativeSessionId,
@@ -531,7 +544,7 @@ export async function runAgentHost(input: Readonly<{
           terminal
         });
         if (session !== undefined && terminal.conversationId === session.conversationId) {
-          updateSnapshot(hostSnapshot(session.inspect().activeNativeTurnId === undefined ? "idle" : "busy", {
+          updateSnapshot(hostEvent({ type: "settled", occupancy: session.inspect().activeNativeTurnId === undefined ? "idle" : "busy" }, {
             adapterId: session.adapterId,
             processInstanceId: session.processInstanceId,
             nativeSessionId: session.nativeSessionId,
@@ -572,7 +585,7 @@ export async function runAgentHost(input: Readonly<{
       if (activeRunPayload !== terminalPayload
         || activeRunAttemptId !== terminalAttemptId) return;
       if (session !== undefined) {
-        updateSnapshot(hostSnapshot("settling", {
+        updateSnapshot(hostEvent({ type: "terminal" }, {
           adapterId: terminalPayload.providerControl!.adapterId,
           processInstanceId: session.processInstanceId,
           nativeSessionId: terminal.nativeSessionId,
@@ -594,7 +607,7 @@ export async function runAgentHost(input: Readonly<{
         activeNativeTurnId = undefined;
         if (session === undefined) return;
         const currentPayload = sessionPayload ?? terminalPayload;
-        updateSnapshot(hostSnapshot(session.inspect().activeNativeTurnId === undefined ? "idle" : "busy", {
+        updateSnapshot(hostEvent({ type: "settled", occupancy: session.inspect().activeNativeTurnId === undefined ? "idle" : "busy" }, {
           adapterId: currentPayload.providerControl!.adapterId,
           processInstanceId: session.processInstanceId,
           nativeSessionId: terminal.nativeSessionId,
@@ -604,7 +617,7 @@ export async function runAgentHost(input: Readonly<{
         signalRoleMailbox(input.home, currentPayload);
         promptHuman();
       } catch (error) {
-        updateSnapshot(hostSnapshot("failed", {
+        updateSnapshot(hostEvent({ type: "failure", outcome: "failed" }, {
           adapterId: terminalPayload.providerControl!.adapterId,
           processInstanceId: session?.processInstanceId,
           nativeSessionId: terminal.nativeSessionId,
@@ -713,10 +726,10 @@ export async function runAgentHost(input: Readonly<{
         conversationRecoverability = "recoverable";
         codexClientAttachedAt = Date.now();
         observeExit(started.session, currentPayload);
-        const reconnectState = activeRunPayload !== undefined
-          ? ownedTurn === undefined ? "delivery-unknown" : "ready"
+        const occupancy = activeRunPayload !== undefined
+          ? ownedTurn === undefined ? "unknown" : "owned"
           : started.session.inspect().activeNativeTurnId === undefined ? "idle" : "busy";
-        updateSnapshot(hostSnapshot(reconnectState, {
+        updateSnapshot(hostEvent({ type: "connected", occupancy }, {
           adapterId: "codex",
           processInstanceId: started.session.processInstanceId,
           nativeSessionId: started.session.nativeSessionId,
@@ -748,7 +761,7 @@ export async function runAgentHost(input: Readonly<{
         lastError = error;
       }
     }
-    updateSnapshot(hostSnapshot("failed", {
+    updateSnapshot(hostEvent({ type: "failure", outcome: "failed" }, {
       adapterId: "codex",
       processInstanceId: disconnectedSession.processInstanceId,
       nativeSessionId: disconnectedSession.nativeSessionId,
@@ -786,7 +799,7 @@ export async function runAgentHost(input: Readonly<{
         }
         consecutiveCodexDisconnects += 1;
         if (consecutiveCodexDisconnects > MAX_CONSECUTIVE_CODEX_DISCONNECTS) {
-          updateSnapshot(hostSnapshot("failed", {
+          updateSnapshot(hostEvent({ type: "failure", outcome: "failed" }, {
             adapterId: "codex",
             processInstanceId: result.processInstanceId,
             nativeSessionId: providerSession.nativeSessionId,
@@ -798,7 +811,7 @@ export async function runAgentHost(input: Readonly<{
           }));
           return;
         }
-        updateSnapshot(hostSnapshot("starting", {
+        updateSnapshot(hostEvent({ type: "disconnected" }, {
           adapterId: "codex",
           processInstanceId: result.processInstanceId,
           nativeSessionId: providerSession.nativeSessionId,
@@ -863,7 +876,7 @@ export async function runAgentHost(input: Readonly<{
         } catch (error) { failures.push(`attachment exit: ${errorText(error)}`); }
       }
       if (hostStopRequested || !ownsCurrentSession) return;
-      updateSnapshot(hostSnapshot(failures.length === 0 ? "exited" : "failed", {
+      updateSnapshot(hostEvent(failures.length === 0 ? { type: "exit" } : { type: "failure", outcome: "failed" }, {
         adapterId: currentPayload.providerControl?.adapterId,
         processInstanceId: result.processInstanceId,
         nativeSessionId: providerSession.nativeSessionId,
@@ -875,7 +888,7 @@ export async function runAgentHost(input: Readonly<{
             ? {}
             : { detail: "Provider process exited before the active AgentRun reached a terminal boundary." })
       }));
-    })).catch((error) => updateSnapshot(hostSnapshot("failed", {
+    })).catch((error) => updateSnapshot(hostEvent({ type: "failure", outcome: "failed" }, {
       adapterId: launched.providerControl?.adapterId,
       processInstanceId: providerSession.processInstanceId,
       ...authorityFields(),
@@ -891,7 +904,7 @@ export async function runAgentHost(input: Readonly<{
     if (activeRunPayload !== undefined
       || sessionPayload !== undefined
         && (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
-      || ["starting", "ready", "settling", "delivery-unknown"].includes(snapshot.state)) {
+      || !lifecycle.can({ type: "launch" })) {
       throw new Error("Agent Host still owns an unsettled Provider Turn.");
     }
     const requestedAuthority = validateProviderAuthorityFence(providerControl.authority);
@@ -906,7 +919,7 @@ export async function runAgentHost(input: Readonly<{
       && !sameProviderAuthorityFence(authority, requestedAuthority)) {
       throw new Error("Agent Host launch carries a stale Provider authority fence.");
     }
-    updateSnapshot(hostSnapshot("starting", {
+    updateSnapshot(hostEvent({ type: "launch" }, {
       adapterId: providerControl.adapterId,
       ...(session === undefined ? {} : {
         processInstanceId: session.processInstanceId,
@@ -1006,10 +1019,10 @@ export async function runAgentHost(input: Readonly<{
       const restoredOwnedRun = providerControl.kind === "restore"
         ? providerControl.ownedTurn
         : undefined;
-      const providerState = restoredOwnedRun !== undefined
-        ? "ready"
+      const occupancy = restoredOwnedRun !== undefined
+        ? "owned"
         : session.inspect().activeNativeTurnId === undefined ? "idle" : "busy";
-      updateSnapshot(hostSnapshot(providerState, {
+      updateSnapshot(hostEvent({ type: "connected", occupancy }, {
         adapterId: providerControl.adapterId,
         processInstanceId: session.processInstanceId,
         nativeSessionId: session.nativeSessionId,
@@ -1040,7 +1053,7 @@ export async function runAgentHost(input: Readonly<{
       const state = error instanceof ProviderTurnBusyError
           ? "busy"
           : error instanceof ProviderTurnRejectedError ? "rejected" : "failed";
-      updateSnapshot(hostSnapshot(state, {
+      updateSnapshot(hostEvent({ type: "failure", outcome: state }, {
         adapterId: providerControl.adapterId,
         processInstanceId: session?.processInstanceId,
         nativeSessionId: session?.nativeSessionId ?? providerControl.nativeSessionId,
@@ -1079,7 +1092,7 @@ export async function runAgentHost(input: Readonly<{
       || !sameProviderAuthorityFence(authority, request.authority)) {
       throw new Error("Agent Host rejected a stale Provider writer fence.");
     }
-    if (activeRunPayload !== undefined || snapshot.state === "settling"
+    if (activeRunPayload !== undefined || !lifecycle.can({ type: "submit" })
       || (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
       || session.inspect().activeNativeTurnId !== undefined) {
       operation.failure = providerDeliveryFailure({
@@ -1113,7 +1126,7 @@ export async function runAgentHost(input: Readonly<{
     };
     activeRunAttemptId = request.run.attemptId;
     activeNativeTurnId = undefined;
-    updateSnapshot(hostSnapshot("starting", {
+    updateSnapshot(hostEvent({ type: "submit" }, {
       adapterId: session.adapterId,
       processInstanceId: session.processInstanceId,
       nativeSessionId: session.nativeSessionId,
@@ -1159,8 +1172,8 @@ export async function runAgentHost(input: Readonly<{
       const registrationUnknown = !registrationSettled
         && (error instanceof ControllerAcknowledgementUnknownError
           || error instanceof ProviderDeliveryUnknownError);
-      updateSnapshot(hostSnapshot(registrationUnknown ? "delivery-unknown"
-        : error instanceof ProviderTurnBusyError ? "busy" : "failed", {
+      updateSnapshot(hostEvent({ type: "failure", outcome: registrationUnknown ? "delivery-unknown"
+        : error instanceof ProviderTurnBusyError ? "busy" : "failed" }, {
         adapterId: session.adapterId,
         processInstanceId: session.processInstanceId,
         nativeSessionId: session.nativeSessionId,
@@ -1237,7 +1250,7 @@ export async function runAgentHost(input: Readonly<{
         await resolveProviderTurnSubmission(input.home, durableRun, unknown);
         throw unknown;
       }
-      updateSnapshot(hostSnapshot("ready", {
+      updateSnapshot(hostEvent({ type: "accepted" }, {
         adapterId: session.adapterId,
         processInstanceId: session.processInstanceId,
         nativeSessionId: receipt.nativeSessionId,
@@ -1266,7 +1279,7 @@ export async function runAgentHost(input: Readonly<{
         : error instanceof ProviderTurnBusyError
           ? "busy"
           : error instanceof ProviderTurnRejectedError ? "rejected" : "failed";
-      updateSnapshot(hostSnapshot(state, {
+      updateSnapshot(hostEvent({ type: "failure", outcome: state }, {
         adapterId: session.adapterId,
         processInstanceId: session.processInstanceId,
         nativeSessionId: session.nativeSessionId,
@@ -1377,7 +1390,7 @@ export async function runAgentHost(input: Readonly<{
     if (activeRunPayload !== undefined || session.inspect().activeNativeTurnId !== undefined
       || sessionPayload !== undefined
         && (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
-      || ["starting", "ready", "settling", "delivery-unknown"].includes(snapshot.state)) {
+      || !lifecycle.can({ type: "authority-changed" })) {
       throw new Error("Agent Host authority cannot transfer while a AgentRun is unsettled.");
     }
     const next = validateProviderAuthorityFence(request.authority);
@@ -1388,7 +1401,7 @@ export async function runAgentHost(input: Readonly<{
       }
     }
     authority = next;
-    updateSnapshot(hostSnapshot("idle", {
+    updateSnapshot(hostEvent({ type: "authority-changed" }, {
       adapterId: session.adapterId,
       processInstanceId: session.processInstanceId,
       nativeSessionId: session.nativeSessionId,
@@ -1571,7 +1584,7 @@ export async function runAgentHost(input: Readonly<{
         const persisted = await replayStructuredProviderPersistence(input.home, sessionPayload!.environment);
         if (persisted.length > 0 && activeRunPayload === undefined) {
           const active = session.inspect().activeNativeTurnId;
-          updateSnapshot(hostSnapshot(active === undefined ? "idle" : "busy", {
+          updateSnapshot(hostEvent({ type: "settled", occupancy: active === undefined ? "idle" : "busy" }, {
             adapterId: session.adapterId, processInstanceId: session.processInstanceId,
             nativeSessionId: session.nativeSessionId, conversationId: session.conversationId,
             nativeTurnId: active, ...authorityFields()
@@ -1615,7 +1628,7 @@ export async function runAgentHost(input: Readonly<{
           activeRunPayload = undefined;
           activeRunAttemptId = undefined;
           activeNativeTurnId = undefined;
-          updateSnapshot(hostSnapshot(session!.inspect().activeNativeTurnId === undefined ? "idle" : "busy", {
+          updateSnapshot(hostEvent({ type: "settled", occupancy: session!.inspect().activeNativeTurnId === undefined ? "idle" : "busy" }, {
             adapterId: session!.adapterId, processInstanceId: session!.processInstanceId,
             nativeSessionId: session!.nativeSessionId, conversationId: session!.conversationId,
             ...authorityFields()
@@ -1755,7 +1768,7 @@ export async function runAgentHost(input: Readonly<{
     if (request.type !== "launch") throw new Error("Unsupported Host request.");
     const redeemed = await redeem(input.home, request.ticket);
     if (activeRunPayload !== undefined
-      || ["starting", "ready", "settling", "delivery-unknown"].includes(snapshot.state)) {
+      || !lifecycle.can({ type: "launch" })) {
       if (redeemed.providerControl?.mode === "resume"
         && redeemed.providerControl.nativeSessionId === snapshot.nativeSessionId) {
         return controlResult("accepted", snapshot);
@@ -1842,6 +1855,7 @@ export async function runAgentHost(input: Readonly<{
     await stopped;
     return 0;
   } finally {
+    lifecycleChecks.close();
     for (const [signal, handler] of handlers) process.removeListener(signal, handler);
     if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
     humanConsole?.close();
@@ -2614,14 +2628,14 @@ async function observePendingHostSubmission(
   }
 }
 
-function signalRoleMailbox(home: string, payload: AgentHostLaunchPayload): void {
+function signalRoleMailbox(home: string, payload: AgentHostLaunchPayload): Promise<void> {
   const taskId = payload.environment.YUI_TASK_ID;
   const roleName = payload.environment.YUI_ROLE;
-  if (roleName === undefined) return;
+  if (roleName === undefined) return Promise.resolve();
   const key = taskId === undefined
     ? `global-role:${encodeURIComponent(roleName)}`
     : `role:${encodeURIComponent(taskId)}/${encodeURIComponent(roleName)}`;
-  void callController(home, "scheduler.signal", { key }).catch(() => {
+  return callController(home, "scheduler.signal", { key }).then(() => undefined).catch(() => {
     // This is a low-latency hint. Durable mailbox state and periodic
     // reconciliation remain the recovery path across a Controller handover.
   });

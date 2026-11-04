@@ -995,13 +995,24 @@ try {
       // immutable build has a different digest while keeping storage/protocol
       // unchanged; both preflights must run while the first release is active.
       // The earlier historical-session probe intentionally replaced hostPid.
-      const activationHost = await inspectAgentHost(target);
-      const activationHostPid = operatorHostPid;
-      assert.equal(processExited(activationHostPid), false);
+      assert.equal(processExited(operatorHostPid), false);
+      // An exiting Host cannot guarantee a post-exit signal. Exercise the
+      // existing periodic fallback at an explicit fixture-only cadence.
+      json("config", "runtime", "set", "reconciliation-interval-seconds", "5");
       const first = json("release", "install", root);
       assert.equal(first.outcome, "installed");
       assert.equal(json("release", "activate", first.releaseId).outcome, "activated");
       cli = join(first.releaseDir, "dist/cli.js");
+      const currentHost = async (generation) => {
+        try {
+          const observed = await inspectAgentHost(target);
+          return observed.hostImplementation?.generation === generation && observed.state === "idle" && observed;
+        } catch { return false; } // The old socket disappears during a proven graceful drain.
+      };
+      await waitFor(() => currentHost(first.packageDigest), "First installed Controller did not converge its Host.");
+      const activationHost = await inspectAgentHost(target);
+      const operatorPane = `=yui-${tmuxServer.slice(4, 16)}-operator:=operator`;
+      const activationHostPid = Number(tmux("display-message", "-p", "-t", operatorPane, "#{pane_pid}").trim());
       const nextSource = join(sandbox, "next-release");
       cpSync(root, nextSource, { recursive: true });
       writeFileSync(join(nextSource, "activation-fixture.txt"), "same code, distinct immutable build\n");
@@ -1027,12 +1038,17 @@ try {
       const pointer = JSON.parse(readFileSync(join(yuiHome, "runtime/active-release.json"), "utf8"));
       assert.equal(pointer.packageDigest, next.packageDigest);
       assert.deepEqual(json("task", "message", "list", task.id), before);
-      const retainedHost = await inspectAgentHost(target);
-      assert.equal(processExited(activationHostPid), false);
-      for (const key of ["nativeSessionId", "processInstanceId", "authorityEpoch", "authorityHolderId"]) {
-        assert.deepEqual(retainedHost[key], activationHost[key], `Activation must preserve Host ${key}`);
-      }
-      console.log("Installed inactive release activation passed: read-only/fenced preflights, candidate promotion, identity and retained Host.");
+      const successor = await waitFor(() => currentHost(next.packageDigest),
+        "Controller lifecycle checks did not automatically converge the old Host.", () =>
+          runCli(cli, ["update", "--hosts-status"], environment), 30_000);
+      assert.equal(successor.nativeSessionId, activationHost.nativeSessionId);
+      assert.notEqual(successor.processInstanceId, activationHost.processInstanceId);
+      assert.equal(processExited(activationHostPid), true);
+      operatorHostPid = Number(tmux("display-message", "-p", "-t", operatorPane, "#{pane_pid}").trim());
+      assert.ok(Number.isInteger(operatorHostPid) && operatorHostPid > 0);
+      assert.deepEqual(json("task", "message", "list", task.id), before);
+      assert.match(runCli(cli, ["update", "--hosts-status"], environment), /global\/operator.*current/);
+      console.log("Installed release activation passed: candidate promotion, automatic Host convergence, same native Session and original inputs (no explicit update request).");
       phase("release-activation");
     }
     runCli(cli, ["session", "stop", "--all"], environment);

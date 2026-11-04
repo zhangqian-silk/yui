@@ -2,6 +2,40 @@
 
 # Session, AgentRun and notifications
 
+## Host lifecycle and nonblocking checks
+
+Host lifecycle state is owned by an explicit event/guard/transition table, not
+by version detection. Launch/submit enters `starting`; attachment facts select
+`idle`, `busy`, `ready` (owned input), or `delivery-unknown`; acceptance enters
+`ready`; native execution enters `busy`; terminal handling enters `settling`;
+persisted settlement returns to observed `idle`/`busy`. Disconnect enters
+`starting`, classified failures retain their failure outcome, and exit enters
+`exited`. Only an explicit launch can leave `exited`. Native-TUI attachment
+readiness has its own event: `ready` there is not proof of native quiescence.
+Illegal edges do not mutate state; stale process, attempt and terminal-Turn
+facts are ignored. Exact writer/resource guards remain at command admission.
+This process-local reducer reconstructs from existing launch and native facts;
+it adds no persisted Session authority or upgrade workflow state machine.
+
+Optional before/after observations are immutable, deferred and independently
+coalesced (at most one running and one latest pending observation per check).
+“Before” describes the transition's source, not an awaited precondition.
+A slow or failing check cannot veto a transition or hold event folding/input
+delivery; checks must yield for I/O and honour cancellation before effects.
+They may recommend work to the separate fenced upgrade coordinator.
+
+Controller startup, Host connection/exit observations, Host state-change
+signals and event persistence trigger version checks without an explicit
+`update` request. Existing periodic reconciliation covers missed hints,
+including providers without reliable background-execution-end events and
+graceful exits that cannot emit a post-exit hint. Checks
+compare actual loaded Host/Endpoint implementations with this Controller's
+loaded target, never npm `latest`. Incomplete readiness on matching versions
+is not an upgrade reason. Checks stop on shutdown; already-admitted work
+retains the existing durable mailbox. A request pinned to a different target
+stays waiting for explicit recovery, not silent retargeting. An explicitly
+stopped Session is never restarted by a check.
+
 ## Host upgrade and context checks
 
 `update` reports package installation, verified Controller startup and each
@@ -64,7 +98,9 @@ Samples use a process-monotonic clock and hashed target/request labels, with
 at most 16 recent and 16 active samples plus the slowest completed sample.
 In-flight request count is not queue depth; total client-to-route wait is not
 measured by the server alone. These observations neither identify an old incident
-retroactively nor establish quiescence; restarting a Controller does not refresh live Hosts.
+retroactively nor establish quiescence. A Controller restart does not itself
+prove Host replacement; asynchronous lifecycle checks still require a safe
+drain and the successor's actual handshake.
 
 `observations.commands.routes.transport` correlates socket accept-to-route,
 complete-frame receive-to-route and route-to-local-flush stages by the same

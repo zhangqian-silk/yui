@@ -19,6 +19,41 @@ import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { AsyncTaskStoreClient } from "../../dist/storage/storeRpc.js";
 import { createTaskMessage } from "../../dist/message/message.js";
 import { serializeError, deserializeError } from "../../dist/core/boundedRpc.js";
+import { createNonBlockingChecks } from "../../dist/runtime/lifecycleChecks.js";
+
+test("Controller lifecycle check latency/failure cannot hold event folding or normal scheduling", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-lifecycle-checks-"));
+  let store, controller;
+  t.after(async () => {
+    await controller?.shutdownAndDrain();
+    store?.close();
+    rmSync(home, { recursive: true, force: true });
+  });
+  store = new SqliteTaskStore(home);
+  const seen = [], errors = [];
+  const checks = createNonBlockingChecks([
+    { id: "stuck", run: () => new Promise(() => {}) },
+    { id: "failed", run: () => { throw new Error("optional detector failed"); } },
+    { id: "extra-observer", run: hint => { seen.push(hint); } }
+  ], error => errors.push(error));
+  let folds = 0, deliveries = 0;
+  controller = new FileTaskController(new FileSchedulerStoreAdapter(store), {}, {
+    lifecycleChecks: checks,
+    runtimeEventProcessor: { drain: () => {
+      folds++;
+      return { acknowledgedEventIds: folds === 1 ? ["committed-terminal"] : [], deferred: [], failed: [],
+        remainingEventCount: 0 };
+    } },
+    globalInputDelivery: async () => { deliveries++; }
+  });
+  await controller.pump();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(folds > 0);
+  assert.ok(deliveries > 0, "Normal scheduling completed despite an unresolved detector.");
+  assert.ok(errors.length > 0);
+  assert.ok(seen.includes("events-persisted") || seen.includes("periodic"));
+  assert.equal(store.listWorkMailboxes().length, 0, "Adding a check cannot manufacture authority or work.");
+});
 
 test("scheduler reads only requested families and refreshes after external writes and rollback", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-read-projection-"));

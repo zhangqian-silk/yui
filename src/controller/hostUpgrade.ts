@@ -41,13 +41,25 @@ export type HostUpgradePorts = Readonly<{
  * The drain signal is persisted BEFORE asking the old process to exit. */
 export class HostUpgradeCoordinator {
   #tail: Promise<unknown> = Promise.resolve();
+  #closed = false;
   constructor(private readonly store: TaskStore, private readonly target: ImplementationRef,
     private readonly ports: HostUpgradePorts) {}
+
+  hasPending(): boolean {
+    return !this.#closed && this.store.listWorkMailboxes().some(mailbox =>
+      reasons(mailbox).includes(RUNTIME_HOST_UPGRADE_REASON));
+  }
+  stop(): void { this.#closed = true; }
+  async close(): Promise<void> {
+    this.stop();
+    await this.#tail;
+  }
 
   /** Read-only follow-up: never admits, drains, restores, or settles a request. */
   async status(): Promise<readonly HostUpgradeResult[]> {
     const results: HostUpgradeResult[] = [];
     for (const { owner, nativeSessionId, adapterId } of this.store.listRuntimeSessionCandidates()) {
+      if (this.#closed) break;
       const result = (status: HostUpgradeResult["status"], detail?: string, snapshot?: AgentHostSnapshot): HostUpgradeResult => ({
         owner, nativeSessionId, status, detail, hostImplementation: snapshot?.hostImplementation,
         endpointImplementation: snapshot?.endpointImplementation
@@ -82,6 +94,7 @@ export class HostUpgradeCoordinator {
     return this.serial(async () => {
       const results: HostUpgradeResult[] = [];
       for (const candidate of this.store.listRuntimeSessionCandidates()) {
+        if (this.#closed) break;
         const { owner, nativeSessionId } = candidate;
         const result = (status: HostUpgradeResult["status"], detail?: string, snapshot?: AgentHostSnapshot): HostUpgradeResult => ({
           owner, nativeSessionId, status, detail, hostImplementation: snapshot?.hostImplementation,
@@ -92,15 +105,21 @@ export class HostUpgradeCoordinator {
           if (readRequest(existing)) { results.push(await this.step(owner)); continue; }
           if (!this.enabled(owner)) { results.push(result("paused", "Role/Task remains paused; no Host is started.")); continue; }
           const snapshot = await this.ports.inspect(owner);
+          if (this.#closed) break;
           if (snapshot.nativeSessionId !== nativeSessionId) {
             results.push(result("unknown", "Live Host does not match the recorded native Session.", snapshot)); continue;
           }
           if (this.verified(snapshot, nativeSessionId, candidate.adapterId)) {
             results.push(result("current", undefined, snapshot)); continue;
           }
+          if (this.sameImplementations(snapshot, candidate.adapterId)) {
+            results.push(result("waiting", "Loaded implementations match; lifecycle/event readiness is not a version mismatch.", snapshot));
+            continue;
+          }
           if (!snapshot.controlCapabilities?.includes("prepare-upgrade")
             || !snapshot.controlCapabilities.includes("finish-upgrade")
-            || !snapshot.hostImplementation?.generation || !snapshot.processInstanceId) {
+            || !snapshot.hostImplementation?.generation || !snapshot.endpointImplementation?.generation
+            || !snapshot.processInstanceId) {
             results.push(result("unsupported", "Old Host has no graceful-upgrade capability; retained without sending unsupported commands.", snapshot));
             continue;
           }
@@ -138,6 +157,7 @@ export class HostUpgradeCoordinator {
     return this.serial(async () => {
       const results: HostUpgradeResult[] = [];
       for (const mailbox of this.store.listWorkMailboxes()) {
+        if (this.#closed) break;
         const target = mailbox.target;
         if (target.kind !== "role-runtime" && target.kind !== "global-role-runtime") continue;
         const owner: RuntimeRoleOwner = target.kind === "role-runtime"
@@ -168,7 +188,7 @@ export class HostUpgradeCoordinator {
       const assertCurrent = () => {
         const session = this.session(owner, request.agentId);
         const currentMailbox = this.store.getWorkMailbox(runtimeLifecycleTarget(owner));
-        if (!session || session.status !== "active" || session.nativeSessionId !== request.nativeSessionId
+        if (this.#closed || !session || session.status !== "active" || session.nativeSessionId !== request.nativeSessionId
           || digest(session.effective) !== request.effectiveDigest || !this.enabled(owner)
           || runtimeCleanupDisposition(currentMailbox) !== "upgrade-host"
           || !isDeepStrictEqual(readRequest(currentMailbox), request)) {
@@ -237,11 +257,14 @@ export class HostUpgradeCoordinator {
 
   private verified(snapshot: AgentHostSnapshot, nativeSessionId: string, adapterId: string) {
     return snapshot.nativeSessionId === nativeSessionId && snapshot.adapterId === adapterId
-      && isDeepStrictEqual(snapshot.hostImplementation, this.target)
-      && isDeepStrictEqual(snapshot.endpointImplementation, this.ports.endpoint(adapterId))
+      && this.sameImplementations(snapshot, adapterId)
       && snapshot.controlCapabilities?.includes("reconcile-turn")
       && snapshot.eventDelivery !== undefined && snapshot.eventDelivery.unpersisted === 0
       && snapshot.eventDelivery.failure === undefined && ["idle", "ready", "busy"].includes(snapshot.state);
+  }
+  private sameImplementations(snapshot: AgentHostSnapshot, adapterId: string) {
+    return isDeepStrictEqual(snapshot.hostImplementation, this.target)
+      && isDeepStrictEqual(snapshot.endpointImplementation, this.ports.endpoint(adapterId));
   }
   private session(owner: RuntimeRoleOwner, agentId: string) {
     const set = owner.scope === "task" ? this.store.getTaskRoleSessionSet(owner.taskId, owner.roleName)
