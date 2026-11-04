@@ -91,6 +91,8 @@ export type ModelQuotaItem = {
 
 export type ModelManagementView = {
   nativeProviders?: import("./nativeModelConfiguration.js").NativeProvider[];
+  /** Per-Agent native read outcome; Providers are known only when status is "read" or "absent". */
+  nativeConfigurations?: { agentId: string; status: import("./nativeModelConfiguration.js").NativeModelConfiguration["status"]; sourceFile: string }[];
   quotaSources?: { moduleId: string; source: string }[];
   readOnly?: boolean;
   revision: string;

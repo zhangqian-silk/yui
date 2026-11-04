@@ -24,6 +24,8 @@ export const MODELS_STYLES = `
 .services-route-target{display:grid;gap:1px;min-width:0}
 .services-route-target strong{color:var(--ink);font-size:var(--fs-sm);font-weight:600;overflow-wrap:anywhere}
 .services-route-target small{color:var(--ink-3);font-size:var(--fs-2xs);line-height:1.4;overflow-wrap:anywhere}
+.services-route-target strong.services-native-unknown{color:var(--warn)}
+p.services-native-unknown{margin:0 0 6px;padding:8px 12px;border-left:2px solid var(--warn);border-radius:0 var(--r-sm) var(--r-sm) 0;background:var(--warn-soft);color:var(--ink-2);font-size:var(--fs-xs);line-height:1.5;overflow-wrap:anywhere}
 .services-table{display:grid;min-width:0;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;font-size:var(--fs-xs)}
 .services-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr) minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);min-width:0}
 .services-row:last-child{border-bottom:0}

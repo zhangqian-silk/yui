@@ -320,6 +320,31 @@ test("real model management projects optional metabridge, CPA and native Provide
   }
 });
 
+test("each Agent's native read outcome reaches the model view: unreadable is unknown, not absent", () => {
+  const root = mkdtempSync(join(tmpdir(), "yui-models-native-status-"));
+  const store = new SqliteTaskStore(root);
+  try {
+    store.saveConfiguredAgent(createConfiguredAgent("codex", "codex", "/fixture/codex", [], [], new Date()));
+    store.saveConfiguredAgent(createConfiguredAgent("claude", "claude", "/fixture/claude", [], [], new Date()));
+    const codexHome = join(root, "codex"), claudeHome = join(root, "claude");
+    mkdirSync(codexHome);
+    writeFileSync(join(codexHome, "config.toml"), 'model = "unterminated\n[model_providers.x\nhttp_headers = { Authorization = "Bearer must-not-leak" }');
+    const environment = { HOME: root, CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeHome };
+    const statuses = () => Object.fromEntries(createService(store, { environment }).read().nativeConfigurations.map(n => [n.agentId, n.status]));
+    const broken = createService(store, { environment }).read();
+    assert.deepEqual(statuses(), { codex: "unavailable", claude: "absent" });
+    assert.deepEqual(broken.nativeProviders, []);
+    assert.doesNotMatch(JSON.stringify(broken), /must-not-leak/);
+    writeFileSync(join(codexHome, "config.toml"), 'model_provider = "own"\n[model_providers.own]\nbase_url = "https://own.invalid/v1"\nwire_api = "responses"\n');
+    const read = createService(store, { environment }).read();
+    assert.deepEqual(statuses(), { codex: "read", claude: "absent" });
+    assert.deepEqual(read.nativeProviders.map(p => [p.agentId, p.id, p.selected]), [["codex", "own", true]]);
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("domain observations honor Node all-address lookup without losing pinned target checks", async () => {
   const server = createServer((req, res) => {
     assert.equal(req.headers.authorization, "Bearer private-fixture-key");
