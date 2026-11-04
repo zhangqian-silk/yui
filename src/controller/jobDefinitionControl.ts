@@ -308,7 +308,7 @@ export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): vo
     if (run.action === "project.refresh") {
       const definition = store.getJobDefinition({ kind: "global" }, run.definitionId);
       if (definition?.builtin) requireProjectSyncTarget(store, definition);
-      const project = requireRefreshProject({ listProjects: () => projects, rootDirectory: () => home }, run.projectId!, true);
+      const project = requireRefreshProject({ listProjects: () => projects }, run.projectId!, true);
       if (projectRefreshTargetDigest(project) !== projectRefreshDigest({
         kind: "builtin", action: run.action, projectId: run.projectId, input: run.actionInput
       })) throw new Error("Project refresh target changed before execution.");

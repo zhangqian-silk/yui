@@ -3,8 +3,9 @@ import { CliError, usageError } from "../errors/cliError.js";
 import { assertProjectActive, type Project } from "./project.js";
 import { GitWorkspaceRefreshError, NodeGitWorkspace, type GitWorkspacePort } from "./gitWorkspace.js";
 import { acquireProjectMaintenanceLock } from "./projectMaintenanceLock.js";
+import type { GitConfig } from "../config/yuiConfig.js";
 
-type RefreshStore = Readonly<{ rootDirectory(): string; listProjects(): Project[] }>;
+type RefreshStore = Readonly<{ rootDirectory(): string; listProjects(): Project[]; getConfig(): GitConfig }>;
 
 /** Bind maintenance intent to catalog identity, not a caller-supplied path. */
 export function projectRefreshTargetDigest(project: Project): string {
@@ -14,7 +15,7 @@ export function projectRefreshTargetDigest(project: Project): string {
   ])).digest("hex");
 }
 
-export function requireRefreshProject(store: RefreshStore, id: string, automatic = false): Project {
+export function requireRefreshProject(store: Pick<RefreshStore, "listProjects">, id: string, automatic = false): Project {
   const project = store.listProjects().find(project => project.id === id);
   if (!project) throw usageError(`Project not found: ${id}.`);
   assertProjectActive(project, "refresh");
@@ -50,7 +51,7 @@ export async function refreshRegisteredProject(store: RefreshStore, id: string, 
   try {
     const current = check();
     options.beforeRefresh?.();
-    const refreshed = await (options.git ?? new NodeGitWorkspace()).refresh({
+    const refreshed = await (options.git ?? new NodeGitWorkspace(() => store.getConfig())).refresh({
       repositoryPath: current.path, remoteUrl: current.remoteUrl!, stableRef: current.stableBranch
     });
     return { project: current, ...refreshed };

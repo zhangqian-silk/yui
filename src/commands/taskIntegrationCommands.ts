@@ -161,7 +161,7 @@ async function start(
     throw usageError(`Task main worktree is not ready; reconcile the Task first: ${task.id}.`);
   }
   taskIntegrationTargetCheckout(store, options.environment, task.id, project.id, targetRef);
-  const expectedHead = (await new NodeGitWorkspace().inspect(mainEntry!.path, targetRef)).baseCommit;
+  const expectedHead = (await new NodeGitWorkspace(() => store.getConfig()).inspect(mainEntry!.path, targetRef)).baseCommit;
   const snapshotEntry = candidate.workspace.entries.find(
     ({ projectId }) => projectId === project.id
   );

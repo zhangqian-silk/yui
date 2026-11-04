@@ -3,6 +3,7 @@ import { saveArtifactFile, type GitArtifactRef } from "./gitArtifactRef.js";
 import { requireCommitId } from "./managedGit.js";
 import { safeRelativeArtifactPath } from "./artifactPaths.js";
 import { isRasterArtifact, MAX_IMAGE_BYTES, rasterMetadata } from "./imageMetadata.js";
+import type { GitConfig } from "../config/yuiConfig.js";
 
 /**
  * Capability-shaped adapter over the per-Task local Git artifact repository.
@@ -61,14 +62,15 @@ function requireTextContent(content: string): Buffer {
 export async function saveArtifactCapability(
   home: string,
   taskId: string,
-  input: ArtifactSaveCapabilityInput
+  input: ArtifactSaveCapabilityInput,
+  getConfig?: () => GitConfig
 ): Promise<GitArtifactRef> {
   const bytes = artifactInputBytes(input);
   return saveArtifactFile(home, taskId, {
     relativePath: input.relativePath, bytes,
     ...(input.message === undefined ? {} : { message: input.message }),
     ...(input.expectedHead === undefined ? {} : { expectedHead: input.expectedHead })
-  });
+  }, getConfig);
 }
 
 /** Shared bounded text/static-image input; never executes HTML or scripts. */
@@ -99,9 +101,10 @@ export function artifactInputBytes(input: ArtifactSaveCapabilityInput): Buffer {
 export async function readArtifactCapability(
   home: string,
   taskId: string,
-  input: Readonly<{ relativePath: string; commit?: string }>
+  input: Readonly<{ relativePath: string; commit?: string }>,
+  getConfig?: () => GitConfig
 ): Promise<ArtifactReadCapabilityResult> {
-  const repo = openTaskArtifactRepository(home, taskId);
+  const repo = openTaskArtifactRepository(home, taskId, getConfig);
   if (!repo.exists()) throw new Error(`Artifact repository is unavailable for ${taskId}.`);
   const safeRelative = safeRelativeArtifactPath(input.relativePath);
   const content = await repo.read(
@@ -135,9 +138,10 @@ export function presentArtifactContent(content: ArtifactContent): Omit<ArtifactR
  */
 export async function listArtifactsCapability(
   home: string,
-  taskId: string
+  taskId: string,
+  getConfig?: () => GitConfig
 ): Promise<readonly ArtifactEntry[]> {
-  const repo = openTaskArtifactRepository(home, taskId);
+  const repo = openTaskArtifactRepository(home, taskId, getConfig);
   if (!repo.exists()) return [];
   return repo.list();
 }

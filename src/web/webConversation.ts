@@ -229,7 +229,7 @@ export function createWebConversationSurface(
       if (["completed", "cancelled", "retired", "archived"].includes(task.status)) {
         throw new WebRequestRejected("Terminal Task materials are read-only.");
       }
-      return saveTextMaterial(store.rootDirectory(), owner.taskId, id, input);
+      return saveTextMaterial(store.rootDirectory(), owner.taskId, id, input, () => store.getConfig());
     },
     state(owner: RoleSessionOwner, offset = 0) {
       const set = sessions(owner);
@@ -293,7 +293,7 @@ export function createWebConversationSurface(
       let body = input.body;
       if (input.materials !== undefined) {
         if (owner.scope !== "task" || input.action === "interrupt") throw new WebRequestRejected("Materials require Task text input.");
-        try { body = await materialInputBody(store.rootDirectory(), owner.taskId, required(body), input.materials); }
+        try { body = await materialInputBody(store.rootDirectory(), owner.taskId, required(body), input.materials, () => store.getConfig()); }
         catch (error) { throw new WebRequestRejected(error instanceof Error ? error.message : "Invalid material."); }
         // Reading blobs is asynchronous: fence again before entering the shared
         // atomic input primitive (which also checks expectedSessionId).

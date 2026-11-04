@@ -15,6 +15,33 @@ Task Role 是 Task 局部的；global Role 提供已配置的默认值和全局�
 的 global Role。只有当请求的 Task Role 不存在时，global Role 才作为创建模板。
 可用性、producer 分离和冻结的审查候选仍然适用。
 
+## Git 操作预算
+
+三项 Git 超时均有正式配置。本地命令（包括本地 ref 复制和产物仓库）使用总耗时上限；
+clone、远程 fetch 和需要连接远端的 `ls-remote` 使用独立的无进展超时与总耗时上限：
+
+```sh
+yui config tools show
+yui config tools set git-local-timeout-seconds 30
+yui config tools set git-remote-inactivity-timeout-seconds 120
+yui config tools set git-remote-timeout-seconds 1800
+yui config tools clear git-local-timeout-seconds
+yui config tools clear git-remote-inactivity-timeout-seconds
+yui config tools clear git-remote-timeout-seconds
+```
+
+三项都接受 1–86400 的整数秒，默认分别为单条本地命令总耗时 30 秒、
+无 stdout/stderr 输出 120 秒、单条远程命令总耗时 1800 秒。
+保存后下一条命令生效，包括 Controller 的 Project refresh 和 Task
+准备；无需重启，已启动命令保持原预算。clone/fetch 即使没有终端也显式请求进度输出。
+每次输出只重置静默计时，不延长总上限；输出仅证明活动，不证明传输在推进。
+远程 stderr 只保留末尾 64 KiB，避免长时间进度输出耗尽缓冲；stdout 和本地命令输出
+保留原缓冲上限。
+
+任一预算耗尽时终止该次调用自己的进程组（含传输 helper），等待进程与管道关闭。
+错误保留超时类型和预算、实际耗时、可用的退出码、信号及 stderr；不会自动重试，
+失败也不等于已回滚。存储 1.28 → 1.29 声明三项可选配置，不重写旧配置或持久化默认值。
+
 ## 可选实例码与会话标题
 
 每个 Role 独立配置仅用于展示的实例码。例如只设置 Operator，其他角色留空：

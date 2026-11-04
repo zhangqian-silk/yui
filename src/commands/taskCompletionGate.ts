@@ -62,7 +62,7 @@ export async function verifyTaskCompletionPublishedTree(
   }
 
   const workspace = requireTaskWorkspace(store, task);
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const actualHeads = new Map<string, string>();
   for (const taskBinding of task.projectBindings) {
     const entry = workspaceProjectEntry(workspace, taskBinding.projectId);

@@ -202,7 +202,7 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
   constructor(
     readonly home: string,
     readonly store: TaskStore,
-    readonly git: GitWorkspacePort = new NodeGitWorkspace(),
+    readonly git: GitWorkspacePort = new NodeGitWorkspace(() => store.getConfig()),
     readonly now: () => Date = () => new Date(),
     readonly maintenanceLockOptions: ProjectMaintenanceLockOptions = {}
   ) {}

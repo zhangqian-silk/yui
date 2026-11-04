@@ -75,6 +75,26 @@ test("settings use CLI defaults and validation, atomic group writes, stale-read 
   await f.save("tools", [{ key: "tmux-history-limit", value: 2000 }]);
   assert.equal(f.store.getConfig().tmuxHistoryLimit, 2000);
   assert.match(f.service.read("tools").fields.find(f => f.key === "tmux-history-limit").takesEffect, /New tmux sessions/);
+  const gitKeys = ["git-local-timeout-seconds", "git-remote-inactivity-timeout-seconds", "git-remote-timeout-seconds"];
+  const beforeGit = f.store.getConfig();
+  for (const value of [0, -1, 1.5, 86401]) {
+    for (const key of gitKeys) {
+      assert.throws(() => runConfigCommand("tools", ["set", key, String(value)], f.store), /integer/);
+    }
+  }
+  assert.deepEqual(f.store.getConfig(), beforeGit, "invalid budgets do not mutate configuration");
+  await f.save("tools", gitKeys.map((key, i) => ({ key, value: [45, 60, 600][i] })));
+  const configuredGit = runConfigCommand("tools", ["show"], f.store).data;
+  assert.equal(configuredGit.gitLocalTimeoutSeconds, 45);
+  assert.equal(configuredGit.gitRemoteInactivityTimeoutSeconds, 60);
+  assert.equal(configuredGit.gitRemoteTimeoutSeconds, 600);
+  for (const key of gitKeys) assert.equal(configuredGit.valueSources[key], "stored");
+  await f.save("tools", gitKeys.map(key => ({ key, reset: true })));
+  for (const key of gitKeys) {
+    const field = f.service.read("tools").fields.find(f => f.key === key);
+    assert.equal(field.source, "default");
+    assert.equal(field.value, field.defaultValue);
+  }
   for (const group of f.service.index().groups) {
     for (const field of f.service.read(group.id).fields) {
       assert.ok(f.service.index(field.key).groups.some(g => g.id === group.id),

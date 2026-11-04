@@ -18,6 +18,40 @@ requiring a same-named global Role. A global Role is a creation template only
 when the requested Task Role does not exist. Availability, producer separation
 and the frozen review candidate still apply.
 
+## Git operation budgets
+
+All three Git timeout budgets have durable settings. Local commands (including
+local ref copies and artifact repositories) have a total limit; clone, remote
+fetch and network `ls-remote` have independent inactivity and total limits:
+
+```sh
+yui config tools show
+yui config tools set git-local-timeout-seconds 30
+yui config tools set git-remote-inactivity-timeout-seconds 120
+yui config tools set git-remote-timeout-seconds 1800
+yui config tools clear git-local-timeout-seconds
+yui config tools clear git-remote-inactivity-timeout-seconds
+yui config tools clear git-remote-timeout-seconds
+```
+
+All three accept integer seconds from 1 to 86400. Defaults are 30 seconds total
+per local command, 120 seconds without stdout/stderr output and 1800 seconds
+total per remote command.
+They apply to the next command, including Controller-owned Project refresh
+and Task preparation, without a restart; an in-flight command keeps its budgets.
+Clone/fetch explicitly request progress even without a terminal. Each output
+chunk resets only the silence timer, not the total deadline. Output is evidence
+of activity, not proof that a transfer is advancing; the total limit still wins.
+Remote stderr retains its last 64 KiB so progress cannot exhaust the output
+buffer; stdout and local command output retain their existing buffer limits.
+
+At either hard deadline Yui kills that invocation's process group, including
+transport helpers, and waits for process/pipe closure. Errors preserve the
+timeout kind/budget, elapsed time, exit code, signal and stderr where available.
+No Git operation is automatically retried, and a failure is not rollback proof.
+Storage 1.28 → 1.29 admits these optional configuration fields without
+rewriting historical configuration or persisting default values.
+
 ## Optional instance codes and Session titles
 
 Each Role can independently set a display-only instance code. For example,

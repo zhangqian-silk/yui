@@ -63,5 +63,6 @@ upstream 保持原样，不作这一承诺。
 
 ## 采用边界
 
-本操作不新增 Yui 持久 schema 或迁移。安装实现代码不等于刷新真实 Project；
+refresh 记账不新增 Yui 持久 schema；共享远程 Git 预算配置要求存储 1.29，
+见[配置说明](roles-and-configuration.zh-CN.md#git-操作预算)。安装实现代码不等于刷新真实 Project；
 正常获授权的 refresh 才应用此行为。Task 完成、集成、发布和归档仍是独立操作。

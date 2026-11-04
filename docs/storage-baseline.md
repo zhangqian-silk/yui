@@ -2,7 +2,11 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.28. The 1.27 → 1.28 transition admits exact-identity native
+Current storage is 1.29. The 1.28 → 1.29 transition admits optional local Git
+total and remote Git inactivity/total timeout settings. Existing configuration payloads remain
+byte-for-byte unchanged; absent fields use runtime defaults.
+
+The 1.27 → 1.28 transition admits exact-identity native
 title effect receipts under `runtime/native-titles`. It does not infer historical
 title ownership, rename conversations, or change existing database payloads.
 Unconfirmed naming intents remain non-replayable across Host replacement.

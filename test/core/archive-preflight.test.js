@@ -152,6 +152,7 @@ test("frozen result inspection distinguishes record, commit and HEAD differences
     gitSnapshot: { projects: [{ projectId: "project-1", commit: prepared.baseCommit }] } };
   const item = { id: "work-item-1", taskId: "task-1", status: "accepted", acceptedCandidateId: "candidate-1" };
   const store = {
+    getConfig: () => ({}),
     getWorkItem: () => ({ ...item, candidates: [candidate] }),
     getWorkItemWorkspace: () => workspace,
     getTaskWorkspace: () => ({ entries: [{ projectId: "project-1", path: root }] }),
