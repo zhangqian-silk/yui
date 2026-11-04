@@ -15,6 +15,7 @@ import { readControllerDiscovery, stopOrphanedFileTaskController } from "../../d
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { processGenerationIsLive } from "../../dist/core/fileLockOwner.js";
 import { controllerSocketPath } from "../../dist/core/controllerEndpoint.js";
+import { readLinuxProcessIdentity } from "../../dist/runtime/sessionOwnerIdentity.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 import { yuiVersionIdentity } from "../../dist/version.js";
 
@@ -164,7 +165,10 @@ async function resetFixture(t, holdOldProcess, unknownGeneration = false) {
       pollIntervalMs: 5, requestTimeoutMs: 500, shutdownTimeoutMs: holdOldProcess ? 30 : 1000,
       spawnController: async () => {
         spawns++;
-        assert.equal(processGenerationIsLive(child.pid, captured.processStartIdentity), false,
+        // An exact zombie has exited even before libuv reaps the child.
+        const oldProcess = readLinuxProcessIdentity(child.pid);
+        assert.ok((oldProcess?.startIdentity === captured.processStartIdentity && oldProcess.state === "Z")
+          || !processGenerationIsLive(child.pid, captured.processStartIdentity),
           "a successor is not started until the exact old generation has exited");
         await childExit;
         successor = await startControllerServer(home);
