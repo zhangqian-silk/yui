@@ -204,6 +204,25 @@ test("execution configs show the model a new Session launches with, using the la
   assert.match(text(row("agent/codex")), /gateway/);
   assert.match(text(row("agent/codex")), /routed/, "an Agent row names the Roles that use it");
   assert.equal(vm.runInContext("accessLayout.dataset.detail", context), "closed", "a Role detail does not stay open on the Agents page");
+
+  // A failed registry read is not evidence that no endpoint is bound.
+  context.showSection("roles");
+  const read = context.requestJson;
+  context.requestJson = async url => { if (url === "/api/models") throw new Error("registry unavailable"); return read(url); };
+  await context.loadRoutes();
+  assert.match(text(row("role/routed")), /saved-model.*access.source.role · access.routeUnknownShort/s, "the saved value shows, qualified as unknown");
+  assert.doesNotMatch(text(row("role/routed")), /routed-model/);
+  row("role/routed").handlers.click();
+  const inspector = () => text(vm.runInContext("agentInspector", context));
+  assert.match(inspector(), /access.savedLaunch/);
+  assert.doesNotMatch(inspector(), /access.newSession|access.routeOverrides/, "an unknown binding never labels the saved model as the launch model");
+  const scenario = () => JSON.parse(JSON.stringify(vm.runInContext("memberScenario(selectedAccess())", context)));
+  assert.equal(scenario().routeKnown, false, "the guide is told the binding is unknown, not absent");
+  context.requestJson = read;
+  await context.loadRoutes();
+  assert.match(text(row("role/routed")), /routed-model.*access.source.route/, "a later successful read restores the launch precedence");
+  assert.match(inspector(), /access.newSession/);
+  assert.deepEqual([scenario().route, scenario().routeKnown], ["gateway", true]);
 });
 
 test("long execution text is edited one item per line and in a saved-beside-edited editor", () => {

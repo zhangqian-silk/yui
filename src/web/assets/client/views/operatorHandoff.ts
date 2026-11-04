@@ -26,7 +26,8 @@ const COPY = {
     scenarios: {
       "role": s => ({ page: "执行配置", context: [
         "对象：Yui 全局角色「" + s.name + "」" + (s.agentId ? "，当前使用 Agent「" + s.agentId + "」（" + s.adapterLabel + "）" : "") + "。",
-        s.route ? "该 Agent 在 Yui 绑定了模型服务端点「" + s.route + "」，新会话的模型由端点绑定决定。" : "" ],
+        s.route ? "该 Agent 在 Yui 绑定了模型服务端点「" + s.route + "」，新会话的模型由端点绑定决定。"
+          : s.routeKnown ? "" : "页面未能读取 Yui 的端点绑定，是否有端点决定新会话模型尚不确定；请先读取 Yui 模型注册表确认。" ],
         steps: [
           "先用 yui config describe role 和 yui config role --help 确认当前安装版本支持的操作，再读取该角色现状。",
           "模型和思考强度只在该 Agent 实际支持的范围内选择；说明最终新会话会用哪个模型。",
@@ -45,7 +46,8 @@ const COPY = {
           "如果要让某个角色采用它，请单独说明目标角色，预览差异后再应用。" ] }),
       "agent": s => ({ page: "Agent", context: [
         "对象：已接入的 Agent「" + s.id + "」（" + s.adapterLabel + "）" + (s.roles.length ? "，被角色 " + s.roles.join("、") + " 使用" : "，当前没有角色使用") + "。",
-        s.route ? "它在 Yui 绑定了模型服务端点「" + s.route + "」（仅影响 Yui 新会话）。" : "它在 Yui 没有端点绑定，沿用自身原生模型配置。" ],
+        s.route ? "它在 Yui 绑定了模型服务端点「" + s.route + "」（仅影响 Yui 新会话）。"
+          : s.routeKnown ? "它在 Yui 没有端点绑定，沿用自身原生模型配置。" : "页面未能读取它在 Yui 的端点绑定，是否已绑定未知；请先读取 Yui 模型注册表确认。" ],
         steps: [
           "先用 yui config describe agent 和 yui config agent --help 确认可修改项；启动命令、参数和环境变量引用只影响之后启动的进程。",
           "模型、认证和思考强度默认沿用该 Agent 的原生配置；除非我明确要求，不要为此登记 Provider 或接入 metabridge。",
@@ -85,7 +87,8 @@ const COPY = {
     scenarios: {
       "role": s => ({ page: "Execution configs", context: [
         "Target: Yui global Role \"" + s.name + "\"" + (s.agentId ? ", currently using Agent \"" + s.agentId + "\" (" + s.adapterLabel + ")" : "") + ".",
-        s.route ? "That Agent has a Yui endpoint binding \"" + s.route + "\"; new Sessions take their model from that binding." : "" ],
+        s.route ? "That Agent has a Yui endpoint binding \"" + s.route + "\"; new Sessions take their model from that binding."
+          : s.routeKnown ? "" : "The page could not read Yui's endpoint bindings, so whether an endpoint decides the new-Session model is unknown; read the Yui model registry to confirm first." ],
         steps: [
           "Check yui config describe role and yui config role --help for this installation, then read the Role's current state.",
           "Choose model and effort only from what that Agent supports; tell me which model new Sessions will actually use.",
@@ -104,7 +107,8 @@ const COPY = {
           "If a Role should adopt it, name that Role, preview the difference and only then apply." ] }),
       "agent": s => ({ page: "Agents", context: [
         "Target: configured Agent \"" + s.id + "\" (" + s.adapterLabel + ")" + (s.roles.length ? ", used by Roles " + s.roles.join(", ") : ", used by no Role") + ".",
-        s.route ? "It has a Yui endpoint binding \"" + s.route + "\" (new Yui Sessions only)." : "It has no Yui endpoint binding and uses its native model configuration." ],
+        s.route ? "It has a Yui endpoint binding \"" + s.route + "\" (new Yui Sessions only)."
+          : s.routeKnown ? "It has no Yui endpoint binding and uses its native model configuration." : "The page could not read its Yui endpoint binding, so whether it is bound is unknown; read the Yui model registry to confirm first." ],
         steps: [
           "Check yui config describe agent and yui config agent --help; command, arguments and environment references affect later processes only.",
           "Keep the Agent's native model, authentication and effort; do not register a Provider or add metabridge for this unless I ask.",
@@ -139,6 +143,8 @@ function normalize(scenario, lang) {
   const s = scenario || {};
   const adapter = ["codex", "claude"].includes(s.adapter) ? s.adapter : "other";
   return { kind: s.kind, name: id(s.name), id: id(s.id), agentId: id(s.agentId), route: id(s.route),
+    // Only a successful registry read may claim "no binding"; anything else is unknown.
+    routeKnown: s.routeKnown === true,
     adapter, adapterLabel: COPY[lang].adapter[adapter], inherit: !!s.inherit,
     componentKind: s.componentKind === "metabridge" ? "metabridge" : "cliproxyapi", roles: ids(s.roles), agents: ids(s.agents), profiles: ids(s.profiles),
     endpoints: ids(s.endpoints), configured: ids(s.configured),

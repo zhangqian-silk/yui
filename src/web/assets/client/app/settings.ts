@@ -139,7 +139,7 @@ function effective(state) {
   if (area === "agents") {
     const native = group.observation?.native;
     return { agentId: group.agentId, model: native?.model || "", effort: native?.effort || "",
-      modelSource: "native", effortSource: "native", route: routeFor(group.agentId),
+      modelSource: "native", effortSource: "native", route: routeFor(group.agentId), routeStatus: modelRoutes.status,
       nativeStatus: native?.status || "unsupported" };
   }
   let agentId = group.agentId || "", model, effort, own;
@@ -152,7 +152,9 @@ function effective(state) {
   } else { model = value("model"); effort = value("effort"); own = "role"; }
   const native = nativeOf(agentId);
   const route = routeFor(agentId);
-  return { agentId, ownModel: model, route,
+  // Until the registry is read successfully an endpoint may still replace the
+  // model: the saved value is shown, but not as the model a new Session uses.
+  return { agentId, ownModel: model, route, routeStatus: modelRoutes.status,
     model: route ? route.binding.model : model || native?.model || "",
     effort: effort || native?.effort || "",
     modelSource: route ? "route" : model ? own : "native", effortSource: effort ? own : "native",
@@ -174,7 +176,14 @@ function modelLine(e) {
   if (e.unavailable) return [h("span.access-warn", null, t("access.unresolved"))];
   return [h("span.access-model", null, e.model || t("access.nativeDefault"),
       h("span.access-effort", null, " · " + (e.effort || t("access.nativeDefault")))),
-    h("small.access-source.source-" + e.modelSource, null, sourceText(e.modelSource, e.route))];
+    h("small.access-source.source-" + (e.routeStatus === "read" ? e.modelSource : e.routeStatus === "loading" ? "pending" : "unknown"), null, sourceLine(e))];
+}
+// The source of a Role/Profile model, qualified while the endpoint binding is
+// not known (still loading or the registry read failed).
+function sourceLine(e) {
+  const source = sourceText(e.modelSource, e.route);
+  return e.routeStatus === "read" ? source
+    : source + " · " + t(e.routeStatus === "loading" ? "access.routePending" : "access.routeUnknownShort");
 }
 function badges(state) {
   const group = state.group;
@@ -267,7 +276,7 @@ function renderAgentIndex(closedId = "") {
         h("h2", null, t("access.block." + area), h("span.count", null, String(rows.length))),
         h("p", null, t("access.blockHelp." + area))),
       rows.length ? h("div.access-table", { dataset: { columns: area } },
-        h("div.access-row-head", { "aria-hidden": "true" }, COLUMNS[area].map(key => h("span", null, key ? t(key) : ""))),
+        h("div.access-row-head", { "aria-hidden": "true" }, COLUMNS[area].map(key => h("span", null, key ? t(key === "access.col.model" && modelRoutes.status !== "read" ? "access.col.savedModel" : key) : ""))),
         ...rows.map(accessRow))
         : h("p.access-empty", null, t("access.empty." + area))));
   }
@@ -1253,11 +1262,12 @@ function memberScenario(state) {
   const area = stateArea(state);
   const group = state.group;
   const route = routeFor(group?.agentId)?.binding.endpointId || "";
+  const routeKnown = modelRoutes.status === "read";
   if (area === "agents") return { kind: "agent", id: stateTitle(state), adapter: agentAdapter(group?.agentId),
-    roles: rolesUsing(group?.agentId).map(role => role.meta.title), route };
+    roles: rolesUsing(group?.agentId).map(role => role.meta.title), route, routeKnown };
   if (area === "profiles") return { kind: "profile", id: stateTitle(state), inherit: group?.observation?.source === "global-worker",
     agentId: effective(state)?.agentId || "" };
-  return { kind: "role", name: stateTitle(state), agentId: group?.agentId || "", adapter: agentAdapter(group?.agentId), route };
+  return { kind: "role", name: stateTitle(state), agentId: group?.agentId || "", adapter: agentAdapter(group?.agentId), route, routeKnown };
 }
 function inspectorHeader(state) {
   const area = state.group?.id.startsWith("agent/") ? "agents" : state.group?.id.startsWith("role/") ? "roles"
@@ -1293,7 +1303,8 @@ function renderHeaderFacts(state) {
     items.push(fact(t("access.col.model"), t("access.unresolved"), e.unavailable, "warn"));
   } else if (e) {
     items.push(fact(t("access.col.agent"), (area === "profiles" && state.group.observation?.source === "global-worker" ? t("access.inheritWorker") + " · " : "") + (e.agentId || t("access.unknown"))),
-      fact(t("access.newSession"), (e.model || t("access.nativeDefault")) + " · " + (e.effort || t("access.nativeDefault")), sourceText(e.modelSource, e.route)));
+      fact(t(e.routeStatus === "read" ? "access.newSession" : "access.savedLaunch"), (e.model || t("access.nativeDefault")) + " · " + (e.effort || t("access.nativeDefault")),
+        sourceLine(e), e.routeStatus === "unavailable" ? "warn" : ""));
   }
   state.headerFacts.replaceChildren(...items);
 }

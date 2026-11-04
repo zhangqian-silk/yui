@@ -53,6 +53,8 @@ export const SETTINGS_STYLES = `
 .access-effort{color:var(--ink-3)}
 .access-source.source-route{color:var(--info)}
 .access-source.source-native{color:var(--ink-4)}
+.access-source.source-pending{color:var(--ink-4)}
+.access-source.source-unknown{color:var(--warn)}
 .access-muted{color:var(--ink-4)}
 .access-warn{color:var(--warn)!important}
 .access-cell-status{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px}
