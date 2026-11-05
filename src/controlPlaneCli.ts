@@ -111,6 +111,7 @@ import {
 } from "./commands/sessionCommands.js";
 import { assertTaskDeliveryAuthority, taskLocalActor, resolveJobCaller } from "./task/taskAuthority.js";
 import { runTaskBaseStatusCommand } from "./commands/taskBaseCommands.js";
+import { runTaskProjectUpdateCommand } from "./commands/taskProjectUpdateCommands.js";
 import { runTaskChangeSetCommand } from "./commands/taskChangeSetCommands.js";
 import {
   assertWorkItemDependenciesCompletedForCommand,
@@ -125,6 +126,7 @@ import {
   requireWorkItemAssignee,
   readDispatchContextRefs,
   runTaskCommand,
+  taskProjectSessionScopes,
   validateTaskArchiveRequest
 } from "./commands/taskCommands.js";
 import {
@@ -1870,6 +1872,13 @@ export async function main(): Promise<void> {
         emit(result.output, false, result.data);
         return;
       }
+      if (resolved[1] === "project" && resolved[2] === "update") {
+        const result = await runTaskProjectUpdateCommand(resolved.slice(3), store,
+          { runtime, environment: process.env, yuiHome: home });
+        if (result.kind !== "output") throw new Error("Unexpected Project update result.");
+        emit(result.output, false, result.data);
+        return;
+      }
       if (resolved[1] === "upstream") {
         const result = await runTaskUpstreamCommand(resolved.slice(2), store, home, {
           environment: process.env,
@@ -2027,6 +2036,7 @@ export async function main(): Promise<void> {
             : store.getReviewRound(requestedRound.taskId, requestedRound.id);
           let reviewOutput = "";
           let reviewData: unknown;
+          let workspaceConfiguration: { sessions: ReturnType<typeof taskProjectSessionScopes>; mode: "in-place" } | undefined;
           const resumesReviewDispatch = (resolved[1] === "review" && resolved[2] === "request")
             || (resolved[1] === "work" && resolved[2] === "review")
             || (resolved[1] === "run" && resolved[2] === "retry");
@@ -2148,6 +2158,11 @@ export async function main(): Promise<void> {
             const task = taskId === undefined ? null : store.getTask(taskId);
             if (task?.status === "active") {
               await workspacePreparer.prepareTaskWorkspace(task.id);
+              // Publish the adopted configuration; no Host/Provider control
+              // operation or current-Turn handoff is involved.
+              await runtime.notifyMailboxChanged({ kind: "task", taskId: task.id });
+              const sessions = taskProjectSessionScopes(store, task.id);
+              workspaceConfiguration = { sessions, mode: "in-place" };
             }
           }
           const controlData = result.data as { steer?: { code?: string }; interrupt?: { code?: string } } | undefined;
@@ -2156,9 +2171,11 @@ export async function main(): Promise<void> {
             emitControlFailure(result.output, failureCode, result.data);
             return;
           }
-          const commandData = reviewData === undefined
-            ? result.data
-            : { command: result.data, ...reviewData as object };
+          const commandData = workspaceConfiguration !== undefined
+            ? { ...result.data as object, workspaceConfiguration }
+            : reviewData === undefined
+              ? result.data
+              : { command: result.data, ...reviewData as object };
           const completionData = resolved[1] === "complete" ? {
             // Review dispatch may have advanced or failed after the command
             // prepared its Round. Report that observed stage, not preparation.
@@ -2171,7 +2188,11 @@ export async function main(): Promise<void> {
             baseFreshness: completionBaseFreshness ?? null,
             warnings: completionWarnings
           } : undefined;
-          emit(`${result.output}${reviewOutput}`, false, completionData === undefined
+          const workspaceOutput = workspaceConfiguration === undefined ? ""
+            : workspaceConfiguration.sessions.map(session =>
+              `${session.roleName}: ${session.scope}${session.detail ? ` — ${session.detail}` : ""}\n`).join("")
+              + "Project configuration adopted in place. No Host restart or Agent Turn interruption requested.\n";
+          emit(`${result.output}${reviewOutput}${workspaceOutput}`, false, completionData === undefined
             ? commandData
             : { ...commandData as object, ...completionData });
           return;

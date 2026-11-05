@@ -70,7 +70,7 @@ export class HostUpgradeCoordinator {
         if (!this.enabled(owner)) { results.push(result("paused", "Role/Task remains paused.")); continue; }
         const state = await this.ports.hostState(owner);
         const live = state === "running" ? await this.ports.inspect(owner) : undefined;
-        if (live && this.verified(live, nativeSessionId, adapterId)) {
+        if (live && !request && this.verified(live, nativeSessionId, adapterId)) {
           results.push(result("current", "Loaded Host and Endpoint match this Controller.", live));
         } else if (request && (request.nativeSessionId !== nativeSessionId || live
           && (live.nativeSessionId !== request.nativeSessionId || live.processInstanceId !== request.processInstanceId))) {
@@ -109,6 +109,8 @@ export class HostUpgradeCoordinator {
           if (snapshot.nativeSessionId !== nativeSessionId) {
             results.push(result("unknown", "Live Host does not match the recorded native Session.", snapshot)); continue;
           }
+          const session = this.session(owner, candidate.agentId);
+          if (!session || session.nativeSessionId !== nativeSessionId) throw new Error("Session changed before upgrade admission.");
           if (this.verified(snapshot, nativeSessionId, candidate.adapterId)) {
             results.push(result("current", undefined, snapshot)); continue;
           }
@@ -126,8 +128,6 @@ export class HostUpgradeCoordinator {
           if (existing && mailboxHasWork(existing)) {
             results.push(result("waiting", "Another exact lifecycle operation owns this Role.", snapshot)); continue;
           }
-          const session = this.session(owner, candidate.agentId);
-          if (!session || session.nativeSessionId !== nativeSessionId) throw new Error("Session changed before upgrade admission.");
           const body = {
             nativeSessionId, processInstanceId: snapshot.processInstanceId,
             hostGeneration: snapshot.hostImplementation.generation, targetGeneration: this.target.generation,
@@ -138,7 +138,8 @@ export class HostUpgradeCoordinator {
             const latest = tx.getWorkMailbox(runtimeLifecycleTarget(owner));
             if (latest && mailboxHasWork(latest)) throw new Error("Runtime lane changed before upgrade admission.");
             const current = this.session(owner, candidate.agentId);
-            if (!current || current.nativeSessionId !== nativeSessionId || digest(current.effective) !== request.effectiveDigest) {
+            if (!current || current.nativeSessionId !== nativeSessionId
+              || digest(current.effective) !== request.effectiveDigest) {
               throw new Error("Session changed before upgrade admission.");
             }
             tx.saveWorkMailbox(enqueueSignal(latest ?? createWorkMailbox(runtimeLifecycleTarget(owner)), {
@@ -201,7 +202,9 @@ export class HostUpgradeCoordinator {
       const hostState = await this.ports.hostState(owner);
       if (hostState === "running") {
         live = await this.ports.inspect(owner);
-        if (this.verified(live, request.nativeSessionId, request.adapterId)) {
+        if (digest(session.effective) === request.effectiveDigest
+          && live.processInstanceId !== request.processInstanceId
+          && this.verified(live, request.nativeSessionId, request.adapterId)) {
           assertCurrent();
           this.complete(owner, request);
           return result("upgraded", undefined, live);
@@ -245,7 +248,8 @@ export class HostUpgradeCoordinator {
         return result("failed", `Target Host launch/handshake failed: ${message(error)}`);
       }
       live = await this.ports.inspect(owner);
-      if (!this.verified(live, request.nativeSessionId, request.adapterId)) {
+      if (live.processInstanceId === request.processInstanceId
+        || !this.verified(live, request.nativeSessionId, request.adapterId)) {
         this.signal(owner, request, FAILED);
         return result("failed", "Target Host did not prove native identity, implementations and control/event capabilities.", live);
       }

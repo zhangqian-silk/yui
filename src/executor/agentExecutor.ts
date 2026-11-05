@@ -52,7 +52,8 @@ export type RoleAgentSession = {
   generatedTitle?: string;
   preview?: string;
   policy: "fixed" | "leader-controlled";
-  /** Immutable actual configuration for this native session. */
+  /** Actual configuration; changed only after a fenced Host drain/exit when
+   * the adapter can resume this exact conversation under the new scope. */
   effective: EffectiveLaunchSnapshot;
   /** Fixed execution implementation; Host activations never silently upgrade it. */
   endpointImplementation: ImplementationRef;

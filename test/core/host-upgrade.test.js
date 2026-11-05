@@ -47,7 +47,7 @@ function fixture() {
   const endpoint = { id: "yui.agent-endpoint.codex", generation: "new" };
   let mailbox = null, enabled = true, state = "running", busy = true;
   let native = "thread-one", resumes = 0, finishes = 0, prepares = 0;
-  const effective = { model: "fixed", permission: "fixed", workspace: { root: "/fixture" },
+  let effective = { model: "fixed", permission: "fixed", workspace: { root: "/fixture" },
     context: { description: "exact original role" } };
   let snapshot = { schemaVersion: 1, state: "idle", nativeSessionId: native,
     adapterId: "codex", processInstanceId: "process-one",
@@ -95,8 +95,24 @@ function fixture() {
     get finishes() { return finishes; },
     setBusy: value => { busy = value; }, setEnabled: value => { enabled = value; },
     setNative: value => { native = value; },
+    setEffective: value => { effective = structuredClone(value); },
+    get effective() { return effective; },
     setSnapshot: change => { snapshot = { ...snapshot, ...change }; } };
 }
+
+test("same-generation configuration changes never request Host drain or replacement", async () => {
+  const f = fixture();
+  f.setSnapshot({ hostImplementation: f.target, endpointImplementation: f.ports.endpoint() });
+  const old = structuredClone(f.effective);
+  const desired = { ...old, workspace: { root: "/fixture", entries: ["new-project"] } };
+  f.setEffective(desired);
+  assert.equal((await f.coordinator().status())[0].status, "current");
+  assert.equal((await f.coordinator().request())[0].status, "current");
+  assert.equal(f.prepares, 0);
+  assert.equal(f.resumes, 0);
+  assert.equal(f.finishes, 0);
+  assert.equal(f.mailbox, null);
+});
 
 test("Upgrade survives Controller restart and queued input without changing native identity or replay", async () => {
   const f = fixture();

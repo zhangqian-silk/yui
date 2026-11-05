@@ -72,6 +72,7 @@ let cli;
 let environment;
 let FixtureStore;
 let operatorHostPid;
+let scopeRefreshProject;
 const skills = [
   "yui-leader",
   "yui-worker",
@@ -89,6 +90,7 @@ try {
   writeFileSync(join(fakeBin, "codex"),
     `#!${process.execPath}\nprocess.env.YUI_FAKE_UNIQUE_THREADS = "1";\n`
     + `process.env.YUI_FAKE_INPUT_LOG = ${JSON.stringify(join(sandbox, "skill-inputs.jsonl"))};\n`
+    + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/scope-refresh-smoke-handler.mjs", import.meta.url).href)};\n`
     + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
   symlinkSync(process.execPath, join(fakeBin, "node"));
@@ -335,6 +337,7 @@ try {
       git(syncSeed, "add", "value"); git(syncSeed, "commit", "-m", "before"); git(syncSeed, "push", "origin", "main");
       const before = git(syncSeed, "rev-parse", "HEAD");
       const project = json("project", "clone", "Sync fixture", syncRemote, "--stable", "main", "--development", "main").project;
+      scopeRefreshProject = project;
       const syncId = `project-sync-${project.id}`;
       await waitFor(() => observeFixture(store => store.getSchedule({ kind: "global" }, syncId) !== null),
         "Builtin sync was not installed by Controller reconciliation.");
@@ -735,6 +738,113 @@ try {
         && row.input[0].text.startsWith("Yui Task notification:");
     }), "A later actual Host Turn begins with the original notification, without any Skill prefix or extra part.");
     phase("task/session/archive");
+
+    if (profile === "full") {
+      // The active Leader adds and uses its first Project within the same Turn.
+      // Neither the Host nor Provider connection may be replaced or interrupted.
+      const scopeTask = json("task", "create", "scope refresh fixture").task;
+      const scopeTmuxSession = `yui-${tmuxServer.slice(4, 16)}-${scopeTask.id}`;
+      const scopeHostPids = () => tmux("list-panes", "-t", `=${scopeTmuxSession}:`, "-F", "#{pane_pid}").trim();
+      writeFileSync(join(sandbox, "scope-refresh.json"), JSON.stringify({
+        taskId: scopeTask.id, projectId: scopeRefreshProject.id, cli, root,
+        tmuxServer, tmuxSession: scopeTmuxSession
+      }));
+      // This contract attaches children of the captured Task-main root. A
+      // separately adopted scratch/local cwd is not that execution boundary.
+      json("task", "activation", "request", scopeTask.id, "--request-id", "scope-start", "--environment", "empty");
+      const scopeEvents = () => observeFixture(store => store.listEvents(scopeTask.id));
+      await waitFor(() => existsSync(join(sandbox, "scope-added.json")),
+        "Active Leader did not return from its own project add.",
+        () => JSON.stringify(scopeEvents().slice(-10)));
+      const { inspectAgentHost: inspectScopeHost } =
+        await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
+      const scopeOwner = { home: yuiHome, scope: "task", taskId: scopeTask.id, roleName: "leader" };
+      const added = JSON.parse(readFileSync(join(sandbox, "scope-added.json"), "utf8"));
+      const beforeScope = added.before;
+      assert.equal(scopeHostPids(), added.hostPids, "Host PID must survive both self-issued configuration commands.");
+      assert.equal(added.result.workspaceConfiguration.mode, "in-place");
+      assert.equal(observeFixture(store =>
+        store.getWorkMailbox({ kind: "role-runtime", taskId: scopeTask.id, roleName: "leader" })), null,
+      "A project configuration change must not reserve Host lifecycle work.");
+      const heldHost = await inspectScopeHost(scopeOwner);
+      assert.equal(heldHost.processInstanceId, beforeScope.processInstanceId);
+      assert.equal(heldHost.nativeSessionId, beforeScope.nativeSessionId);
+      assert.equal(heldHost.nativeTurnId, added.turnId, "Configuration adoption must not interrupt the active Turn.");
+      assert.deepEqual(observeFixture(store => {
+        const set = store.getTaskRoleSessionSet(scopeTask.id, "leader");
+        return set.sessions[set.activeAgentId].effective.writeProjectIds;
+      }), [scopeRefreshProject.id], "New Project authority is immediately available in the same Turn.");
+      const newProjectPath = added.result.workspaceConfiguration.sessions
+        .find(session => session.roleName === "leader").workspace.entries
+        .find(entry => entry.projectId === scopeRefreshProject.id).path;
+      assert.equal(readFileSync(join(newProjectPath, "hot-config-proof.txt"), "utf8"),
+        `${beforeScope.nativeSessionId}/${added.turnId}`);
+      rmSync(join(newProjectPath, "hot-config-proof.txt"));
+      assert.ok(scopeEvents().some(event => event.type === "runtime.workspace-scope-adopted"
+        && event.payload.hostPreserved === "true"));
+      writeFileSync(join(sandbox, "scope-yield"), "yield");
+      await waitFor(() => observeFixture(store => {
+        const set = store.getTaskRoleSessionSet(scopeTask.id, "leader");
+        return set?.sessions[set.activeAgentId]?.effective.writeProjectIds.includes(scopeRefreshProject.id)
+          && !store.getWorkMailbox({ kind: "role-runtime", taskId: scopeTask.id, roleName: "leader" })?.pending;
+      }), "Task-main configuration was not adopted in place.",
+      () => JSON.stringify({ projects: json("task", "project", "list", scopeTask.id),
+        hosts: runCli(cli, ["update", "--hosts-status"], environment), events: scopeEvents().slice(-12) }));
+      const afterScope = await inspectScopeHost(scopeOwner);
+      assert.equal(afterScope.nativeSessionId, beforeScope.nativeSessionId);
+      assert.equal(afterScope.processInstanceId, beforeScope.processInstanceId);
+      let continuation;
+      await waitFor(() => observeFixture(store => {
+        continuation ??= store.listTaskWakes(scopeTask.id).find(wake => wake.id !== added.wakeId
+          && wake.reasons.includes("task-project-added"));
+        return continuation && store.getTaskWake(scopeTask.id, added.wakeId).inbox?.ack
+          && store.getTaskWake(scopeTask.id, continuation.id).inbox?.ack
+          && store.listEvents(scopeTask.id).some(event => {
+            if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
+            const fence = JSON.parse(event.payload.observation).fence;
+            return fence.nativeSessionId === beforeScope.nativeSessionId
+              && fence.receiptId?.startsWith(`notification:${scopeTask.id}/${continuation.id}/`);
+          });
+      }), "Self-add did not ACK and automatically continue the same conversation.");
+      const handled = readFileSync(join(sandbox, "scope-handled.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(handled.filter(row => row.wakeId === added.wakeId).length, 1);
+      assert.equal(handled.filter(row => row.wakeId === continuation.id).length, 1);
+      assert.ok(handled.every(row => row.threadId === beforeScope.nativeSessionId));
+      assert.equal((await inspectScopeHost(scopeOwner)).processInstanceId, beforeScope.processInstanceId);
+      const listing = json("task", "project", "list", scopeTask.id);
+      const updatedBinding = json("task", "project", "update", scopeTask.id, scopeRefreshProject.id,
+        "--base", "main", "--if-current", listing.writeGuard);
+      assert.equal(updatedBinding.change, "reference-only");
+      assert.equal(updatedBinding.workspaceMigrated, false);
+      assert.equal((await inspectScopeHost(scopeOwner)).processInstanceId, afterScope.processInstanceId);
+      const scopeInput = json("task", "message", "queue", scopeTask.id, "One post-refresh input.",
+        "--request-id", "scope-input");
+      let scopeWake;
+      await waitFor(() => observeFixture(store => {
+        scopeWake ??= store.listTaskWakes(scopeTask.id).find(wake =>
+          wake.refs.some(ref => ref.type === "message" && ref.id === scopeInput.message.id));
+        return scopeWake && store.listEvents(scopeTask.id).some(event => {
+          if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
+          const fence = JSON.parse(event.payload.observation).fence;
+          return fence.nativeSessionId === beforeScope.nativeSessionId
+            && fence.receiptId?.startsWith(`notification:${scopeTask.id}/${scopeWake.id}/`);
+        });
+      }),
+      "Original conversation did not handle post-refresh input.");
+      const finalScopeHost = await inspectScopeHost(scopeOwner);
+      assert.equal(finalScopeHost.nativeSessionId, beforeScope.nativeSessionId);
+      assert.equal(finalScopeHost.processInstanceId, beforeScope.processInstanceId);
+      assert.equal(scopeHostPids(), added.hostPids);
+      assert.ok(json("task", "wake", "show", scopeTask.id, scopeWake.id).wake.refs
+        .some(ref => ref.id === scopeInput.message.id));
+      const nativeInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(nativeInputs.filter(row => JSON.stringify(row.input)
+        .includes(`task=${scopeTask.id} wake=${scopeWake.id}.`)).length, 1);
+      json("task", "cancel", scopeTask.id, "--summary", "Disposable scope-refresh fixture verified.");
+      json("task", "archive", scopeTask.id, "--abandon", "--force");
+      assert.equal(json("task", "show", scopeTask.id).task.status, "archived");
+      phase("task/project/scope-refresh");
+    }
 
     const updateStarted = performance.now();
     // Keep a real Host alive across the updater's Controller replacement. Only

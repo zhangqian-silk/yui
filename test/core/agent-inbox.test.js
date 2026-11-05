@@ -37,6 +37,38 @@ import { applyOperatorSessionControl } from "../../dist/commands/operatorCommand
 import { standardAgentError } from "../../dist/runtime/agentError.js";
 
 const now = new Date("2026-10-13T00:00:00Z");
+test("Host refresh permits only same-session claimed-input ACK and retains stop fences", t => {
+  const { store, inbox, task } = taskFixture(t);
+  task(["message", "queue", "task-1", "Add a Project", "--request-id", "scope-input"]);
+  const id = inbox("leader", "claim", inbox("leader", "list").items[0].id, "--request-id", "scope-claim").id;
+  task(["message", "queue", "task-1", "Later input", "--request-id", "later"]);
+  const lane = { kind: "role-runtime", taskId: "task-1", roleName: "leader" };
+  enqueueWork(store, lane, "runtime-host-upgrade-required", now);
+  const ack = () => inbox("leader", "ack", id, "--request-id", "scope-ack", "--reason", "Scope requested; yield current Turn");
+  const pending = inbox("leader", "list").items.find(item => item.id.startsWith("pending-")).id;
+  assert.throws(() => inbox("leader", "claim", pending, "--request-id", "new-claim"), /being released/);
+  assert.throws(() => inbox("leader", "retire", id, "--request-id", "retire", "--reason", "No"), /being released/);
+  assert.equal(ack().inbox.ack.requestId, "scope-ack");
+  assert.equal(ack().inbox.ack.requestId, "scope-ack", "receipt retry is idempotent");
+  assert.ok(store.getWorkMailbox(lane).pending, "ACK does not settle Host lifecycle");
+  enqueueWork(store, lane, "runtime-cleanup-required", now);
+  assert.throws(ack, /being released/, "stop dominates coalesced upgrade");
+
+  const global = fixture(t, "operator");
+  const messageId = global.add("Retained prior-session claim");
+  global.command("claim", messageId, "--request-id", "prior");
+  const ended = updateRoleAgentSessionStatus(global.store.getGlobalRoleSessionSet("operator"),
+    "codex", "ended", now, "stopped");
+  global.store.saveGlobalRoleSessionSet(recordRoleAgentSession(ended, { ...ended.sessions.codex,
+    status: "active", endReason: undefined, nativeSessionId: "successor" }, now));
+  enqueueWork(global.store, { kind: "global-role-runtime", roleName: "operator" },
+    "runtime-host-upgrade-required", now);
+  assert.throws(() => runInboxCommand(["ack", messageId, "--request-id", "foreign",
+    "--reason", "Inspected prior handling"], global.store,
+    { ...global.env, CODEX_THREAD_ID: "successor" }, now), /being released/,
+    "Host refresh cannot authorize a successor to settle another Session's claim");
+});
+
 function fixture(t, name) {
   const home = mkdtempSync(join(tmpdir(), "yui-agent-inbox-"));
   const store = new SqliteTaskStore(home);
