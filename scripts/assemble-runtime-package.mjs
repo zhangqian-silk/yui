@@ -71,6 +71,7 @@ const RUNTIME_DOCUMENTS = [
   "docs/task-discovery.zh-CN.md",
   "docs/task-local-identity.md",
   "docs/task-local-identity.zh-CN.md",
+  "docs/workitem-continuation.md",
   "docs/testing/verification-levels.md",
   "docs/testing/verification-levels.zh-CN.md",
   "docs/testing/review-evaluation.md",
