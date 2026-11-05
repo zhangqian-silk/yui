@@ -309,6 +309,21 @@ export function roleSessionMayContinue(
   );
 }
 
+/** A scope-only difference may be serviced by the fenced Host lifecycle lane.
+ * This classification is backpressure, not permission to resume or adopt it. */
+export function roleSessionNeedsWorkspaceRefresh(
+  existing: EffectiveLaunchSnapshot,
+  desired: EffectiveLaunchSnapshot
+): boolean {
+  return existing.executionAuthority === "delivery"
+    && desired.executionAuthority === "delivery"
+    && existing.workspace.root === desired.workspace.root
+    && !roleSessionMayContinue(existing, desired)
+    && roleSessionMayContinue(existing, {
+      ...desired, workspace: existing.workspace, writeProjectIds: existing.writeProjectIds
+    });
+}
+
 /** Preserves a fixed Session's launch configuration while freezing fresh Task-main Git facts. */
 export function effectiveLaunchWithTaskMainWorkspace(
   existing: EffectiveLaunchSnapshot,

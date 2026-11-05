@@ -1,4 +1,4 @@
-import { roleSessionMayContinue } from "../executor/effectiveLaunch.js";
+import { roleSessionMayContinue, roleSessionNeedsWorkspaceRefresh } from "../executor/effectiveLaunch.js";
 import { isEnabled, roleDisabledReason, RoleDisabledError } from "../role/availability.js";
 import { roleAgentSessionResumeMode } from "../executor/agentExecutor.js";
 import type { SchedulerReconcileSelection, SchedulerStorePort, TmuxDeliveryPort } from "./ports.js";
@@ -81,6 +81,12 @@ export async function processLeaderWakeups(
       const session = store.getRoleSession(task.id, role.name, role.effective.agentId);
       effective = session?.status === "active" ? session.effective : role.effective;
       if (session?.status === "active" && !roleSessionMayContinue(session.effective, role.effective)) {
+        if (roleSessionNeedsWorkspaceRefresh(session.effective, role.effective)) {
+          throw new RuntimeLifecycleBusyError(
+            "Task-main scope refresh is pending; the original notification has not been submitted. "
+            + "Inspect runtime Host status for drain/capability evidence; do not select a new Session speculatively."
+          );
+        }
         throw new Error("Leader Session configuration changed; explicitly apply it before notification delivery.");
       }
       const mode = sessions === null ? "new"

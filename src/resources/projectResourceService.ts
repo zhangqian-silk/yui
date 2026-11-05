@@ -91,7 +91,10 @@ export function createProjectResources(store: TaskStore, now: () => Date = () =>
     openTask(taskId);
     const value = preparation(taskId, id);
     if (value.disposition !== "adopted") throw new Error("Execution environment must be adopted and not released.");
-    if (value.intentDigest !== intent(taskId)) throw new Error("Task resource/configuration intent changed; prepare again.");
+    // intentDigest fences preparation -> adoption, not the lifetime of an
+    // already adopted directory. Git bindings may change independently.
+    // Resume retains this exact directory and rechecks its reserved grants
+    // below; it neither discovers new resources nor consumes another grant.
     if (!value.directory || !value.environmentRef || value.isolation !== "trusted-local") {
       throw new Error("Empty preparation has no native execution directory; select a directory environment or managed workspace.");
     }

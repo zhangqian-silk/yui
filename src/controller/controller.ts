@@ -1182,8 +1182,13 @@ export class FileTaskController {
     this.#onError = options.onError ?? (() => {});
     const workspacePreparer = options.workspacePreparer;
     this.#workspacePreparer = workspacePreparer === undefined ? undefined : {
-      prepareTaskWorkspace: (taskId) =>
-        workspacePreparer.prepareTaskWorkspace(taskId, this.#workspaceWaitAbort.signal),
+      prepareTaskWorkspace: async (taskId) => {
+        const prepared = await workspacePreparer.prepareTaskWorkspace(taskId, this.#workspaceWaitAbort.signal);
+        // The incoming signal can be observed before workspace adoption. Check
+        // again after that transition; never wait for optional Host inspection.
+        this.#lifecycleChecks?.notify("signal");
+        return prepared;
+      },
       activateTaskWorkspace: (taskId, environment) =>
         workspacePreparer.activateTaskWorkspace(taskId, environment, this.#workspaceWaitAbort.signal)
     };

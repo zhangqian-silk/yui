@@ -33,6 +33,12 @@ export type HostUpgradePorts = Readonly<{
   hostState(owner: RuntimeRoleOwner): Promise<"running" | "stopped" | "unavailable" | "starting">;
   restore(owner: RuntimeRoleOwner, request: Request, effective: EffectiveLaunchSnapshot, assertCurrent: () => void): Promise<void>;
   endpoint(adapterId: string): ImplementationRef;
+  /** A derived target, not a second persisted configuration. The existing
+   * request pins its digest, just as a version upgrade pins the fixed launch. */
+  reconfiguration?(owner: RuntimeRoleOwner, effective: EffectiveLaunchSnapshot):
+    Readonly<{ effective: EffectiveLaunchSnapshot; unsupported?: string }>;
+  /** Called only after the exact Host drain receipt and physical exit. */
+  adopt?(owner: RuntimeRoleOwner, request: Request, effective: EffectiveLaunchSnapshot, assertCurrent: () => void): void;
 }>;
 
 /** Reuse the durable role-runtime lane and its fixed claim/settlement contract.
@@ -58,7 +64,7 @@ export class HostUpgradeCoordinator {
   /** Read-only follow-up: never admits, drains, restores, or settles a request. */
   async status(): Promise<readonly HostUpgradeResult[]> {
     const results: HostUpgradeResult[] = [];
-    for (const { owner, nativeSessionId, adapterId } of this.store.listRuntimeSessionCandidates()) {
+    for (const { owner, nativeSessionId, adapterId, agentId } of this.store.listRuntimeSessionCandidates()) {
       if (this.#closed) break;
       const result = (status: HostUpgradeResult["status"], detail?: string, snapshot?: AgentHostSnapshot): HostUpgradeResult => ({
         owner, nativeSessionId, status, detail, hostImplementation: snapshot?.hostImplementation,
@@ -70,7 +76,12 @@ export class HostUpgradeCoordinator {
         if (!this.enabled(owner)) { results.push(result("paused", "Role/Task remains paused.")); continue; }
         const state = await this.ports.hostState(owner);
         const live = state === "running" ? await this.ports.inspect(owner) : undefined;
-        if (live && this.verified(live, nativeSessionId, adapterId)) {
+        const session = this.session(owner, agentId);
+        const target = session && this.reconfiguration(owner, session.effective);
+        const changing = target && !isDeepStrictEqual(target.effective, session!.effective);
+        if (target?.unsupported) {
+          results.push(result("unsupported", target.unsupported, live));
+        } else if (live && !request && !changing && this.verified(live, nativeSessionId, adapterId)) {
           results.push(result("current", "Loaded Host and Endpoint match this Controller.", live));
         } else if (request && (request.nativeSessionId !== nativeSessionId || live
           && (live.nativeSessionId !== request.nativeSessionId || live.processInstanceId !== request.processInstanceId))) {
@@ -80,6 +91,8 @@ export class HostUpgradeCoordinator {
             : state === "unavailable" ? "unknown" : "waiting",
           `Request ${request.requestId}; target=${request.targetGeneration}; Host=${state}; drain=${live?.hostUpgrade?.state
             ?? (reasons(mailbox).includes(DRAINED) ? "persisted" : "unconfirmed")}. ${live?.hostUpgrade?.detail ?? ""}`, live));
+        } else if (changing) {
+          results.push(result("waiting", "Task-main scope changed; original conversation awaits a drained Host refresh.", live));
         } else {
           results.push(result(live && (!live.controlCapabilities?.includes("prepare-upgrade")
             || !live.controlCapabilities.includes("finish-upgrade")) ? "unsupported" : "unknown",
@@ -109,10 +122,17 @@ export class HostUpgradeCoordinator {
           if (snapshot.nativeSessionId !== nativeSessionId) {
             results.push(result("unknown", "Live Host does not match the recorded native Session.", snapshot)); continue;
           }
-          if (this.verified(snapshot, nativeSessionId, candidate.adapterId)) {
+          const session = this.session(owner, candidate.agentId);
+          if (!session || session.nativeSessionId !== nativeSessionId) throw new Error("Session changed before upgrade admission.");
+          const target = this.reconfiguration(owner, session.effective);
+          if (target.unsupported) {
+            results.push(result("unsupported", target.unsupported, snapshot)); continue;
+          }
+          const changing = !isDeepStrictEqual(target.effective, session.effective);
+          if (!changing && this.verified(snapshot, nativeSessionId, candidate.adapterId)) {
             results.push(result("current", undefined, snapshot)); continue;
           }
-          if (this.sameImplementations(snapshot, candidate.adapterId)) {
+          if (!changing && this.sameImplementations(snapshot, candidate.adapterId)) {
             results.push(result("waiting", "Loaded implementations match; lifecycle/event readiness is not a version mismatch.", snapshot));
             continue;
           }
@@ -126,19 +146,18 @@ export class HostUpgradeCoordinator {
           if (existing && mailboxHasWork(existing)) {
             results.push(result("waiting", "Another exact lifecycle operation owns this Role.", snapshot)); continue;
           }
-          const session = this.session(owner, candidate.agentId);
-          if (!session || session.nativeSessionId !== nativeSessionId) throw new Error("Session changed before upgrade admission.");
           const body = {
             nativeSessionId, processInstanceId: snapshot.processInstanceId,
             hostGeneration: snapshot.hostImplementation.generation, targetGeneration: this.target.generation,
-            agentId: candidate.agentId, adapterId: candidate.adapterId, effectiveDigest: digest(session.effective)
+            agentId: candidate.agentId, adapterId: candidate.adapterId, effectiveDigest: digest(target.effective)
           };
           const request: Request = { requestId: `host-upgrade-${digest([owner, body])}`, ...body };
           this.store.transaction(tx => {
             const latest = tx.getWorkMailbox(runtimeLifecycleTarget(owner));
             if (latest && mailboxHasWork(latest)) throw new Error("Runtime lane changed before upgrade admission.");
             const current = this.session(owner, candidate.agentId);
-            if (!current || current.nativeSessionId !== nativeSessionId || digest(current.effective) !== request.effectiveDigest) {
+            if (!current || current.nativeSessionId !== nativeSessionId
+              || digest(this.reconfiguration(owner, current.effective).effective) !== request.effectiveDigest) {
               throw new Error("Session changed before upgrade admission.");
             }
             tx.saveWorkMailbox(enqueueSignal(latest ?? createWorkMailbox(runtimeLifecycleTarget(owner)), {
@@ -189,10 +208,13 @@ export class HostUpgradeCoordinator {
         const session = this.session(owner, request.agentId);
         const currentMailbox = this.store.getWorkMailbox(runtimeLifecycleTarget(owner));
         if (this.#closed || !session || session.status !== "active" || session.nativeSessionId !== request.nativeSessionId
-          || digest(session.effective) !== request.effectiveDigest || !this.enabled(owner)
+          || digest(this.reconfiguration(owner, session.effective).effective) !== request.effectiveDigest || !this.enabled(owner)
           || runtimeCleanupDisposition(currentMailbox) !== "upgrade-host"
           || !isDeepStrictEqual(readRequest(currentMailbox), request)) {
           throw new Error("Upgrade no longer owns the original Session/configuration/lifecycle lane.");
+        }
+        if (this.reconfiguration(owner, session.effective).unsupported) {
+          throw new Error("The pinned scope can no longer be resumed by this adapter.");
         }
         return session;
       };
@@ -201,7 +223,9 @@ export class HostUpgradeCoordinator {
       const hostState = await this.ports.hostState(owner);
       if (hostState === "running") {
         live = await this.ports.inspect(owner);
-        if (this.verified(live, request.nativeSessionId, request.adapterId)) {
+        if (digest(session.effective) === request.effectiveDigest
+          && live.processInstanceId !== request.processInstanceId
+          && this.verified(live, request.nativeSessionId, request.adapterId)) {
           assertCurrent();
           this.complete(owner, request);
           return result("upgraded", undefined, live);
@@ -237,15 +261,23 @@ export class HostUpgradeCoordinator {
         return result("unknown", "No proven old Host drain/exit; original inputs and Session retained.");
       }
       assertCurrent();
+      const target = this.reconfiguration(owner, session.effective).effective;
+      if (!isDeepStrictEqual(target, session.effective)) {
+        if (!this.ports.adopt) return result("unsupported", "No drained scope-adoption capability is available.");
+        this.ports.adopt(owner, request, target, assertCurrent);
+      }
+      const adopted = assertCurrent();
+      if (digest(adopted.effective) !== request.effectiveDigest) throw new Error("Scope adoption did not match the pinned target.");
       // A failed or unknown launch is NOT automatically replayed. The existing
       // Host/pane and the exact mailbox request remain available for inspection.
-      try { await this.ports.restore(owner, request, session.effective, assertCurrent); }
+      try { await this.ports.restore(owner, request, adopted.effective, assertCurrent); }
       catch (error) {
         this.signal(owner, request, FAILED);
         return result("failed", `Target Host launch/handshake failed: ${message(error)}`);
       }
       live = await this.ports.inspect(owner);
-      if (!this.verified(live, request.nativeSessionId, request.adapterId)) {
+      if (live.processInstanceId === request.processInstanceId
+        || !this.verified(live, request.nativeSessionId, request.adapterId)) {
         this.signal(owner, request, FAILED);
         return result("failed", "Target Host did not prove native identity, implementations and control/event capabilities.", live);
       }
@@ -261,6 +293,9 @@ export class HostUpgradeCoordinator {
       && snapshot.controlCapabilities?.includes("reconcile-turn")
       && snapshot.eventDelivery !== undefined && snapshot.eventDelivery.unpersisted === 0
       && snapshot.eventDelivery.failure === undefined && ["idle", "ready", "busy"].includes(snapshot.state);
+  }
+  private reconfiguration(owner: RuntimeRoleOwner, effective: EffectiveLaunchSnapshot) {
+    return this.ports.reconfiguration?.(owner, effective) ?? { effective };
   }
   private sameImplementations(snapshot: AgentHostSnapshot, adapterId: string) {
     return isDeepStrictEqual(snapshot.hostImplementation, this.target)

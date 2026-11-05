@@ -30,8 +30,8 @@ Leader 读取原始需求并判断是否属于独立工作。请求身份、权�
 
 稳定的 Project checkout 是只读参考。Task main 是一个逻辑上的多 Project 根，带有
 按 Project 划分的独立 Git clone；WorkItem、Review 和 Integration worktree 归这些
-Task 仓库所有。对单个 Project，Agent 的正常 cwd 是其受管 Git 根；
-对多个 Project，根加上原生的附加目录机制暴露明确的 Project 集合。
+Task 仓库所有。零个、一个或多个 Project 的默认原生 cwd 都是 Task 的受管根，
+通过原生附加目录机制暴露明确的 Project 集合；运行中新增 Project 不改变 cwd。
 
 一个隔离的 WorkItem 为可写 Project 拥有独立 worktree，为其余 Project 提供 Task-main
 上下文。写范围是显式的，且只能由获授权的 owner 扩大。Review 拥有一个单独的冻结
@@ -42,6 +42,42 @@ Task 仓库所有。对单个 Project，Agent 的正常 cwd 是其受管 Git 根
 启动前，实际 Git 血缘必须由已记录的基线派生而来。落在该血缘之外的 reset 是物理
 漂移，而不是猜测或修复所有权的理由。一个显式采用的环境可以选择不同的原生 cwd，
 而受管工作区仍是 Git/控制所有权记录。
+
+### 更新 Project 绑定并保留原 conversation
+
+先读取 `yui task project list <task> --json` 返回的 `writeGuard`，再执行：
+
+```sh
+yui task project update <task> <project> --base <branch> --if-current <writeGuard>
+```
+
+这是当前 Leader、Operator 或用户的 Task 管理操作，不授予 Project 写权限。
+命令校验远端分支，在观察后重新检查绑定集合与工作区，再原子保存更新和审计事件。
+`task update` 不接受绑定字段；`project add` 只用于新增绑定，不能冒充更新。
+
+解析到原基线提交的别名纠正返回 `reference-only`；指向不同提交则返回
+`upstream-target`。两者都保留 HEAD、base/current commit、未提交改动和工作区
+所有权。结果明确标记 `workspaceMigrated: false`；真实基线变更通过现有
+`task upstream integrate <task> --project <project>` 实际应用和验证，保留该流程的
+脏工作树、权限及冲突门禁。Draft 或尚未准备的绑定只更新将来的准备目标。
+目录迁移、权限撤销不是元数据更新。
+
+同 cwd 新增 Project 时，Task-main 准备不再清空 Session。仅 Git 引用/提交变化不重建
+Host；执行范围变化复用 Controller→Host 生命周期通道，先阻止新输入，等待原生终态、
+后台工作静止、事件持久化及 writer 释放，证明旧 Host 退出后才采用新范围，并恢复
+**同一原生 conversation**。在途执行继续使用原权限。只处理 Task-main 附着，不扩展
+隔离 WorkItem/Review、planning 权限、模型/账号设置或显式 Assignment 范围；
+只读 Leader 仍为只读。
+已采用的执行目录保留原身份及资源授权记录，绑定更新不会重选环境；
+恢复时仍核验目录身份和授权，尚未采用的 preparation 则继续拒绝原 Task 意图变化。
+
+当前自动保留范围限定为 Codex、相同根路径、既有路径/分支/访问权限不变。
+其他适配器或不兼容边界保留原 conversation 并报告具体能力缺口；
+`task project list` 展示 `refresh-required`、`lifecycle-pending` 或 `unsupported`。
+显式且具有资源停止证据的 `task role session new` 只是有界后备，不是自动动作。
+暂停的 Task/Role 不会被唤醒。失联、持久化失败或启动结果未知时保留原生命周期请求，
+超时不作为排空证据。通知仅因范围刷新而延后，不会被拒绝；未知提交效果不重放。
+Operator 可用只读 `yui update --hosts-status` 查看排空/恢复诊断。
 
 ## Candidate、Review 与 Integration
 

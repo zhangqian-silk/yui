@@ -72,6 +72,7 @@ let cli;
 let environment;
 let FixtureStore;
 let operatorHostPid;
+let scopeRefreshProject;
 const skills = [
   "yui-leader",
   "yui-worker",
@@ -335,6 +336,7 @@ try {
       git(syncSeed, "add", "value"); git(syncSeed, "commit", "-m", "before"); git(syncSeed, "push", "origin", "main");
       const before = git(syncSeed, "rev-parse", "HEAD");
       const project = json("project", "clone", "Sync fixture", syncRemote, "--stable", "main", "--development", "main").project;
+      scopeRefreshProject = project;
       const syncId = `project-sync-${project.id}`;
       await waitFor(() => observeFixture(store => store.getSchedule({ kind: "global" }, syncId) !== null),
         "Builtin sync was not installed by Controller reconciliation.");
@@ -735,6 +737,61 @@ try {
         && row.input[0].text.startsWith("Yui Task notification:");
     }), "A later actual Host Turn begins with the original notification, without any Skill prefix or extra part.");
     phase("task/session/archive");
+
+    if (profile === "full") {
+      // One business wiring case, not another platform matrix: adopting the
+      // first Project must drain/rebuild the Host and retain the conversation.
+      const scopeTask = json("task", "create", "scope refresh fixture").task;
+      json("task", "activation", "request", scopeTask.id, "--request-id", "scope-start", "--environment", "scratch");
+      const scopeEvents = () => observeFixture(store => store.listEvents(scopeTask.id));
+      await waitFor(() => scopeEvents().some(event => event.type === "runtime.observation"
+        && event.payload.kind === "turn.completed"), "Scope fixture initial input did not complete.");
+      const { inspectAgentHost: inspectScopeHost } =
+        await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
+      const scopeOwner = { home: yuiHome, scope: "task", taskId: scopeTask.id, roleName: "leader" };
+      const beforeScope = await inspectScopeHost(scopeOwner);
+      json("task", "project", "add", scopeTask.id, scopeRefreshProject.id, "--directory", "scope-src");
+      await waitFor(() => observeFixture(store => {
+        const set = store.getTaskRoleSessionSet(scopeTask.id, "leader");
+        return set?.sessions[set.activeAgentId]?.effective.writeProjectIds.includes(scopeRefreshProject.id)
+          && !store.getWorkMailbox({ kind: "role-runtime", taskId: scopeTask.id, roleName: "leader" })?.pending;
+      }), "Task-main scope did not restore through the existing Host lifecycle lane.",
+      () => JSON.stringify({ projects: json("task", "project", "list", scopeTask.id),
+        hosts: runCli(cli, ["update", "--hosts-status"], environment), events: scopeEvents().slice(-12) }));
+      const afterScope = await inspectScopeHost(scopeOwner);
+      assert.equal(afterScope.nativeSessionId, beforeScope.nativeSessionId);
+      assert.notEqual(afterScope.processInstanceId, beforeScope.processInstanceId);
+      const listing = json("task", "project", "list", scopeTask.id);
+      const updatedBinding = json("task", "project", "update", scopeTask.id, scopeRefreshProject.id,
+        "--base", "refs/heads/main", "--if-current", listing.writeGuard);
+      assert.equal(updatedBinding.change, "reference-only");
+      assert.equal(updatedBinding.workspaceMigrated, false);
+      assert.equal((await inspectScopeHost(scopeOwner)).processInstanceId, afterScope.processInstanceId);
+      const scopeInput = json("task", "message", "queue", scopeTask.id, "One post-refresh input.",
+        "--request-id", "scope-input");
+      let scopeWake;
+      await waitFor(() => observeFixture(store => {
+        scopeWake ??= store.listTaskWakes(scopeTask.id).find(wake =>
+          wake.refs.some(ref => ref.type === "message" && ref.id === scopeInput.message.id));
+        return scopeWake && store.listEvents(scopeTask.id).some(event => {
+          if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
+          const fence = JSON.parse(event.payload.observation).fence;
+          return fence.nativeSessionId === beforeScope.nativeSessionId
+            && fence.receiptId?.startsWith(`notification:${scopeTask.id}/${scopeWake.id}/`);
+        });
+      }),
+      "Original conversation did not handle post-refresh input.");
+      assert.equal((await inspectScopeHost(scopeOwner)).nativeSessionId, beforeScope.nativeSessionId);
+      assert.ok(json("task", "wake", "show", scopeTask.id, scopeWake.id).wake.refs
+        .some(ref => ref.id === scopeInput.message.id));
+      const nativeInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(nativeInputs.filter(row => JSON.stringify(row.input)
+        .includes(`task=${scopeTask.id} wake=${scopeWake.id}.`)).length, 1);
+      json("task", "cancel", scopeTask.id, "--summary", "Disposable scope-refresh fixture verified.");
+      json("task", "archive", scopeTask.id, "--abandon", "--force");
+      assert.equal(json("task", "show", scopeTask.id).task.status, "archived");
+      phase("task/project/scope-refresh");
+    }
 
     const updateStarted = performance.now();
     // Keep a real Host alive across the updater's Controller replacement. Only

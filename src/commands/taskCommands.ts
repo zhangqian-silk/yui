@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { taskProjectBindingsGuard } from "./taskProjectUpdateCommands.js";
+import { taskWorkspaceReconfiguration } from "../executor/taskWorkspaceRefresh.js";
 import { taskMessageInboxReceipt } from "../message/taskInboxOwnership.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
 import { agentExecutionComponentLabel } from "../agent/executionComponents.js";
@@ -199,7 +201,8 @@ import {
 import { roleLaunchEventPayload, saveTaskRoleUpdate } from "../role/taskRoleUpdate.js";
 import {
   RUNTIME_SESSION_REPLACE_REQUIRED_REASON,
-  runtimeLifecycleTarget
+  runtimeLifecycleTarget,
+  hasRuntimeCleanupObligation
 } from "../runtime/lifecycleReservation.js";
 import { currentManagedRuntime } from "../runtime/managedCaller.js";
 import { controlProviderRetry, providerRunRetry, providerRetryProjection, providerRetrySummary, renderProviderRetry } from "../runtime/providerRetry.js";
@@ -919,7 +922,21 @@ function taskProjectCommand(
           ]),
           defaultTableWidth()
         )}\n`;
-    return output(rendered, { projectBindings: task.projectBindings });
+    const sessions = store.listRoles(task.id).flatMap(role => {
+      const set = store.getTaskRoleSessionSet(task.id, role.name);
+      const session = set?.sessions[set.activeAgentId];
+      if (!session || session.status !== "active") return [];
+      const owner = { scope: "task" as const, taskId: task.id, roleName: role.name };
+      const target = taskWorkspaceReconfiguration(store, owner, session.effective);
+      const pending = hasRuntimeCleanupObligation(store.getWorkMailbox(runtimeLifecycleTarget(owner)));
+      return [{ roleName: role.name, nativeSessionId: session.nativeSessionId,
+        scope: target.unsupported ? "unsupported" : pending ? "lifecycle-pending"
+          : isDeepStrictEqual(target.effective, session.effective) ? "captured" : "refresh-required",
+        ...(target.unsupported ? { detail: target.unsupported } : {}) }];
+    });
+    return output(rendered + `Write guard: ${taskProjectBindingsGuard(task)}\n`
+      + sessions.map(session => `${session.roleName}: ${session.scope}${session.detail ? ` — ${session.detail}` : ""}\n`).join(""),
+      { projectBindings: task.projectBindings, writeGuard: taskProjectBindingsGuard(task), sessions });
   }
   if (command !== "add") {
     throw usageError(command === undefined
@@ -1023,6 +1040,10 @@ export function updateTaskMetadataCommand(
   patch: Pick<TaskMetadataUpdate, "title" | "type" | "description" | "priority" | "tags" | "dueAt">,
   options: TaskCommandOptions = {}
 ): Task {
+  const allowed = new Set(["title", "type", "description", "priority", "tags", "dueAt"]);
+  if (Object.keys(patch).some(key => !allowed.has(key))) {
+    throw usageError("Unsupported metadata field. Use task project update for binding changes.");
+  }
   if (Object.keys(patch).length === 0) throw usageError("At least one Task metadata field is required.");
   const now = clock(options);
   const result = store.transaction((tx) => {

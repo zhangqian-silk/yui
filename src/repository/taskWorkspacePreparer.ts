@@ -969,8 +969,19 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
           });
           const target = assignedWorkspace?.root ?? reviewWorkspace?.root ?? root;
           if (role.workspace !== target) {
+            const sessions = tx.getTaskRoleSessionSet(task.id, role.name);
+            const mainSession = !activate && target === root
+              ? sessions?.sessions[sessions.activeAgentId] : undefined;
+            if (mainSession && mainSession.effective.workspace.root !== target) {
+              throw new Error(
+                `Cannot preserve ${mainSession.adapterId} conversation ${mainSession.nativeSessionId}: `
+                + `Task-main cwd changed from ${mainSession.effective.workspace.root} to ${target}. `
+                + "Original Session and inputs are retained. Inspect exact resources and explicitly select "
+                + "a new Session after verified stop; no automatic replacement or input replay."
+              );
+            }
             if (
-              assignedItem === undefined
+              mainSession === undefined && (assignedItem === undefined
               || assignedWorkspace === null
               || !canCorrectActiveWorkItemRoleWorkspaceHint(
                 tx,
@@ -978,16 +989,18 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
                 role,
                 assignedItem,
                 assignedWorkspace
-              )
+              ))
             ) {
               retireWorkspaceBoundSession(tx, task.id, role.name, timestamp);
             }
             tx.saveRole(task.id, updateRole(role, { workspace: target }, timestamp));
           } else if (target === root && mainWorkspaceChanged) {
-            // A newly bound Project changes the native directory grants even
-            // though the Task cwd stays at the same root. Do not resume a
-            // Session frozen before that Project was present.
-            retireWorkspaceBoundSession(tx, task.id, role.name, timestamp);
+            // Workspace adoption is not native Session replacement. The Host
+            // lifecycle coordinator drains only affected Task-main attachments
+            // and adopts the new scope before restoring the exact conversation.
+            // Until then its captured permissions remain unchanged.
+            tx.saveEvent(task.id, createTaskEvent(tx.nextEventId(task.id), task.id,
+              "runtime.workspace-refresh-required", { roleName: role.name, workspace: root }, timestamp));
           }
         }
         if (activate) recordTaskActivation(tx, latest, persistedTask, timestamp, actor);

@@ -54,6 +54,55 @@ outside that lineage is physical drift, not a reason to guess or repair ownershi
 An explicitly adopted environment can select a different native cwd while the
 managed workspace remains the Git/control ownership record.
 
+### Updating Project bindings without replacing conversations
+
+Read `yui task project list <task> --json`, then use its `writeGuard`:
+
+```sh
+yui task project update <task> <project> --base <branch> --if-current <writeGuard>
+```
+
+This is a Task-management operation for the current Leader, Operator or user.
+It validates the remote branch, rechecks the binding set and workspace after
+observation, and atomically records the change and its audit event. It never
+grants Project write access. `task update` does not accept binding fields.
+Use `project add` only for a genuinely new binding, not to replace an existing one.
+
+An alias resolving to the recorded base is `reference-only`. A different
+upstream commit is `upstream-target`: **HEAD, base/current commits, dirty files
+and workspace ownership remain unchanged**. The result explicitly reports
+`workspaceMigrated: false` and the existing `task upstream integrate <task>
+--project <project>` operation needed to apply and check the actual baseline.
+That integration retains its own dirty-worktree, authority and conflict fences.
+Draft/unmaterialized bindings change the future preparation target.
+Directory relocation and access revocation are not metadata updates.
+
+Task-main adoption no longer erases Sessions when a Project is added at the
+same cwd. Git-only changes need no Host refresh. For changed execution scope,
+the existing Controller→Host lifecycle lane fences new input, waits for native
+terminal/background quiescence, durable events and writer release, then
+observes old Host exit before adopting scope and restoring the **same native
+conversation**. In-flight execution keeps its old captured permissions.
+Only Task-main attachments are eligible; isolated WorkItem/Review Sessions,
+planning authority, model/account settings and explicit Assignment scope are
+not expanded by this operation. Read-only Leaders remain read-only.
+An already adopted execution directory retains its identity and reserved
+resource grants; binding changes do not select a new environment. Directory
+identity and grants are rechecked on resume, while unadopted preparations
+still reject changes to their original Task intent.
+
+Automatic scope resume currently supports Codex at the same root with
+unchanged existing paths, branches and access grants. Other adapters or
+incompatible boundaries retain the conversation and report the exact missing
+capability; inspect `task project list` for `refresh-required`,
+`lifecycle-pending` or `unsupported`. An explicit, resource-verified
+`task role session new` remains the bounded fallback, not an automatic step.
+Paused Tasks/Roles stay paused. Lost contact, failed persistence or unconfirmed
+launch retain the exact lifecycle request; timeout is not proof of drain.
+Queued input is deferred, never rejected solely for scope refresh, and unknown
+submission effects are never replayed. Operator `yui update --hosts-status`
+provides the read-only Host drain/restore diagnostics.
+
 ## Candidate, Review and Integration
 
 Provider terminal saves the exact original Run result. It does not accept the

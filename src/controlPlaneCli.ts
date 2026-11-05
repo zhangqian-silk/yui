@@ -111,6 +111,7 @@ import {
 } from "./commands/sessionCommands.js";
 import { assertTaskDeliveryAuthority, taskLocalActor, resolveJobCaller } from "./task/taskAuthority.js";
 import { runTaskBaseStatusCommand } from "./commands/taskBaseCommands.js";
+import { runTaskProjectUpdateCommand } from "./commands/taskProjectUpdateCommands.js";
 import { runTaskChangeSetCommand } from "./commands/taskChangeSetCommands.js";
 import {
   assertWorkItemDependenciesCompletedForCommand,
@@ -1870,6 +1871,13 @@ export async function main(): Promise<void> {
         emit(result.output, false, result.data);
         return;
       }
+      if (resolved[1] === "project" && resolved[2] === "update") {
+        const result = await runTaskProjectUpdateCommand(resolved.slice(3), store,
+          { runtime, environment: process.env, yuiHome: home });
+        if (result.kind !== "output") throw new Error("Unexpected Project update result.");
+        emit(result.output, false, result.data);
+        return;
+      }
       if (resolved[1] === "upstream") {
         const result = await runTaskUpstreamCommand(resolved.slice(2), store, home, {
           environment: process.env,
@@ -2148,6 +2156,9 @@ export async function main(): Promise<void> {
             const task = taskId === undefined ? null : store.getTask(taskId);
             if (task?.status === "active") {
               await workspacePreparer.prepareTaskWorkspace(task.id);
+              // The command's initial signal precedes local workspace
+              // adoption. Wake the existing lifecycle checks after it commits.
+              await runtime.notifyMailboxChanged({ kind: "task", taskId: task.id });
             }
           }
           const controlData = result.data as { steer?: { code?: string }; interrupt?: { code?: string } } | undefined;

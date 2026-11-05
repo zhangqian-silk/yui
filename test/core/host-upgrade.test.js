@@ -47,7 +47,7 @@ function fixture() {
   const endpoint = { id: "yui.agent-endpoint.codex", generation: "new" };
   let mailbox = null, enabled = true, state = "running", busy = true;
   let native = "thread-one", resumes = 0, finishes = 0, prepares = 0;
-  const effective = { model: "fixed", permission: "fixed", workspace: { root: "/fixture" },
+  let effective = { model: "fixed", permission: "fixed", workspace: { root: "/fixture" },
     context: { description: "exact original role" } };
   let snapshot = { schemaVersion: 1, state: "idle", nativeSessionId: native,
     adapterId: "codex", processInstanceId: "process-one",
@@ -95,8 +95,43 @@ function fixture() {
     get finishes() { return finishes; },
     setBusy: value => { busy = value; }, setEnabled: value => { enabled = value; },
     setNative: value => { native = value; },
+    setEffective: value => { effective = structuredClone(value); },
+    get effective() { return effective; },
     setSnapshot: change => { snapshot = { ...snapshot, ...change }; } };
 }
+
+test("same-generation workspace refresh drains before adopting scope, resumes identity and never replays input", async () => {
+  const f = fixture();
+  f.setSnapshot({ hostImplementation: f.target, endpointImplementation: f.ports.endpoint() });
+  const old = structuredClone(f.effective);
+  const desired = { ...old, workspace: { root: "/fixture", entries: ["new-project"] } };
+  let adoptions = 0;
+  f.ports.reconfiguration = () => ({ effective: desired });
+  f.ports.adopt = (_owner, _request, effective, assertCurrent) => {
+    assertCurrent();
+    assert.equal(f.finishes, 1, "Permission adoption follows exact old Host drain and exit.");
+    adoptions++;
+    f.setEffective(effective);
+  };
+  assert.equal((await f.coordinator().status())[0].status, "waiting");
+  assert.equal((await f.coordinator().request())[0].status, "waiting");
+  assert.deepEqual(f.effective, old, "Busy native execution keeps its original permissions.");
+  f.setBusy(false);
+  assert.equal((await f.coordinator().reconcile())[0].status, "waiting");
+  assert.equal(f.resumes, 0);
+  assert.equal((await f.coordinator().reconcile())[0].status, "upgraded");
+  assert.equal(adoptions, 1);
+  assert.equal(f.resumes, 1);
+  assert.deepEqual(f.effective, desired);
+  assert.equal((await f.coordinator().request())[0].status, "current");
+  assert.equal(f.resumes, 1);
+
+  const unsupported = fixture();
+  unsupported.setSnapshot({ hostImplementation: unsupported.target, endpointImplementation: unsupported.ports.endpoint() });
+  unsupported.ports.reconfiguration = () => ({ effective: desired, unsupported: "Adapter cannot resume this scope" });
+  assert.equal((await unsupported.coordinator().request())[0].status, "unsupported");
+  assert.equal(unsupported.prepares, 0);
+});
 
 test("Upgrade survives Controller restart and queued input without changing native identity or replay", async () => {
   const f = fixture();

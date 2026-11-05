@@ -381,7 +381,7 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "project", discovery: { surface: "managed", audiences: ["operator","leader"] },
     summary: "Manage Projects bound to a Task.",
-    sections: [{ id: "manage", title: "Commands", entries: ["list", "add", "delivery"] }],
+    sections: [{ id: "manage", title: "Commands", entries: ["list", "add", "update", "delivery"] }],
     children: [
       {
         name: "list", discovery: { surface: "public", audiences: ["public","operator","leader"] },
@@ -393,6 +393,12 @@ const taskChildren: readonly NodeInput[] = [
         summary: "Add a Project to a Task.",
         usage: "yui task project add <task> <project> [--base <ref>] [--directory <name>]",
         options: ["--base", "--directory"]
+      },
+      {
+        name: "update", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+        summary: "Update an existing binding's upstream reference with a binding-set guard; preserve commits and worktree. Real baseline changes require upstream integration.",
+        usage: "yui task project update <task> <project> --base <ref> --if-current <writeGuard>",
+        options: ["--base", "--if-current"]
       },
       {
         name: "delivery", discovery: { surface: "public", audiences: ["public","operator","leader"] },

@@ -133,6 +133,7 @@ import {
 } from "./fileSchedulerStoreAdapter.js";
 import { deliverGlobalInputs } from "./globalInputDelivery.js";
 import { HostUpgradeCoordinator } from "./hostUpgrade.js";
+import { taskWorkspaceReconfiguration, adoptDrainedTaskWorkspace } from "../executor/taskWorkspaceRefresh.js";
 import { createHostLifecycleChecks } from "./hostLifecycleChecks.js";
 import { createControllerHostLifecycle, type ControllerHostTransition } from "./hostLifecycle.js";
 import { createNonBlockingChecks } from "../runtime/lifecycleChecks.js";
@@ -460,6 +461,9 @@ async function createFileTaskControllerRuntime(
       }
     );
     const hostUpgrades = new HostUpgradeCoordinator(store, AGENT_HOST_IMPLEMENTATION, {
+      reconfiguration: (owner, effective) => taskWorkspaceReconfiguration(store, owner, effective),
+      adopt: (owner, request, effective, assertCurrent) =>
+        adoptDrainedTaskWorkspace(store, owner, request.nativeSessionId, effective, assertCurrent),
       inspect: owner => inspectAgentHost({ home, ...owner }),
       control: async (owner, type, request) => {
         const send = async () => {
