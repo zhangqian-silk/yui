@@ -83,6 +83,13 @@ the existing Controller→Host lifecycle lane fences new input, waits for native
 terminal/background quiescence, durable events and writer release, then
 observes old Host exit before adopting scope and restoring the **same native
 conversation**. In-flight execution keeps its old captured permissions.
+When the Leader itself adds a Project, `project add` returns the observed
+Session scopes and handoff guidance without waiting for refresh. The affected
+Session ACKs its already-claimed input and ends the current **Turn**, not the
+Task or conversation. Host refresh permits that same-Session ACK but not new
+claims; end/replace/detach requests still fence all inbox mutations. The queued
+`task-project-added` notification continues the Leader after the lifecycle and
+busy gates clear, without an extra aggregation delay or external wake.
 Only Task-main attachments are eligible; isolated WorkItem/Review Sessions,
 planning authority, model/account settings and explicit Assignment scope are
 not expanded by this operation. Read-only Leaders remain read-only.

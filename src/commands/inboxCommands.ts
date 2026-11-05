@@ -7,7 +7,7 @@ import { expandTaskMessageResult, type GlobalRoleMessage, type TaskMessage } fro
 import { messageAssignmentBlocker } from "../message/messageContinuation.js";
 import { globalInboxDeliveryState, inboxHandlingState, isGlobalInboxMessage, pendingGlobalInboxMessages, type InboxActor, type InboxReceipt } from "../message/inboxReceipt.js";
 import { nonReplayableMessageWake, isLeaderSteer, pinMessageRevisions, releasedNotificationWake, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
-import { hasRuntimeCleanupObligation, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
+import { runtimeCleanupDisposition, runtimeLifecycleTarget } from "../runtime/lifecycleReservation.js";
 import { isTaskRecordRetired, retiredTaskRecordIds } from "../task/taskRecordRetirement.js";
 import { blocksInboxOrder, inboxEntryCategory, inboxSettled } from "../message/inboxTurn.js";
 import { recoveredMessageContinuation } from "../controller/taskRunRecovery.js";
@@ -153,10 +153,16 @@ function blocker(store: TaskStore, address: Address, entry: Entry): string | und
   return undefined;
 }
 
-function checkMutation(store: TaskStore, address: Address): void {
+function checkMutation(store: TaskStore, address: Address, acknowledgement?: Entry): void {
   const owner = address.scope === "global" ? { scope: "global" as const, roleName: address.roleName }
     : { scope: "task" as const, taskId: address.taskId!, roleName: address.roleName };
-  if (hasRuntimeCleanupObligation(store.getWorkMailbox(runtimeLifecycleTarget(owner)))) {
+  const disposition = runtimeCleanupDisposition(store.getWorkMailbox(runtimeLifecycleTarget(owner)));
+  // Host drain waits for this Turn to finish. Settling its existing claim is
+  // not new input admission and must remain possible before yielding the Turn.
+  // Session replacement/end/detach and foreign claims keep their existing fence.
+  const settlingOwnClaim = disposition === "upgrade-host" && acknowledgement?.inbox !== undefined
+    && sameSession(acknowledgement.inbox.claim.actor, address);
+  if (disposition !== null && !settlingOwnClaim) {
     throw new Error("Inbox cannot change while this runtime is being released.");
   }
   if (address.scope === "task") {
@@ -274,7 +280,7 @@ export function runInboxCommand(
   if (action === "claim" && reason !== undefined) throw new Error("Claim does not record a disposition; use ack after handling.");
   const apply = (id: string) => store.transaction(tx => {
     const current = addressOf(tx, env);
-    checkMutation(tx, current);
+    checkMutation(tx, current, action === "ack" ? getEntry(tx, current, id) : undefined);
     let entry: Entry;
     if (id.startsWith("pending-") && current.scope === "task" && current.roleName === "leader" && action === "claim") {
       // Retry the exact logical operation even after its pending batch moved.

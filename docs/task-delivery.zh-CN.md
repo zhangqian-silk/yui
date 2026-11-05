@@ -68,6 +68,11 @@ Host；执行范围变化复用 Controller→Host 生命周期通道，先阻止
 **同一原生 conversation**。在途执行继续使用原权限。只处理 Task-main 附着，不扩展
 隔离 WorkItem/Review、planning 权限、模型/账号设置或显式 Assignment 范围；
 只读 Leader 仍为只读。
+Leader 自己新增 Project 时，`project add` 返回当前 Session 范围和交接提示，不等待刷新。
+受影响会话 ACK 自己已领取的输入后结束当前 **Turn**，而不是完成 Task 或结束 conversation。
+Host 刷新期间只放行这种同会话收尾 ACK，不允许新 claim；结束、替换或 detach 请求仍禁止
+所有 inbox 变更。既有 `task-project-added` 通知在生命周期和 busy 门禁解除后续跑 Leader，
+不再额外等待聚合窗口，也不需要外部补发唤醒。
 已采用的执行目录保留原身份及资源授权记录，绑定更新不会重选环境；
 恢复时仍核验目录身份和授权，尚未采用的 preparation 则继续拒绝原 Task 意图变化。
 

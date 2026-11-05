@@ -48,6 +48,9 @@ const IMMEDIATE_KINDS: ReadonlySet<string> = new Set([
   // to debounce. All existing busy/ownership/delivery checks still apply.
   "job-agent-input",
   "task-created",
+  // Explicit scope adoption needs a continuation after the caller yields.
+  // Existing busy/lifecycle/claim gates still prevent premature delivery.
+  "task-project-added",
   "execution-started",
   "session-replaced",
   "force-wake",

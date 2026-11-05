@@ -90,6 +90,7 @@ try {
   writeFileSync(join(fakeBin, "codex"),
     `#!${process.execPath}\nprocess.env.YUI_FAKE_UNIQUE_THREADS = "1";\n`
     + `process.env.YUI_FAKE_INPUT_LOG = ${JSON.stringify(join(sandbox, "skill-inputs.jsonl"))};\n`
+    + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/scope-refresh-smoke-handler.mjs", import.meta.url).href)};\n`
     + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
   symlinkSync(process.execPath, join(fakeBin, "node"));
@@ -739,18 +740,35 @@ try {
     phase("task/session/archive");
 
     if (profile === "full") {
-      // One business wiring case, not another platform matrix: adopting the
-      // first Project must drain/rebuild the Host and retain the conversation.
+      // The active Leader adds its own first Project, ACKs and yields. No
+      // external input may be needed to break the drain/continuation cycle.
       const scopeTask = json("task", "create", "scope refresh fixture").task;
+      writeFileSync(join(sandbox, "scope-refresh.json"), JSON.stringify({
+        taskId: scopeTask.id, projectId: scopeRefreshProject.id, cli, root
+      }));
       json("task", "activation", "request", scopeTask.id, "--request-id", "scope-start", "--environment", "scratch");
       const scopeEvents = () => observeFixture(store => store.listEvents(scopeTask.id));
-      await waitFor(() => scopeEvents().some(event => event.type === "runtime.observation"
-        && event.payload.kind === "turn.completed"), "Scope fixture initial input did not complete.");
+      await waitFor(() => existsSync(join(sandbox, "scope-added.json")),
+        "Active Leader did not return from its own project add.");
       const { inspectAgentHost: inspectScopeHost } =
         await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
       const scopeOwner = { home: yuiHome, scope: "task", taskId: scopeTask.id, roleName: "leader" };
-      const beforeScope = await inspectScopeHost(scopeOwner);
-      json("task", "project", "add", scopeTask.id, scopeRefreshProject.id, "--directory", "scope-src");
+      const added = JSON.parse(readFileSync(join(sandbox, "scope-added.json"), "utf8"));
+      const beforeScope = added.before;
+      assert.ok(added.result.workspaceRefresh.instruction);
+      await waitFor(() => observeFixture(store =>
+        store.getWorkMailbox({ kind: "role-runtime", taskId: scopeTask.id, roleName: "leader" })?.pending),
+      "Self-add did not reserve Host refresh while the original Turn was busy.");
+      const heldHost = await inspectScopeHost(scopeOwner);
+      assert.equal(heldHost.processInstanceId, beforeScope.processInstanceId);
+      assert.equal(heldHost.nativeSessionId, beforeScope.nativeSessionId);
+      assert.equal(heldHost.nativeTurnId, added.turnId, "Drain must not interrupt the caller's active Turn.");
+      assert.deepEqual(observeFixture(store => {
+        const set = store.getTaskRoleSessionSet(scopeTask.id, "leader");
+        return set.sessions[set.activeAgentId].effective.writeProjectIds;
+      }), [], "In-flight Turn must not gain the new write grant.");
+      assert.equal(scopeEvents().some(event => event.type === "runtime.workspace-scope-adopted"), false);
+      writeFileSync(join(sandbox, "scope-yield"), "yield");
       await waitFor(() => observeFixture(store => {
         const set = store.getTaskRoleSessionSet(scopeTask.id, "leader");
         return set?.sessions[set.activeAgentId]?.effective.writeProjectIds.includes(scopeRefreshProject.id)
@@ -761,6 +779,23 @@ try {
       const afterScope = await inspectScopeHost(scopeOwner);
       assert.equal(afterScope.nativeSessionId, beforeScope.nativeSessionId);
       assert.notEqual(afterScope.processInstanceId, beforeScope.processInstanceId);
+      let continuation;
+      await waitFor(() => observeFixture(store => {
+        continuation ??= store.listTaskWakes(scopeTask.id).find(wake => wake.id !== added.wakeId
+          && wake.reasons.includes("task-project-added"));
+        return continuation && store.getTaskWake(scopeTask.id, added.wakeId).inbox?.ack
+          && store.getTaskWake(scopeTask.id, continuation.id).inbox?.ack
+          && store.listEvents(scopeTask.id).some(event => {
+            if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
+            const fence = JSON.parse(event.payload.observation).fence;
+            return fence.nativeSessionId === beforeScope.nativeSessionId
+              && fence.receiptId?.startsWith(`notification:${scopeTask.id}/${continuation.id}/`);
+          });
+      }), "Self-add did not ACK and automatically continue the same conversation.");
+      const handled = readFileSync(join(sandbox, "scope-handled.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(handled.filter(row => row.wakeId === added.wakeId).length, 1);
+      assert.equal(handled.filter(row => row.wakeId === continuation.id).length, 1);
+      assert.ok(handled.every(row => row.threadId === beforeScope.nativeSessionId));
       const listing = json("task", "project", "list", scopeTask.id);
       const updatedBinding = json("task", "project", "update", scopeTask.id, scopeRefreshProject.id,
         "--base", "refs/heads/main", "--if-current", listing.writeGuard);

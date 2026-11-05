@@ -126,6 +126,7 @@ import {
   requireWorkItemAssignee,
   readDispatchContextRefs,
   runTaskCommand,
+  taskProjectSessionScopes,
   validateTaskArchiveRequest
 } from "./commands/taskCommands.js";
 import {
@@ -2035,6 +2036,7 @@ export async function main(): Promise<void> {
             : store.getReviewRound(requestedRound.taskId, requestedRound.id);
           let reviewOutput = "";
           let reviewData: unknown;
+          let workspaceRefresh: { sessions: ReturnType<typeof taskProjectSessionScopes>; instruction?: string } | undefined;
           const resumesReviewDispatch = (resolved[1] === "review" && resolved[2] === "request")
             || (resolved[1] === "work" && resolved[2] === "review")
             || (resolved[1] === "run" && resolved[2] === "retry");
@@ -2159,6 +2161,16 @@ export async function main(): Promise<void> {
               // The command's initial signal precedes local workspace
               // adoption. Wake the existing lifecycle checks after it commits.
               await runtime.notifyMailboxChanged({ kind: "task", taskId: task.id });
+              const sessions = taskProjectSessionScopes(store, task.id);
+              const instruction = sessions.some(session =>
+                session.scope === "refresh-required"
+                  || session.scope === "lifecycle-pending" && session.lifecycle === "upgrade-host")
+                ? "Affected Sessions must finish handling and ACK their already-claimed input, then end the current Turn. "
+                  + "Do not wait in that Turn for new Project access or complete the Task. "
+                  + "The Controller waits for quiescence, refreshes the Host and resumes the same conversation; "
+                  + "the queued task-project-added notification continues the Leader."
+                : undefined;
+              workspaceRefresh = { sessions, ...(instruction ? { instruction } : {}) };
             }
           }
           const controlData = result.data as { steer?: { code?: string }; interrupt?: { code?: string } } | undefined;
@@ -2167,9 +2179,11 @@ export async function main(): Promise<void> {
             emitControlFailure(result.output, failureCode, result.data);
             return;
           }
-          const commandData = reviewData === undefined
-            ? result.data
-            : { command: result.data, ...reviewData as object };
+          const commandData = workspaceRefresh !== undefined
+            ? { ...result.data as object, workspaceRefresh }
+            : reviewData === undefined
+              ? result.data
+              : { command: result.data, ...reviewData as object };
           const completionData = resolved[1] === "complete" ? {
             // Review dispatch may have advanced or failed after the command
             // prepared its Round. Report that observed stage, not preparation.
@@ -2182,7 +2196,11 @@ export async function main(): Promise<void> {
             baseFreshness: completionBaseFreshness ?? null,
             warnings: completionWarnings
           } : undefined;
-          emit(`${result.output}${reviewOutput}`, false, completionData === undefined
+          const workspaceOutput = workspaceRefresh === undefined ? ""
+            : workspaceRefresh.sessions.map(session =>
+              `${session.roleName}: ${session.scope}${session.detail ? ` — ${session.detail}` : ""}\n`).join("")
+              + (workspaceRefresh.instruction ? `${workspaceRefresh.instruction}\n` : "");
+          emit(`${result.output}${reviewOutput}${workspaceOutput}`, false, completionData === undefined
             ? commandData
             : { ...commandData as object, ...completionData });
           return;

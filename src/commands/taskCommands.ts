@@ -202,7 +202,7 @@ import { roleLaunchEventPayload, saveTaskRoleUpdate } from "../role/taskRoleUpda
 import {
   RUNTIME_SESSION_REPLACE_REQUIRED_REASON,
   runtimeLifecycleTarget,
-  hasRuntimeCleanupObligation
+  runtimeCleanupDisposition
 } from "../runtime/lifecycleReservation.js";
 import { currentManagedRuntime } from "../runtime/managedCaller.js";
 import { controlProviderRetry, providerRunRetry, providerRetryProjection, providerRetrySummary, renderProviderRetry } from "../runtime/providerRetry.js";
@@ -898,6 +898,22 @@ function assertCandidateReviewRoleIsolation(
   }
 }
 
+export function taskProjectSessionScopes(store: TaskWorkflowStore, taskId: string) {
+  return store.listRoles(taskId).flatMap(role => {
+    const set = store.getTaskRoleSessionSet(taskId, role.name);
+    const session = set?.sessions[set.activeAgentId];
+    if (!session || session.status !== "active") return [];
+    const owner = { scope: "task" as const, taskId, roleName: role.name };
+    const target = taskWorkspaceReconfiguration(store, owner, session.effective);
+    const lifecycle = runtimeCleanupDisposition(store.getWorkMailbox(runtimeLifecycleTarget(owner)));
+    return [{ roleName: role.name, nativeSessionId: session.nativeSessionId,
+      scope: target.unsupported ? "unsupported" : lifecycle !== null ? "lifecycle-pending"
+        : isDeepStrictEqual(target.effective, session.effective) ? "captured" : "refresh-required",
+      lifecycle,
+      ...(target.unsupported ? { detail: target.unsupported } : {}) }];
+  });
+}
+
 function taskProjectCommand(
   args: string[],
   store: TaskWorkflowStore,
@@ -922,18 +938,7 @@ function taskProjectCommand(
           ]),
           defaultTableWidth()
         )}\n`;
-    const sessions = store.listRoles(task.id).flatMap(role => {
-      const set = store.getTaskRoleSessionSet(task.id, role.name);
-      const session = set?.sessions[set.activeAgentId];
-      if (!session || session.status !== "active") return [];
-      const owner = { scope: "task" as const, taskId: task.id, roleName: role.name };
-      const target = taskWorkspaceReconfiguration(store, owner, session.effective);
-      const pending = hasRuntimeCleanupObligation(store.getWorkMailbox(runtimeLifecycleTarget(owner)));
-      return [{ roleName: role.name, nativeSessionId: session.nativeSessionId,
-        scope: target.unsupported ? "unsupported" : pending ? "lifecycle-pending"
-          : isDeepStrictEqual(target.effective, session.effective) ? "captured" : "refresh-required",
-        ...(target.unsupported ? { detail: target.unsupported } : {}) }];
-    });
+    const sessions = taskProjectSessionScopes(store, task.id);
     return output(rendered + `Write guard: ${taskProjectBindingsGuard(task)}\n`
       + sessions.map(session => `${session.roleName}: ${session.scope}${session.detail ? ` — ${session.detail}` : ""}\n`).join(""),
       { projectBindings: task.projectBindings, writeGuard: taskProjectBindingsGuard(task), sessions });
