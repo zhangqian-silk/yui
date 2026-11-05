@@ -205,6 +205,8 @@ import {
   runtimeCleanupDisposition
 } from "../runtime/lifecycleReservation.js";
 import { currentManagedRuntime } from "../runtime/managedCaller.js";
+import { continueWorkItem, retainedWorkItemAssignment } from "../execution/workItemContinuation.js";
+import { managedTaskSessionIdentity } from "../runtime/managedCaller.js";
 import { controlProviderRetry, providerRunRetry, providerRetryProjection, providerRetrySummary, renderProviderRetry } from "../runtime/providerRetry.js";
 import { taskRunRecovery } from "../controller/taskRunRecovery.js";
 import { currentProviderConversation, transferProviderAuthority } from "../runtime/providerRuntimeIdentity.js";
@@ -293,6 +295,7 @@ import {
   attachWorkItemExecutionGroup,
   createWorkItem,
   currentWorkItemCandidate,
+  governingWorkItemCandidate,
   currentWorkItemExecutionGroup,
   editWorkItemDefinition,
   prepareWorkItemDispatch,
@@ -3440,6 +3443,23 @@ function taskRoleSessionCommand(
       }
     );
   }
+  if (command === "resume") {
+    const usage = "yui task role session resume <task> <role>";
+    exactPositionals(rest, 2, usage);
+    const self = managedTaskSessionIdentity(options.environment);
+    const retained = retainedWorkItemAssignment(store, rest[0]!, rest[1]!);
+    if (self !== undefined) {
+      if (self.taskId !== retained.task.id || self.roleName !== retained.role.name
+        || self.nativeSessionId !== retained.session.nativeSessionId
+        || (self.workspace !== undefined && self.workspace !== retained.workspace.root)) {
+        // A Leader may also restore a retained worker, but a historical worker
+        // may never turn this into a general Session-management operation.
+        taskActor(store, options, retained.task.id);
+      }
+    } else taskActor(store, options, retained.task.id);
+    return { kind: "session-resume", taskId: retained.task.id, roleName: retained.role.name,
+      nativeSessionId: retained.session.nativeSessionId, output: "Restore the exact retained Host; do not send or replay input.\n" };
+  }
   if (command === "new") {
     const usage = "Task Role Session new usage: yui task role session new <task> <role> --reason <text>.";
     const parsed = parseTail(rest, new Set(["--reason"]), usage);
@@ -4022,11 +4042,8 @@ function transferTaskRoleAuthority(
       if (sessions === null || sessions === undefined || session === undefined || binding === null || binding === undefined || session.status === "ended") {
         throw new Error(`Task Role has no live managed Provider: ${task.id}/${role.name}.`);
       }
-      if (action === "takeover") {
-        const activeRun = tx.getActiveRun(task.id, role.name);
-        if (activeRun === null) {
-          throw new Error(`Task Role has no active managed AgentRun for takeover: ${task.id}/${role.name}.`);
-        }
+      if (action === "takeover" && tx.getActiveRun(task.id, role.name) === null) {
+        retainedWorkItemAssignment(tx, task.id, role.name);
       }
       if (action === "takeover"
         && binding.authority.owner !== "controller"
@@ -4096,6 +4113,21 @@ function taskWorkCommand(
   if (command === "update") return updateWork(rest, store, options);
   if (command === "scope") return output(updateWorkScope(rest, store, options));
   if (command === "dispatch") return output(dispatchWork(rest, store, options));
+  if (command === "continue") {
+    const usage = "yui task work continue <task>/<work> --request-id <id> --expected-turn <native-turn-id> --input <original-user-request>";
+    const parsed = parseTail(rest, new Set(["--request-id", "--expected-turn", "--input"]), usage);
+    exactPositionals(parsed.positionals, 1, usage);
+    const item = requireWorkItem(store, parsed.positionals[0], options);
+    const result = continueWorkItem(store, {
+      taskId: item.taskId, workItemId: item.id,
+      requestId: requiredOption(parsed.options, "--request-id"),
+      expectedTurn: requiredOption(parsed.options, "--expected-turn"),
+      input: requiredOption(parsed.options, "--input")
+    }, options.environment, clock(options));
+    return output(result.run.status === "active"
+      ? `Continue in this conversation as ${result.run.taskId}/${result.run.id}. Read its exact Run context before editing. No input was resent.\n`
+      : `Historical continuation receipt: ${result.run.taskId}/${result.run.id} (${result.run.status}). No new execution or write authority was granted; no input was resent.\n`, result);
+  }
   if (command === "synthesize") return synthesizeRuns(rest, "workItem", store, options);
   if (command === "review") {
     return rest[0] === "retry"
@@ -4476,10 +4508,8 @@ function updateWork(
       && run.executionGroupId === undefined
       && run.executionLaneId === undefined
       && run.sourceExecutionGroupId === sourceGroup?.id
-      && run.status === "completed"
-      && run.result !== undefined
     )).at(-1);
-    if (mainRun === undefined) {
+    if (mainRun === undefined || mainRun.status !== "completed") {
       throw usageError(
         sourceGroup === undefined
           ? `Work Item ${current.id} has no completed direct main AgentRun.`
@@ -4491,9 +4521,12 @@ function updateWork(
     }
     const configuredReview = tx.getReviewConfig();
     const taskFinalContract = taskFinalReviewContractForMutation(tx, task.id, options);
-    const candidatePolicy = taskFinalContract === undefined
-      ? workItemReviewConfig(configuredReview)
-      : taskFinalReviewConfig(taskFinalContract);
+    const repair = tx.listEventsByType(task.id, ["work.continued"])
+      .filter(event => event.payload.workItemId === current.id).at(-1);
+    const originalPolicy = repair === undefined ? undefined
+      : current.candidates.find(candidate => candidate.id === repair.payload.previousCandidateId)?.reviewPolicy;
+    const candidatePolicy = taskFinalContract !== undefined ? taskFinalReviewConfig(taskFinalContract)
+      : originalPolicy?.trigger === "always" ? originalPolicy : workItemReviewConfig(configuredReview);
     const projectDelivery = task.projectBindings.length > 0
       && current.writeProjectIds.length > 0;
     const developWorkspace = tx.getWorkItemWorkspace(task.id, current.id);
@@ -4931,6 +4964,10 @@ function acceptWork(
     const candidate = candidateId === undefined ? requireWorkItemCandidate(item)
       : item.candidates.find(({ id }) => id === candidateId);
     if (candidate === undefined) throw usageError(`Work Item Candidate not found: ${candidateId}.`);
+    if (tx.listEventsByType(task.id, ["work.continued"]).some(event => event.payload.workItemId === item.id)
+      && candidate.id !== item.currentCandidateId) {
+      throw usageError("A repaired WorkItem requires its new current Candidate; historical acceptance cannot cover this result.");
+    }
     // A Candidate's artifact references are commit-pinned (git:<commit>:<path>):
     // the commit self-certifies the frozen bytes, so they cannot drift and are
     // re-validated for shape whenever the Candidate is loaded. Their bytes are
@@ -5061,7 +5098,8 @@ function rejectWork(
     if (item.status === "retired" || item.candidates.length === 0) {
       throw usageError(`Work Item is not awaiting acceptance: ${item.id}/${item.status}.`);
     }
-    const candidate = requireWorkItemCandidate(item);
+    const candidate = governingWorkItemCandidate(item);
+    if (candidate === undefined) throw usageError(`Work Item has no governing Candidate: ${item.id}.`);
     const activeReview = activeReviewRoundForCandidate(tx, item, candidate);
     if (activeReview !== undefined) {
       throw usageError(`ReviewRound is still active: ${activeReview.id}/${activeReview.status}.`);

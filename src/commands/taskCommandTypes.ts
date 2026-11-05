@@ -45,6 +45,7 @@ import {
 
 export type TaskCommandExecution =
   | Readonly<{ kind: "output"; output: string; data?: unknown }>
+  | Readonly<{ kind: "session-resume"; taskId: string; roleName: string; nativeSessionId: string; output: string }>
   | Readonly<{
       kind: "session-stop";
       taskId: string;

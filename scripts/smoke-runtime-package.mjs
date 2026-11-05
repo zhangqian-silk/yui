@@ -89,6 +89,7 @@ try {
   const fakeCodex = new URL("../test/fixtures/fake-codex-cli.mjs", import.meta.url);
   writeFileSync(join(fakeBin, "codex"),
     `#!${process.execPath}\nprocess.env.YUI_FAKE_UNIQUE_THREADS = "1";\n`
+    + `process.env.YUI_FAKE_DIRECT_PORT_FILE = ${JSON.stringify(join(sandbox, "work-direct-"))} + (process.env.YUI_ROLE ?? "reader") + ".port";\n`
     + `process.env.YUI_FAKE_INPUT_LOG = ${JSON.stringify(join(sandbox, "skill-inputs.jsonl"))};\n`
     + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/scope-refresh-smoke-handler.mjs", import.meta.url).href)};\n`
     + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
@@ -623,6 +624,64 @@ try {
     };
     const desktopSkills = JSON.parse(runCli(cli, ["session", "skills", "--json"], desktopLeader)).data;
     assert.deepEqual(desktopSkills.skills.map(skill => skill.id), ["yui-runtime", "yui-leader"]);
+    if (profile === "full") {
+      json("task", "role", "add", task.id, "repair-worker", "--agent", "codex");
+      const work = json("task", "work", "create", task.id, "Retained original result",
+        "--role", "repair-worker").workItem;
+      const workRef = `${task.id}/${work.id}`;
+      json("task", "work", "dispatch", workRef);
+      await waitFor(() => observeFixture(store => store.listRuns(task.id)
+        .some(run => run.workItemId === work.id && run.status === "completed")),
+      "Original WorkItem did not complete through its Host.");
+      const originalRuns = observeFixture(store => store.listRuns(task.id).filter(run => run.workItemId === work.id));
+      assert.equal(originalRuns.length, 1);
+      json("task", "work", "update", workRef, "done", "--summary", "Original native result");
+      json("task", "work", "accept", workRef, "--summary", "Original acceptance");
+      const originalWork = json("task", "work", "show", workRef).workItem;
+      const originalSession = json("task", "role", "session", "inspect", task.id, "repair-worker").session;
+      json("task", "role", "session", "stop", task.id, "repair-worker", "--reason", "Retain repair identity");
+      const retainedWorkerEnv = { ...environment, CODEX_THREAD_ID: originalSession.nativeSessionId };
+      assert.equal(JSON.parse(runCli(cli, ["task", "work", "show", workRef, "--json"], retainedWorkerEnv))
+        .data.workItem.status, "accepted");
+      assert.deepEqual(JSON.parse(runCli(cli, ["session", "skills", "--json"], retainedWorkerEnv))
+        .data.skills.map(skill => skill.id), ["yui-runtime", "yui-worker"]);
+      json("task", "role", "session", "resume", task.id, "repair-worker");
+      const restored = json("task", "role", "session", "inspect", task.id, "repair-worker").session;
+      assert.equal(restored.nativeSessionId, originalSession.nativeSessionId);
+      assert.deepEqual(json("task", "work", "show", workRef).workItem, originalWork);
+      const workerEnv = { ...environment, CODEX_THREAD_ID: restored.nativeSessionId };
+      const portFile = join(sandbox, "work-direct-repair-worker.port");
+      const native = (method, id, status, text) => ({ method, params: {
+        threadId: restored.nativeSessionId,
+        turn: { id, status, items: [{ id: `${id}-result`, type: "agentMessage", text }] }
+      } });
+      await sendDirect(portFile, native("turn/started", "work-question", "inProgress", ""));
+      await sendDirect(portFile, native("turn/completed", "work-question", "completed", "Explanation only"));
+      await waitFor(() => observeFixture(store => store.getTaskRoleSessionSet(task.id, "repair-worker")
+        ?.providerBinding?.run?.status === "completed"), "Original-conversation question did not finish.");
+      assert.deepEqual(json("task", "work", "show", workRef).workItem, originalWork);
+      await sendDirect(portFile, native("turn/started", "work-repair", "inProgress", ""));
+      await waitFor(() => observeFixture(store => store.getTaskRoleSessionSet(task.id, "repair-worker")
+        ?.providerBinding?.run?.nativeTurnId === "work-repair"), "Direct repair Turn was not observed.");
+      const continueArgs = ["--json", "task", "work", "continue", workRef, "--request-id", "same-conversation-repair",
+        "--expected-turn", "work-repair", "--input", "Fix this same result within the original scope."];
+      const continued = JSON.parse(runCli(cli, continueArgs, workerEnv)).data;
+      assert.equal(JSON.parse(runCli(cli, continueArgs, workerEnv)).data.run.id, continued.run.id);
+      assert.notEqual(continued.run.id, originalRuns[0].id);
+      assert.equal(json("task", "work", "show", workRef).workItem.status, "open");
+      await sendDirect(portFile, native("turn/completed", "work-repair", "completed", "Repaired original result"));
+      await waitFor(() => observeFixture(store => store.getRun(task.id, continued.run.id)?.status === "completed"),
+        "Repair result did not bind to its fresh AgentRun.");
+      json("task", "work", "update", workRef, "done", "--summary", "New same-conversation result");
+      json("task", "work", "accept", workRef, "--summary", "Fresh acceptance of repaired result");
+      const repaired = json("task", "work", "show", workRef).workItem;
+      assert.equal(repaired.candidates.length, 2);
+      assert.deepEqual(repaired.candidates[0], originalWork.candidates[0]);
+      assert.notEqual(repaired.acceptedCandidateId, originalWork.acceptedCandidateId);
+      assert.equal(json("task", "role", "session", "inspect", task.id, "repair-worker").session.nativeSessionId,
+        originalSession.nativeSessionId);
+      console.log("Original WorkItem conversation, stopped Host restoration and separately accepted repair passed.");
+    }
     acknowledgeWindows();
     json("task", "complete", task.id, "--summary", "The deterministic Provider result is accepted.");
     assert.equal(json("task", "show", task.id).task.status, "completed");

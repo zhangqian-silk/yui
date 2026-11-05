@@ -3,6 +3,7 @@ import { ControllerDiagnosticJournal } from "./diagnosticJournal.js";
 import { reconcileMessageHealth, type MessageHealthSnapshot } from "./messageHealth.js";
 import { monotonicMilliseconds } from "../core/controllerTelemetry.js";
 import { prepareNativeHostSteer } from "./nativeHostInput.js";
+import { retainedWorkItemAssignment } from "../execution/workItemContinuation.js";
 import { archiveLeaderTask } from "../task/leaderArchive.js";
 import { TaskWorkspaceCoordinator } from "../repository/taskWorkspaceCoordinator.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
@@ -1254,14 +1255,18 @@ export function createRuntimeLifecycleDispatcher(
     const activeRun = request.scope === "task"
       ? store.getActiveRun(request.taskId, request.roleName)
       : null;
-    if (request.scope === "task" && activeRun === null) {
-      throw applicationError(
-        "INVALID_PARAMS",
-        "Task Role runtime attachment requires an admitted active Turn; it cannot create an empty Provider Conversation."
-      );
+    const retained = request.scope === "task" && activeRun === null
+      ? retainedWorkItemAssignment(store, request.taskId, request.roleName) : undefined;
+    if (request.scope === "task" && request.expectedNativeSessionId !== undefined
+      && retained?.session.nativeSessionId !== request.expectedNativeSessionId) {
+      throw new Error("Retained native conversation changed before Host restoration.");
+    }
+    if (retained?.binding.run != null
+      && ["submitting", "accepted", "delivery-unknown"].includes(retained.binding.run.status)) {
+      throw new Error("Original native input is unsettled; inspect its exact effects before restoring the Host.");
     }
     if (request.scope === "task"
-      && (task === null || !runPurposeAdmitsTaskState(activeRun!.purpose, task))) {
+      && (task === null || !runPurposeAdmitsTaskState(activeRun?.purpose ?? "execution", task))) {
       throw applicationError(
         "INVALID_PARAMS",
         task === null
@@ -1314,7 +1319,7 @@ export function createRuntimeLifecycleDispatcher(
       );
     }
     const managedWorkspace = request.scope === "task"
-      ? activeRun?.workspace
+      ? retained?.workspace ?? activeRun?.workspace
         ?? currentDesiredManagedWorkspace(store, request.taskId, request.roleName)
       : undefined;
     assertRoleEnabled(role);
@@ -1326,7 +1331,7 @@ export function createRuntimeLifecycleDispatcher(
     const sessions = request.scope === "task"
       ? store.getTaskRoleSessionSet(request.taskId, request.roleName)
       : store.getGlobalRoleSessionSet(request.roleName);
-    const effective = activeRun?.effective
+    const effective = retained?.session.effective ?? activeRun?.effective
       ?? activeLiveRoleAgentSession(sessions)?.effective
       ?? resolveRuntimeDesiredEffective(store, request, role);
     const binding = role.agentBindings[effective.agentId];
@@ -1471,10 +1476,16 @@ function assertRuntimeLaunchRequestCurrent(
   const sessions = request.owner.scope === "task"
     ? store.getTaskRoleSessionSet(request.owner.taskId, request.owner.roleName)
     : store.getGlobalRoleSessionSet(request.owner.roleName);
-  const expectedEffective = request.owner.scope === "task" && request.runId !== undefined
+  const retained = request.owner.scope === "task" && request.runId === undefined && role.name !== "leader"
+    ? retainedWorkItemAssignment(store, request.owner.taskId, request.owner.roleName) : undefined;
+  if (retained?.binding.run != null
+    && ["submitting", "accepted", "delivery-unknown"].includes(retained.binding.run.status)) {
+    throw new Error("Original native input changed while restoring the Host; no input was replayed.");
+  }
+  const expectedEffective = retained?.session.effective ?? (request.owner.scope === "task" && request.runId !== undefined
     ? activeRun?.effective
     : activeLiveRoleAgentSession(sessions)?.effective
-      ?? currentDesiredEffective(store, request, role);
+      ?? currentDesiredEffective(store, request, role));
   if (
     expectedEffective === undefined
     || !isDeepStrictEqual(expectedEffective, request.effective)
@@ -1485,7 +1496,7 @@ function assertRuntimeLaunchRequestCurrent(
     throw new Error(`Role launch state changed: ${request.owner.roleName}.`);
   }
   if (request.owner.scope === "task" && request.managedWorkspace !== undefined) {
-    const expectedWorkspace = activeRun?.workspace
+    const expectedWorkspace = retained?.workspace ?? activeRun?.workspace
       ?? currentDesiredManagedWorkspace(
         store,
         request.owner.taskId,
@@ -1582,6 +1593,7 @@ type EnsureRoleSessionRequest =
       scope: "task";
       taskId: string;
       roleName: string;
+      expectedNativeSessionId?: string;
       environment?: Readonly<Record<string, string>>;
     }>
   | Readonly<{
@@ -1605,11 +1617,15 @@ function parseEnsureRoleSession(params: JsonValue): EnsureRoleSessionRequest {
       ...(environment === undefined ? {} : { environment })
     };
   }
-  if (value.scope === "task" && Object.keys(value).length === 3 + expectedFields) {
+  if (value.scope === "task" && Object.keys(value).length === 3 + expectedFields
+    + (value.expectedNativeSessionId === undefined ? 0 : 1)) {
     return {
       scope: "task",
       taskId: requiredParam(value.taskId),
       roleName,
+      ...(value.expectedNativeSessionId === undefined ? {} : {
+        expectedNativeSessionId: requiredParam(value.expectedNativeSessionId)
+      }),
       ...(environment === undefined ? {} : { environment })
     };
   }

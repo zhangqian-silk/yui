@@ -39,7 +39,7 @@ import { operatorOfflineCommand, isTaskReadCommand } from "./cli/managedDiagnost
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
 import { requireManagedGlobalCaller, requireManagedGlobalReader, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
 import { assertJobAgentCommand } from "./job/agentRoleScope.js";
-import { requireManagedCaller } from "./runtime/sessionCaller.js";
+import { requireManagedCaller, sessionCallerEnvironment } from "./runtime/sessionCaller.js";
 import { maintenanceCallerEnvironment } from "./storage/maintenanceCaller.js";
 import { checkCurrentSkills, SKILL_REUSE_RULE } from "./context/currentSkills.js";
 import { roleSkillIds } from "./context/roleSessionContext.js";
@@ -156,6 +156,7 @@ import { checkSessionSkills, readSessionBootstrapManifest } from "./context/sess
 import { boundedDocument, readOptions } from "./output/boundedRead.js";
 import {
   assertFileTaskControllerStorageCompatible,
+  callFileTaskController,
   ensureFileTaskController,
   FileTaskWorkflowRuntime,
   refreshRunningFileTaskControllerConfiguration,
@@ -1077,7 +1078,11 @@ export async function main(): Promise<void> {
         const parsed = readOptions(resolved.slice(2), ["--cursor"]);
         if (parsed.positionals.length !== 0) throw usageError("Usage: yui session skills [--cursor <cursor>] --json");
         const path = process.env.YUI_SESSION_MANIFEST;
-        const caller = requireManagedCaller(store, process.env);
+        const caller = process.env.YUI_SESSION_SCOPE === "task" ? (() => {
+          const env = sessionCallerEnvironment(store, process.env, true);
+          const reader = resolveManagedTaskReader(store, env)!;
+          return { scope: "task" as const, ...reader, agentId: env.YUI_AGENT_ID! };
+        })() : requireManagedCaller(store, process.env);
         const set = caller.scope === "global" ? store.getGlobalRoleSessionSet(caller.roleName)
           : store.getTaskRoleSessionSet(caller.taskId, caller.roleName);
         const effective = set!.sessions[caller.agentId]!.effective;
@@ -2197,7 +2202,7 @@ export async function main(): Promise<void> {
             : { ...commandData as object, ...completionData });
           return;
         }
-        if (jsonOutput && result.kind !== "session-stop"
+        if (jsonOutput && result.kind !== "session-stop" && result.kind !== "session-resume"
           && result.kind !== "input-steer" && result.kind !== "input-interrupt") {
           throw usageError("Task Role view/takeover requires an interactive terminal.");
         }
@@ -2225,6 +2230,18 @@ export async function main(): Promise<void> {
             stopped: true,
             reason: result.reason
           });
+          return;
+        }
+        if (result.kind === "session-resume") {
+          await callFileTaskController(home, "runtime.ensure-role-session", {
+            scope: "task", taskId: result.taskId, roleName: result.roleName,
+            expectedNativeSessionId: result.nativeSessionId
+          });
+          const resumed = store.getTaskRoleSessionSet(result.taskId, result.roleName);
+          if (resumed?.sessions[resumed.activeAgentId]?.nativeSessionId !== result.nativeSessionId) {
+            throw runtimeError("Retained conversation changed during Host restoration.");
+          }
+          emit(`Restored Host for ${result.taskId}/${result.roleName} in the same conversation; no input was resent.\n`, false, result);
           return;
         }
         if (result.kind === "view") {
@@ -2492,6 +2509,10 @@ type ManagedTaskControlPlanePreflight = Readonly<{
 }>;
 
 async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPlanePreflight> {
+  const retainedTaskEntry = args[0] === "session" && args[1] === "skills"
+    || args[0] === "task" && (
+      args[1] === "work" && args[2] === "continue"
+      || args[1] === "role" && args[2] === "session" && args[3] === "resume");
   if (taskFinalReviewInvocation.error !== undefined) {
     throw new Error(taskFinalReviewInvocation.error);
   }
@@ -2517,7 +2538,8 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
   // Home only, and never creates a Session or mutates its registration.
   if ((process.env.CODEX_THREAD_ID !== undefined || process.env.YUI_NATIVE_SESSION_ID !== undefined)
     && (process.env.YUI_SESSION_SCOPE === undefined || process.env.YUI_ROLE === undefined)) {
-    Object.assign(process.env, maintenanceCallerEnvironment(resolveYuiHome(process.env), process.env, false));
+    Object.assign(process.env, maintenanceCallerEnvironment(resolveYuiHome(process.env), process.env,
+      false, retainedTaskEntry || isTaskReadCommand(args)));
   }
   if (process.env.YUI_SESSION_SCOPE !== "task") {
     if (process.env.YUI_SESSION_SCOPE === "global") {
@@ -2537,7 +2559,7 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
     && ["agent-host", "session-notify", "runtime-hook"].includes(args[1] ?? "");
   const home = resolveYuiHome(process.env);
   assertManagedSessionManifest(home, "task");
-  const diagnostic = isTaskReadCommand(args);
+  const diagnostic = isTaskReadCommand(args) || (args[0] === "session" && args[1] === "skills");
   // One gate for every managed command: the current CLI, Home, and Controller
   // must agree. Internal callbacks must still be able to append their immutable
   // fact while the Controller is offline.
@@ -2554,7 +2576,7 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
   // command needing it reads, never a fact frozen into a process environment.
   const runtime = internalCallback
     ? undefined
-    : diagnostic
+    : diagnostic || retainedTaskEntry
       ? resolveManagedTaskReader(verifiedStore, process.env)
       : requireManagedTaskCaller(verifiedStore, process.env);
   const request = taskFinalReviewInvocation.request;

@@ -100,6 +100,17 @@ physical stop evidence: cleanup also rechecks the recorded runner generation
 and physical workspace/log/runtime references. When those are proven absent,
 the acknowledged unknown result remains historical evidence, not a permanent
 physical-cleanup blocker.
+
+WorkItem execution completion and acceptance do not release its original
+conversation or Develop workspace. Retain them for same-scope repair unless
+there is an explicit resource-release decision or Task archive. Runtime-only
+cleanup stops processes, not business ownership. Full WorkItem cleanup records
+workspace disposition and ends direct repair eligibility; report that effect
+before choosing release. Do not routinely perform full cleanup just because
+you accepted a result. A `work.continued` event withdraws the old Candidate's
+current authority without erasing its Review, acceptance or Integration
+history. Inspect the new exact Run and Candidate; old evidence cannot accept
+the repaired result.
 The same physical checks apply to every executed terminal Job, including a
 successful one: surviving child processes are not stopped by a result receipt.
 Integration resource preflight includes runtime ownership and renamed cleanup

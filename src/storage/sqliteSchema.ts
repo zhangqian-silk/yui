@@ -341,6 +341,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Optional local/remote Git budgets in config. Absence uses runtime defaults;
   // preserve every existing payload byte rather than persisting defaults.
   sql: ""
+}, {
+  fromVersion: "1.29",
+  toVersion: "1.30",
+  name: "workitem-native-continuation",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Additive continuation receipts and accepted native Turn -> Run correlation.
+  // Never infer historical repair intent, reopen work, or replay native input.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

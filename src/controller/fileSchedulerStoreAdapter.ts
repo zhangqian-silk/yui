@@ -1741,7 +1741,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       // before the Provider write; provider-visible userMessage items alone
       // are NOT proof of human authorship (managed prompts use those too).
       // This shares the exact writer/session admission and its transaction.
-      if ((input.authorityOwner === "human" || input.attemptId.startsWith(`human:${input.holderId}:`)) && input.roleName === "leader"
+      if ((input.authorityOwner === "human" || input.attemptId.startsWith(`human:${input.holderId}:`))
         && input.runId === undefined && input.boundedText !== undefined) {
         const prior = store.listEventsByType(input.taskId, ["message.native-user-input"]).find(event =>
           event.payload.attemptId === input.attemptId);
@@ -1757,6 +1757,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
           store.saveEvent(input.taskId, createTaskEvent(store.nextEventId(input.taskId), input.taskId,
             "message.native-user-input", {
               messageId: message.id, attemptId: input.attemptId, nativeSessionId: input.nativeSessionId,
+              roleName: input.roleName,
               authorityEpoch: String(input.authorityEpoch), holderId: input.holderId
             }, input.now));
           // No mailbox enqueue: this very input is already being delivered.
@@ -4697,11 +4698,16 @@ function resolveTerminalExecution(store: TaskStore, input: TerminalExecutionInpu
   }
   // Old results use immutable acceptance/terminal evidence, not today's Role
   // config, Session status or active AgentRun pointer.
-  const matches = evidence.filter((event) => event.fence.roleName === input.roleName
+  const matchingEvidence = evidence.filter((event) => event.fence.roleName === input.roleName
       && event.fence.agentId === input.agentId
       && event.fence.nativeSessionId === input.nativeSessionId
       && identityMatches(event.fence.receiptId, event.fence.nativeTurnId)
       && (input.runId === undefined || event.fence.runId === input.runId));
+  // A same-conversation WorkItem continuation associates an already accepted
+  // runless Turn with a Run. Earlier runless observations remain history,
+  // not a competing owner; conflicting nonempty Run identities still fail.
+  const assigned = matchingEvidence.filter(event => event.fence.runId !== undefined);
+  const matches = assigned.length > 0 ? assigned : matchingEvidence;
   const accepted = matches[0];
   if (accepted === undefined || accepted.fence.receiptId === undefined) return null;
   if (matches.some((event) => event.fence.runId !== accepted.fence.runId

@@ -18,7 +18,7 @@ import { findNativeSessionSets } from "./nativeSessionLookup.js";
  * current storage, Session and domain checks. No implicit migration or setup.
  */
 export function maintenanceCallerEnvironment(
-  home: string, env: NodeJS.ProcessEnv, operatorOnly = true
+  home: string, env: NodeJS.ProcessEnv, operatorOnly = true, allowRetainedTask = false
 ): NodeJS.ProcessEnv {
   if (!hasManagedIdentity(env) && env.CODEX_THREAD_ID === undefined) return env;
   // A genuinely new Home has no managed registrations. Do not initialize it
@@ -48,7 +48,7 @@ export function maintenanceCallerEnvironment(
           read<GlobalRoleSessionSet>("global_role_session_sets", "name=?", [name]),
         findNativeSessionSets: (nativeIds: readonly string[]) => findNativeSessionSets(db, nativeIds)
       };
-      const current = sessionCallerEnvironment(registry, env);
+      const current = sessionCallerEnvironment(registry, env, allowRetainedTask && !operatorOnly);
       if (!hasManagedIdentity(current)) return current;
       if (current.YUI_SESSION_SCOPE !== "global" || current.YUI_ROLE !== "operator") {
         if (!operatorOnly) return current; // Execution retains its normal scoped checks.
