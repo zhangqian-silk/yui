@@ -977,6 +977,9 @@ function workspaceScopeEnvironment(
   environment: Readonly<Record<string, string>>,
   effective: EffectiveLaunchSnapshot
 ): Readonly<Record<string, string>> {
+  // Launch-time diagnostics only, never authority or a live project catalog.
+  // Native child environments cannot be rewritten. Current scope is exposed
+  // by task project list and enforced against the current Session in Store.
   const entries = effective.workspace.entries.map(entry => ({
     ...entry,
     access: entry.access === "write" && effective.writeProjectIds.includes(entry.projectId)

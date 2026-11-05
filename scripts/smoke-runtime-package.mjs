@@ -740,45 +740,59 @@ try {
     phase("task/session/archive");
 
     if (profile === "full") {
-      // The active Leader adds its own first Project, ACKs and yields. No
-      // external input may be needed to break the drain/continuation cycle.
+      // The active Leader adds and uses its first Project within the same Turn.
+      // Neither the Host nor Provider connection may be replaced or interrupted.
       const scopeTask = json("task", "create", "scope refresh fixture").task;
+      const scopeTmuxSession = `yui-${tmuxServer.slice(4, 16)}-${scopeTask.id}`;
+      const scopeHostPids = () => tmux("list-panes", "-t", `=${scopeTmuxSession}:`, "-F", "#{pane_pid}").trim();
       writeFileSync(join(sandbox, "scope-refresh.json"), JSON.stringify({
-        taskId: scopeTask.id, projectId: scopeRefreshProject.id, cli, root
+        taskId: scopeTask.id, projectId: scopeRefreshProject.id, cli, root,
+        tmuxServer, tmuxSession: scopeTmuxSession
       }));
-      json("task", "activation", "request", scopeTask.id, "--request-id", "scope-start", "--environment", "scratch");
+      // This contract attaches children of the captured Task-main root. A
+      // separately adopted scratch/local cwd is not that execution boundary.
+      json("task", "activation", "request", scopeTask.id, "--request-id", "scope-start", "--environment", "empty");
       const scopeEvents = () => observeFixture(store => store.listEvents(scopeTask.id));
       await waitFor(() => existsSync(join(sandbox, "scope-added.json")),
-        "Active Leader did not return from its own project add.");
+        "Active Leader did not return from its own project add.",
+        () => JSON.stringify(scopeEvents().slice(-10)));
       const { inspectAgentHost: inspectScopeHost } =
         await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
       const scopeOwner = { home: yuiHome, scope: "task", taskId: scopeTask.id, roleName: "leader" };
       const added = JSON.parse(readFileSync(join(sandbox, "scope-added.json"), "utf8"));
       const beforeScope = added.before;
-      assert.ok(added.result.workspaceRefresh.instruction);
-      await waitFor(() => observeFixture(store =>
-        store.getWorkMailbox({ kind: "role-runtime", taskId: scopeTask.id, roleName: "leader" })?.pending),
-      "Self-add did not reserve Host refresh while the original Turn was busy.");
+      assert.equal(scopeHostPids(), added.hostPids, "Host PID must survive both self-issued configuration commands.");
+      assert.equal(added.result.workspaceConfiguration.mode, "in-place");
+      assert.equal(observeFixture(store =>
+        store.getWorkMailbox({ kind: "role-runtime", taskId: scopeTask.id, roleName: "leader" })), null,
+      "A project configuration change must not reserve Host lifecycle work.");
       const heldHost = await inspectScopeHost(scopeOwner);
       assert.equal(heldHost.processInstanceId, beforeScope.processInstanceId);
       assert.equal(heldHost.nativeSessionId, beforeScope.nativeSessionId);
-      assert.equal(heldHost.nativeTurnId, added.turnId, "Drain must not interrupt the caller's active Turn.");
+      assert.equal(heldHost.nativeTurnId, added.turnId, "Configuration adoption must not interrupt the active Turn.");
       assert.deepEqual(observeFixture(store => {
         const set = store.getTaskRoleSessionSet(scopeTask.id, "leader");
         return set.sessions[set.activeAgentId].effective.writeProjectIds;
-      }), [], "In-flight Turn must not gain the new write grant.");
-      assert.equal(scopeEvents().some(event => event.type === "runtime.workspace-scope-adopted"), false);
+      }), [scopeRefreshProject.id], "New Project authority is immediately available in the same Turn.");
+      const newProjectPath = added.result.workspaceConfiguration.sessions
+        .find(session => session.roleName === "leader").workspace.entries
+        .find(entry => entry.projectId === scopeRefreshProject.id).path;
+      assert.equal(readFileSync(join(newProjectPath, "hot-config-proof.txt"), "utf8"),
+        `${beforeScope.nativeSessionId}/${added.turnId}`);
+      rmSync(join(newProjectPath, "hot-config-proof.txt"));
+      assert.ok(scopeEvents().some(event => event.type === "runtime.workspace-scope-adopted"
+        && event.payload.hostPreserved === "true"));
       writeFileSync(join(sandbox, "scope-yield"), "yield");
       await waitFor(() => observeFixture(store => {
         const set = store.getTaskRoleSessionSet(scopeTask.id, "leader");
         return set?.sessions[set.activeAgentId]?.effective.writeProjectIds.includes(scopeRefreshProject.id)
           && !store.getWorkMailbox({ kind: "role-runtime", taskId: scopeTask.id, roleName: "leader" })?.pending;
-      }), "Task-main scope did not restore through the existing Host lifecycle lane.",
+      }), "Task-main configuration was not adopted in place.",
       () => JSON.stringify({ projects: json("task", "project", "list", scopeTask.id),
         hosts: runCli(cli, ["update", "--hosts-status"], environment), events: scopeEvents().slice(-12) }));
       const afterScope = await inspectScopeHost(scopeOwner);
       assert.equal(afterScope.nativeSessionId, beforeScope.nativeSessionId);
-      assert.notEqual(afterScope.processInstanceId, beforeScope.processInstanceId);
+      assert.equal(afterScope.processInstanceId, beforeScope.processInstanceId);
       let continuation;
       await waitFor(() => observeFixture(store => {
         continuation ??= store.listTaskWakes(scopeTask.id).find(wake => wake.id !== added.wakeId
@@ -796,9 +810,10 @@ try {
       assert.equal(handled.filter(row => row.wakeId === added.wakeId).length, 1);
       assert.equal(handled.filter(row => row.wakeId === continuation.id).length, 1);
       assert.ok(handled.every(row => row.threadId === beforeScope.nativeSessionId));
+      assert.equal((await inspectScopeHost(scopeOwner)).processInstanceId, beforeScope.processInstanceId);
       const listing = json("task", "project", "list", scopeTask.id);
       const updatedBinding = json("task", "project", "update", scopeTask.id, scopeRefreshProject.id,
-        "--base", "refs/heads/main", "--if-current", listing.writeGuard);
+        "--base", "main", "--if-current", listing.writeGuard);
       assert.equal(updatedBinding.change, "reference-only");
       assert.equal(updatedBinding.workspaceMigrated, false);
       assert.equal((await inspectScopeHost(scopeOwner)).processInstanceId, afterScope.processInstanceId);
@@ -816,7 +831,10 @@ try {
         });
       }),
       "Original conversation did not handle post-refresh input.");
-      assert.equal((await inspectScopeHost(scopeOwner)).nativeSessionId, beforeScope.nativeSessionId);
+      const finalScopeHost = await inspectScopeHost(scopeOwner);
+      assert.equal(finalScopeHost.nativeSessionId, beforeScope.nativeSessionId);
+      assert.equal(finalScopeHost.processInstanceId, beforeScope.processInstanceId);
+      assert.equal(scopeHostPids(), added.hostPids);
       assert.ok(json("task", "wake", "show", scopeTask.id, scopeWake.id).wake.refs
         .some(ref => ref.id === scopeInput.message.id));
       const nativeInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);

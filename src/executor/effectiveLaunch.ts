@@ -309,8 +309,8 @@ export function roleSessionMayContinue(
   );
 }
 
-/** A scope-only difference may be serviced by the fenced Host lifecycle lane.
- * This classification is backpressure, not permission to resume or adopt it. */
+/** A scope-only difference waits for atomic workspace configuration adoption.
+ * This classification never authorizes Host replacement or input replay. */
 export function roleSessionNeedsWorkspaceRefresh(
   existing: EffectiveLaunchSnapshot,
   desired: EffectiveLaunchSnapshot

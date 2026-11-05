@@ -908,8 +908,10 @@ export function taskProjectSessionScopes(store: TaskWorkflowStore, taskId: strin
     const lifecycle = runtimeCleanupDisposition(store.getWorkMailbox(runtimeLifecycleTarget(owner)));
     return [{ roleName: role.name, nativeSessionId: session.nativeSessionId,
       scope: target.unsupported ? "unsupported" : lifecycle !== null ? "lifecycle-pending"
-        : isDeepStrictEqual(target.effective, session.effective) ? "captured" : "refresh-required",
+        : isDeepStrictEqual(target.effective, session.effective) ? "captured" : "configuration-pending",
       lifecycle,
+      workspace: session.effective.workspace,
+      writableProjectIds: session.effective.writeProjectIds,
       ...(target.unsupported ? { detail: target.unsupported } : {}) }];
   });
 }

@@ -1,9 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
+import { basename, join, resolve } from "node:path";
 import { createTaskEvent } from "../event/taskEvent.js";
 import { validateRoleSessionSet } from "../executor/agentExecutor.js";
 import { roleSessionMayContinue, validateEffectiveLaunchSnapshot,
   type EffectiveLaunchSnapshot } from "../executor/effectiveLaunch.js";
-import type { RuntimeRoleOwner } from "../runtime/lifecycleReservation.js";
+import { hasRuntimeCleanupObligation, runtimeLifecycleTarget, type RuntimeRoleOwner } from "../runtime/lifecycleReservation.js";
 import type { TaskStore } from "../storage/taskStore.js";
 
 /** Derive only Task-main physical scope. Never adopt Role/model/permission
@@ -35,57 +36,58 @@ export function taskWorkspaceReconfiguration(
       : effective.writeProjectIds
   });
   if (roleSessionMayContinue(effective, desired)) return { effective };
-  // Initial support is deliberately narrow: Codex thread/resume receives cwd
-  // and thread-scoped sandbox options. ACP/other adapters need their own proof.
+  // This changes Yui's project configuration, not the Provider's cwd, sandbox,
+  // native options or connection. Existing paths/grants must remain identical;
+  // additions must be direct children of the already captured native root.
   const sameExistingPaths = effective.workspace.entries.every(previous => {
     const next = main.entries.find(entry => entry.projectId === previous.projectId);
     return next && next.path === previous.path && next.directory === previous.directory
       && next.branch === previous.branch && next.access === previous.access;
   });
-  if (effective.adapterId !== "codex" || !sameExistingPaths) {
+  const root = resolve(effective.workspace.root);
+  const contained = main.entries.every(entry => entry.directory !== "." && entry.directory !== ".."
+    && basename(entry.directory) === entry.directory
+    && entry.path === join(root, entry.directory));
+  if (!sameExistingPaths || !contained
+    || effective.executionEnvironment !== undefined && effective.executionEnvironment.directory.path !== root) {
     return { effective: desired, unsupported:
-      `Cannot preserve ${effective.adapterId} conversation for this Task-main scope change: `
-      + (effective.adapterId !== "codex" ? "adapter scope-resume capability is not established."
-        : "an existing path, branch or access grant changed.")
-      + " Original Session, permissions and inputs are retained. Inspect exact resources; "
-      + "explicit session new is a bounded fallback, never an automatic replay." };
+      "Cannot hot-adopt this Task-main configuration: an existing path, branch or access grant changed, "
+      + "or the new Project is outside the captured native root. "
+      + "Original Host, Session and inputs are retained; no automatic restart or interruption." };
   }
   return { effective: desired };
 }
 
-/** The caller owns the existing lifecycle lane and has persisted its drain
- * receipt and observed physical Host exit. Nothing here submits an input. */
-export function adoptDrainedTaskWorkspace(
-  store: TaskStore, owner: RuntimeRoleOwner, nativeSessionId: string,
-  effective: EffectiveLaunchSnapshot, assertCurrent: () => void, now = new Date()
+/** Called in the workspace adoption transaction, before any observer can see a
+ * scope mismatch. No Provider call, Turn mutation or lifecycle signal is needed.
+ * Runs retain their frozen evidence; live Session authority is read from Store. */
+export function adoptTaskWorkspaceConfiguration(
+  store: TaskStore, taskId: string, now = new Date()
 ): void {
-  if (owner.scope !== "task") throw new Error("Only Task-main scope can be adopted.");
   store.transaction(tx => {
-    assertCurrent();
-    const set = tx.getTaskRoleSessionSet(owner.taskId, owner.roleName);
-    const session = set?.sessions[set.activeAgentId];
-    if (!set || !session || session.nativeSessionId !== nativeSessionId
-      || tx.getActiveRun(owner.taskId, owner.roleName) !== null) {
-      throw new Error("Workspace refresh must wait for the exact Role's durable terminal.");
+    for (const role of tx.listRoles(taskId)) {
+      const owner = { scope: "task" as const, taskId, roleName: role.name };
+      const set = tx.getTaskRoleSessionSet(taskId, role.name);
+      const session = set?.sessions[set.activeAgentId];
+      if (!set || !session || session.status !== "active") continue;
+      const target = taskWorkspaceReconfiguration(tx, owner, session.effective);
+      if (target.unsupported) throw new Error(target.unsupported);
+      const effective = target.effective;
+      if (isDeepStrictEqual(effective, session.effective)) continue;
+      if (hasRuntimeCleanupObligation(tx.getWorkMailbox(runtimeLifecycleTarget(owner)))) {
+        throw new Error("An existing runtime lifecycle operation owns this Session; configuration was not adopted.");
+      }
+      const timestamp = now.toISOString();
+      tx.saveTaskRoleSessionSet(validateRoleSessionSet({
+        ...set, updatedAt: timestamp, sessions: { ...set.sessions,
+          [set.activeAgentId]: { ...session, effective, updatedAt: timestamp } }
+      }));
+      tx.saveEvent(taskId, createTaskEvent(tx.nextEventId(taskId), taskId,
+        "runtime.workspace-scope-adopted", { roleName: role.name, nativeSessionId: session.nativeSessionId,
+          previous: JSON.stringify(session.effective.workspace), current: JSON.stringify(effective.workspace),
+          previousWriteProjectIds: JSON.stringify(session.effective.writeProjectIds),
+          writeProjectIds: JSON.stringify(effective.writeProjectIds), conversationPreserved: "true",
+          hostPreserved: "true", adoption: "configuration-only" }, now));
     }
-    const target = taskWorkspaceReconfiguration(tx, owner, session.effective);
-    if (target.unsupported || !isDeepStrictEqual(target.effective, effective)) {
-      throw new Error("Task-main scope changed after Host drain.");
-    }
-    const binding = set.providerBinding;
-    if (binding && (binding.authority.owner !== "controller"
-      || binding.run && ["submitting", "accepted", "delivery-unknown"].includes(binding.run.status))) {
-      throw new Error("Workspace refresh cannot adopt unknown or externally owned native execution.");
-    }
-    const timestamp = now.toISOString();
-    tx.saveTaskRoleSessionSet(validateRoleSessionSet({
-      ...set, updatedAt: timestamp, sessions: { ...set.sessions,
-        [set.activeAgentId]: { ...session, effective, updatedAt: timestamp } }
-    }));
-    tx.saveEvent(owner.taskId, createTaskEvent(tx.nextEventId(owner.taskId), owner.taskId,
-      "runtime.workspace-scope-adopted", { roleName: owner.roleName, nativeSessionId,
-        previous: JSON.stringify(session.effective.workspace), current: JSON.stringify(effective.workspace),
-        previousWriteProjectIds: JSON.stringify(session.effective.writeProjectIds),
-        writeProjectIds: JSON.stringify(effective.writeProjectIds), conversationPreserved: "true" }, now));
   });
 }

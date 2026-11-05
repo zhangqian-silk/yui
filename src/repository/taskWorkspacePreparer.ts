@@ -1,3 +1,4 @@
+import { adoptTaskWorkspaceConfiguration } from "../executor/taskWorkspaceRefresh.js";
 import {
   lstat,
   mkdir,
@@ -994,15 +995,9 @@ export class FileTaskWorkspacePreparer implements TaskWorkspacePreparer {
               retireWorkspaceBoundSession(tx, task.id, role.name, timestamp);
             }
             tx.saveRole(task.id, updateRole(role, { workspace: target }, timestamp));
-          } else if (target === root && mainWorkspaceChanged) {
-            // Workspace adoption is not native Session replacement. The Host
-            // lifecycle coordinator drains only affected Task-main attachments
-            // and adopts the new scope before restoring the exact conversation.
-            // Until then its captured permissions remain unchanged.
-            tx.saveEvent(task.id, createTaskEvent(tx.nextEventId(task.id), task.id,
-              "runtime.workspace-refresh-required", { roleName: role.name, workspace: root }, timestamp));
           }
         }
+        if (mainWorkspaceChanged) adoptTaskWorkspaceConfiguration(tx, task.id, timestamp);
         if (activate) recordTaskActivation(tx, latest, persistedTask, timestamp, actor);
         return persistedTask;
       });

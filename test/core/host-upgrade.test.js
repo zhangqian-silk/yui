@@ -100,37 +100,18 @@ function fixture() {
     setSnapshot: change => { snapshot = { ...snapshot, ...change }; } };
 }
 
-test("same-generation workspace refresh drains before adopting scope, resumes identity and never replays input", async () => {
+test("same-generation configuration changes never request Host drain or replacement", async () => {
   const f = fixture();
   f.setSnapshot({ hostImplementation: f.target, endpointImplementation: f.ports.endpoint() });
   const old = structuredClone(f.effective);
   const desired = { ...old, workspace: { root: "/fixture", entries: ["new-project"] } };
-  let adoptions = 0;
-  f.ports.reconfiguration = () => ({ effective: desired });
-  f.ports.adopt = (_owner, _request, effective, assertCurrent) => {
-    assertCurrent();
-    assert.equal(f.finishes, 1, "Permission adoption follows exact old Host drain and exit.");
-    adoptions++;
-    f.setEffective(effective);
-  };
-  assert.equal((await f.coordinator().status())[0].status, "waiting");
-  assert.equal((await f.coordinator().request())[0].status, "waiting");
-  assert.deepEqual(f.effective, old, "Busy native execution keeps its original permissions.");
-  f.setBusy(false);
-  assert.equal((await f.coordinator().reconcile())[0].status, "waiting");
-  assert.equal(f.resumes, 0);
-  assert.equal((await f.coordinator().reconcile())[0].status, "upgraded");
-  assert.equal(adoptions, 1);
-  assert.equal(f.resumes, 1);
-  assert.deepEqual(f.effective, desired);
+  f.setEffective(desired);
+  assert.equal((await f.coordinator().status())[0].status, "current");
   assert.equal((await f.coordinator().request())[0].status, "current");
-  assert.equal(f.resumes, 1);
-
-  const unsupported = fixture();
-  unsupported.setSnapshot({ hostImplementation: unsupported.target, endpointImplementation: unsupported.ports.endpoint() });
-  unsupported.ports.reconfiguration = () => ({ effective: desired, unsupported: "Adapter cannot resume this scope" });
-  assert.equal((await unsupported.coordinator().request())[0].status, "unsupported");
-  assert.equal(unsupported.prepares, 0);
+  assert.equal(f.prepares, 0);
+  assert.equal(f.resumes, 0);
+  assert.equal(f.finishes, 0);
+  assert.equal(f.mailbox, null);
 });
 
 test("Upgrade survives Controller restart and queued input without changing native identity or replay", async () => {

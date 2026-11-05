@@ -62,27 +62,28 @@ yui task project update <task> <project> --base <branch> --if-current <writeGuar
 脏工作树、权限及冲突门禁。Draft 或尚未准备的绑定只更新将来的准备目标。
 目录迁移、权限撤销不是元数据更新。
 
-同 cwd 新增 Project 时，Task-main 准备不再清空 Session。仅 Git 引用/提交变化不重建
-Host；执行范围变化复用 Controller→Host 生命周期通道，先阻止新输入，等待原生终态、
-后台工作静止、事件持久化及 writer 释放，证明旧 Host 退出后才采用新范围，并恢复
-**同一原生 conversation**。在途执行继续使用原权限。只处理 Task-main 附着，不扩展
+`project add` 在 Task-main 下创建直接子目录。cwd、既有路径/分支/访问权限及原生执行边界
+不变时，工作区准备在同一事务中采用项目清单及当前 Session 范围。这是**纯配置热更新**：
+不新建 Host、不重连 Provider、不调用原生 resume、不 interrupt，也不等待当前 Turn 结束。
+Leader 可以在同一 Turn 内新增并使用项目。`project update --base` 同样保留 Host、
+连接与 conversation；上游目标更新仍不会自动 rebase 物理工作树。
+
+`project add` 返回 `workspaceConfiguration.mode: "in-place"`；`task project list` 展示
+每个 Session 当前工作区、可写项目及生命周期观测。启动环境中的 `YUI_*PROJECT*` 只是
+历史启动快照，不是实时配置或授权依据。若显式采用的 scratch/local 执行目录不同于
+Task main，则新增 Task-main 项目会明确拒绝，不会隐式扩大目录授权或替换 Host。
+热采用不修改已连接 Provider 的原生配置与沙箱，
+不放宽受保护路径，也不绕过原生工具限制。
+只处理 Task-main 附着，不扩展
 隔离 WorkItem/Review、planning 权限、模型/账号设置或显式 Assignment 范围；
-只读 Leader 仍为只读。
-Leader 自己新增 Project 时，`project add` 返回当前 Session 范围和交接提示，不等待刷新。
-受影响会话 ACK 自己已领取的输入后结束当前 **Turn**，而不是完成 Task 或结束 conversation。
-Host 刷新期间只放行这种同会话收尾 ACK，不允许新 claim；结束、替换或 detach 请求仍禁止
-所有 inbox 变更。既有 `task-project-added` 通知在生命周期和 busy 门禁解除后续跑 Leader，
-不再额外等待聚合窗口，也不需要外部补发唤醒。
+只读 Leader 仍为只读，既有 AgentRun 快照及 Provider 回执不改写。
 已采用的执行目录保留原身份及资源授权记录，绑定更新不会重选环境；
 恢复时仍核验目录身份和授权，尚未采用的 preparation 则继续拒绝原 Task 意图变化。
 
-当前自动保留范围限定为 Codex、相同根路径、既有路径/分支/访问权限不变。
-其他适配器或不兼容边界保留原 conversation 并报告具体能力缺口；
-`task project list` 展示 `refresh-required`、`lifecycle-pending` 或 `unsupported`。
-显式且具有资源停止证据的 `task role session new` 只是有界后备，不是自动动作。
-暂停的 Task/Role 不会被唤醒。失联、持久化失败或启动结果未知时保留原生命周期请求，
-超时不作为排空证据。通知仅因范围刷新而延后，不会被拒绝；未知提交效果不重放。
-Operator 可用只读 `yui update --hosts-status` 查看排空/恢复诊断。
+不兼容边界或已有 runtime 清理/升级预约会拒绝采用，而不是中断执行或自动降级到 Host
+重建。绑定意图可能已经保存，恢复前应检查结果及当前工作区。暂停的 Task/Role 保持暂停；
+配置尚未采用时仅延后输入，不重放。Host 代码升级仍走独立的排空/退出证明流程；
+项目配置变更不再请求该操作。
 
 ## Candidate、Review 与 Integration
 

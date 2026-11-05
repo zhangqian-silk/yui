@@ -77,38 +77,40 @@ That integration retains its own dirty-worktree, authority and conflict fences.
 Draft/unmaterialized bindings change the future preparation target.
 Directory relocation and access revocation are not metadata updates.
 
-Task-main adoption no longer erases Sessions when a Project is added at the
-same cwd. Git-only changes need no Host refresh. For changed execution scope,
-the existing Controller→Host lifecycle lane fences new input, waits for native
-terminal/background quiescence, durable events and writer release, then
-observes old Host exit before adopting scope and restoring the **same native
-conversation**. In-flight execution keeps its old captured permissions.
-When the Leader itself adds a Project, `project add` returns the observed
-Session scopes and handoff guidance without waiting for refresh. The affected
-Session ACKs its already-claimed input and ends the current **Turn**, not the
-Task or conversation. Host refresh permits that same-Session ACK but not new
-claims; end/replace/detach requests still fence all inbox mutations. The queued
-`task-project-added` notification continues the Leader after the lifecycle and
-busy gates clear, without an extra aggregation delay or external wake.
+`project add` creates a direct child of Task main. When cwd, existing paths,
+branches, access grants and the native execution boundary remain unchanged,
+workspace preparation atomically adopts the project catalog and current Session
+scope. This is **configuration-only hot adoption**: no Host creation, Provider
+reconnect, native resume, interrupt, or wait for the current Turn to finish.
+The Leader can add and use the Project in the same Turn. `project update --base`
+also preserves the Host, connection and conversation; a changed upstream
+selection still does not rebase the physical worktree.
+
+`project add` returns `workspaceConfiguration.mode: "in-place"`.
+`task project list` exposes each Session's current workspace, writable Project
+IDs and lifecycle observation. Startup `YUI_*PROJECT*` environment values are
+historical launch snapshots, not live configuration or authorization. Hot
+adoption leaves the attached Provider's original options and sandbox unchanged;
+it does not relax protected paths or bypass native tool restrictions.
+An explicitly adopted scratch/local directory different from Task main is a
+different execution boundary; adding a Task-main Project there is rejected,
+not treated as an implicit directory grant or a reason to replace the Host.
 Only Task-main attachments are eligible; isolated WorkItem/Review Sessions,
 planning authority, model/account settings and explicit Assignment scope are
-not expanded by this operation. Read-only Leaders remain read-only.
+not expanded by this operation. Read-only Leaders remain read-only, and
+existing AgentRun snapshots/Provider receipts are never rewritten.
 An already adopted execution directory retains its identity and reserved
 resource grants; binding changes do not select a new environment. Directory
 identity and grants are rechecked on resume, while unadopted preparations
 still reject changes to their original Task intent.
 
-Automatic scope resume currently supports Codex at the same root with
-unchanged existing paths, branches and access grants. Other adapters or
-incompatible boundaries retain the conversation and report the exact missing
-capability; inspect `task project list` for `refresh-required`,
-`lifecycle-pending` or `unsupported`. An explicit, resource-verified
-`task role session new` remains the bounded fallback, not an automatic step.
-Paused Tasks/Roles stay paused. Lost contact, failed persistence or unconfirmed
-launch retain the exact lifecycle request; timeout is not proof of drain.
-Queued input is deferred, never rejected solely for scope refresh, and unknown
-submission effects are never replayed. Operator `yui update --hosts-status`
-provides the read-only Host drain/restore diagnostics.
+An incompatible boundary or an existing runtime cleanup/upgrade reservation
+rejects adoption instead of interrupting execution or silently falling back to
+Host replacement. Binding intent may already be saved; inspect the result and
+current workspace before recovery. Paused Tasks/Roles stay paused. Missing
+configuration adoption defers queued input without replay. Host code upgrades
+remain a separate lifecycle operation with their existing drain/exit proofs;
+project configuration changes do not request that operation.
 
 ## Candidate, Review and Integration
 

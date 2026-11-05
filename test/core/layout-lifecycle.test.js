@@ -309,10 +309,13 @@ test("a Project-free Task keeps its native cwd when a Project is bound later", a
   assert.equal(expanded.root, root);
   assertSingleLayerEntry(home, expanded.entries[0], root, "app");
   assert.equal(nativeAgentWorkspace(expanded), root);
-  assert.deepEqual(store.getTaskRoleSessionSet(task.id, "leader"), original,
-    "Adopting the new workspace does not stop or replace a native conversation or grant it new permissions.");
-  assert.equal(runTaskCommand(["project", "list", task.id], store).data.sessions[0].scope, "unsupported",
-    "An adapter without established scope-resume capability reports it without retiring the conversation.");
+  const adopted = store.getTaskRoleSessionSet(task.id, "leader");
+  assert.equal(adopted.sessions.claude.nativeSessionId, original.sessions.claude.nativeSessionId);
+  assert.deepEqual(adopted.providerBinding, original.providerBinding);
+  assert.deepEqual(adopted.sessions.claude.effective.writeProjectIds, ["project-1"],
+    "Root-contained project adoption is immediately available without native drain or resume.");
+  assert.equal(runTaskCommand(["project", "list", task.id], store).data.sessions[0].scope, "captured");
+  assert.equal(store.getWorkMailbox({ kind: "role-runtime", taskId: task.id, roleName: "leader" }), null);
   const repo = expanded.entries[0].path;
   const originalHead = git(["rev-parse", "HEAD"], repo);
   writeFileSync(join(repo, "uncommitted.txt"), "preserve my work\n");
@@ -329,5 +332,5 @@ test("a Project-free Task keeps its native cwd when a Project is bound later", a
   assert.equal(git(["rev-parse", "HEAD"], repo), originalHead);
   assert.equal(store.getTask(task.id).projectBindings[0].baseCommit, originalHead);
   assert.equal(readFileSync(join(repo, "uncommitted.txt"), "utf8"), "preserve my work\n");
-  assert.deepEqual(store.getTaskRoleSessionSet(task.id, "leader"), original);
+  assert.deepEqual(store.getTaskRoleSessionSet(task.id, "leader"), adopted);
 });

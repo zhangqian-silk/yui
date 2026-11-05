@@ -2036,7 +2036,7 @@ export async function main(): Promise<void> {
             : store.getReviewRound(requestedRound.taskId, requestedRound.id);
           let reviewOutput = "";
           let reviewData: unknown;
-          let workspaceRefresh: { sessions: ReturnType<typeof taskProjectSessionScopes>; instruction?: string } | undefined;
+          let workspaceConfiguration: { sessions: ReturnType<typeof taskProjectSessionScopes>; mode: "in-place" } | undefined;
           const resumesReviewDispatch = (resolved[1] === "review" && resolved[2] === "request")
             || (resolved[1] === "work" && resolved[2] === "review")
             || (resolved[1] === "run" && resolved[2] === "retry");
@@ -2158,19 +2158,11 @@ export async function main(): Promise<void> {
             const task = taskId === undefined ? null : store.getTask(taskId);
             if (task?.status === "active") {
               await workspacePreparer.prepareTaskWorkspace(task.id);
-              // The command's initial signal precedes local workspace
-              // adoption. Wake the existing lifecycle checks after it commits.
+              // Publish the adopted configuration; no Host/Provider control
+              // operation or current-Turn handoff is involved.
               await runtime.notifyMailboxChanged({ kind: "task", taskId: task.id });
               const sessions = taskProjectSessionScopes(store, task.id);
-              const instruction = sessions.some(session =>
-                session.scope === "refresh-required"
-                  || session.scope === "lifecycle-pending" && session.lifecycle === "upgrade-host")
-                ? "Affected Sessions must finish handling and ACK their already-claimed input, then end the current Turn. "
-                  + "Do not wait in that Turn for new Project access or complete the Task. "
-                  + "The Controller waits for quiescence, refreshes the Host and resumes the same conversation; "
-                  + "the queued task-project-added notification continues the Leader."
-                : undefined;
-              workspaceRefresh = { sessions, ...(instruction ? { instruction } : {}) };
+              workspaceConfiguration = { sessions, mode: "in-place" };
             }
           }
           const controlData = result.data as { steer?: { code?: string }; interrupt?: { code?: string } } | undefined;
@@ -2179,8 +2171,8 @@ export async function main(): Promise<void> {
             emitControlFailure(result.output, failureCode, result.data);
             return;
           }
-          const commandData = workspaceRefresh !== undefined
-            ? { ...result.data as object, workspaceRefresh }
+          const commandData = workspaceConfiguration !== undefined
+            ? { ...result.data as object, workspaceConfiguration }
             : reviewData === undefined
               ? result.data
               : { command: result.data, ...reviewData as object };
@@ -2196,10 +2188,10 @@ export async function main(): Promise<void> {
             baseFreshness: completionBaseFreshness ?? null,
             warnings: completionWarnings
           } : undefined;
-          const workspaceOutput = workspaceRefresh === undefined ? ""
-            : workspaceRefresh.sessions.map(session =>
+          const workspaceOutput = workspaceConfiguration === undefined ? ""
+            : workspaceConfiguration.sessions.map(session =>
               `${session.roleName}: ${session.scope}${session.detail ? ` — ${session.detail}` : ""}\n`).join("")
-              + (workspaceRefresh.instruction ? `${workspaceRefresh.instruction}\n` : "");
+              + "Project configuration adopted in place. No Host restart or Agent Turn interruption requested.\n";
           emit(`${result.output}${reviewOutput}${workspaceOutput}`, false, completionData === undefined
             ? commandData
             : { ...commandData as object, ...completionData });

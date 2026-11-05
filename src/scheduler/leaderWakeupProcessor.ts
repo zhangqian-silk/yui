@@ -83,8 +83,8 @@ export async function processLeaderWakeups(
       if (session?.status === "active" && !roleSessionMayContinue(session.effective, role.effective)) {
         if (roleSessionNeedsWorkspaceRefresh(session.effective, role.effective)) {
           throw new RuntimeLifecycleBusyError(
-            "Task-main scope refresh is pending; the original notification has not been submitted. "
-            + "Inspect runtime Host status for drain/capability evidence; do not select a new Session speculatively."
+            "Task-main configuration adoption is pending; the original notification has not been submitted. "
+            + "Inspect task project list and workspace preparation; no automatic Host or Session replacement is requested."
           );
         }
         throw new Error("Leader Session configuration changed; explicitly apply it before notification delivery.");

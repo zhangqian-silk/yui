@@ -11,13 +11,16 @@ import { createProject } from "../../dist/repository/project.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
-import { taskWorkspaceReconfiguration, adoptDrainedTaskWorkspace } from "../../dist/executor/taskWorkspaceRefresh.js";
+import { taskWorkspaceReconfiguration, adoptTaskWorkspaceConfiguration } from "../../dist/executor/taskWorkspaceRefresh.js";
+import { assertTaskProjectWriteAuthority } from "../../dist/task/taskAuthority.js";
+import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding, settleProviderTurn } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { processLeaderWakeups } from "../../dist/scheduler/leaderWakeupProcessor.js";
 import { runTaskCommand } from "../../dist/commands/taskCommands.js";
 import { createProjectResources } from "../../dist/resources/projectResourceService.js";
+import { enqueueWork } from "../../dist/coordination/workMailboxQueue.js";
 
-test("scope-only refresh preserves native input and isolated Roles, and does not grant writes before drain", async t => {
+test("root-contained configuration adoption preserves active native execution and exact project authority", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-scope-refresh-"));
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
@@ -36,6 +39,11 @@ test("scope-only refresh preserves native input and isolated Roles, and does not
     agentId: agent.id, adapterId: agent.adapterId, nativeSessionId: "preserved-thread",
     policy: "fixed", status: "active", effective
   }, now);
+  const activeBinding = acceptProviderTurn(beginProviderTurn(createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "preserved-thread", startedAt: now.toISOString()
+  }), { attemptId: "active-input", authorityEpoch: 1, submittedAt: now.toISOString() }),
+  { attemptId: "active-input", nativeTurnId: "same-turn", acceptedAt: now.toISOString() });
   store.saveTaskRoleSessionSet(original);
   const resources = createProjectResources(store, () => now);
   const adoptedEnvironment = resources.prepare(owner.taskId, { kind: "scratch" });
@@ -60,6 +68,15 @@ test("scope-only refresh preserves native input and isolated Roles, and does not
   assert.deepEqual(target.effective.writeProjectIds, ["project-1"]);
   assert.deepEqual(store.getRoleSession(owner.taskId, "leader").effective.writeProjectIds, []);
   assert.equal(target.unsupported, undefined);
+  const separateEnvironment = { ...effective, executionEnvironment: capturedEnvironment };
+  assert.match(taskWorkspaceReconfiguration(store, owner, separateEnvironment).unsupported,
+    /outside the captured native root/,
+    "A separately adopted scratch cwd cannot silently gain the Task-main boundary.");
+  store.saveManagedWorkspace({ ...expanded, entries: [{ ...entry, path: join(home, "..", "outside") }] });
+  assert.throws(() => adoptTaskWorkspaceConfiguration(store, owner.taskId, now), /outside the captured native root/);
+  assert.deepEqual(store.getTaskRoleSessionSet(owner.taskId, "leader"), original,
+    "An incompatible boundary retains the exact Session without lifecycle fallback.");
+  store.saveManagedWorkspace(expanded);
   const readOnly = { ...effective, profileAccess: "read", writeProjectIds: [] };
   assert.deepEqual(taskWorkspaceReconfiguration(store, owner, readOnly).effective.writeProjectIds, []);
   const other = { ...effective, workspace: { root: join(home, "review"), entries: [] } };
@@ -86,9 +103,26 @@ test("scope-only refresh preserves native input and isolated Roles, and does not
   assert.equal(submissions, 0);
   assert.equal(store.listEvents(owner.taskId).filter(e => e.type === "notification.delivery").at(-1).payload.outcome,
     "deferred", "Scope backpressure cannot reject or duplicate the original input.");
-  adoptDrainedTaskWorkspace(store, owner, "preserved-thread", target.effective, () => {}, now);
+  store.saveTaskRoleSessionSet({ ...original, providerBinding: activeBinding });
+  const env = { YUI_SESSION_SCOPE: "task", YUI_TASK_ID: owner.taskId, YUI_ROLE: "leader",
+    CODEX_THREAD_ID: "preserved-thread" };
+  assert.throws(() => assertTaskProjectWriteAuthority(store, env, owner.taskId, entry.projectId), /captured/);
+  const lane = { kind: "role-runtime", taskId: owner.taskId, roleName: "leader" };
+  enqueueWork(store, lane, "runtime-host-upgrade-required", now);
+  assert.throws(() => adoptTaskWorkspaceConfiguration(store, owner.taskId, now), /existing runtime lifecycle/);
+  assert.deepEqual(store.getRoleSession(owner.taskId, "leader").effective, effective);
+  store.removeWorkMailbox(lane); // Fixture releases its reservation, not a product cleanup path.
+  adoptTaskWorkspaceConfiguration(store, owner.taskId, now);
   assert.equal(store.getRoleSession(owner.taskId, "leader").nativeSessionId, "preserved-thread");
-  assert.deepEqual(store.getTaskRoleSessionSet(owner.taskId, "leader").providerBinding, original.providerBinding);
+  assert.deepEqual(store.getTaskRoleSessionSet(owner.taskId, "leader").providerBinding, activeBinding,
+    "Adoption does not end, interrupt, resume or replace the active native Turn.");
+  assert.equal(assertTaskProjectWriteAuthority(store, env, owner.taskId, entry.projectId), "leader");
+  assert.equal(store.getWorkMailbox({ kind: "role-runtime", taskId: owner.taskId, roleName: "leader" }), null);
+  // The scheduler may deliver later input only after its ordinary native gate;
+  // configuration adoption itself never claims or submits that input.
+  store.saveTaskRoleSessionSet({ ...store.getTaskRoleSessionSet(owner.taskId, "leader"),
+    providerBinding: settleProviderTurn(activeBinding, { attemptId: "active-input",
+      status: "completed", settledAt: now.toISOString() }) });
   await reconcile();
   await reconcile();
   assert.equal(submissions, 1);
