@@ -51,6 +51,36 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.26.0 compatibility and migration notes
+
+WorkItems can continue same-scope modifications in their original native
+conversation through `yui task work continue`. Core associates the already
+accepted current Turn with a fresh Run; it does not resend input or create a
+replacement conversation. Questions remain read-only. Repair of an accepted
+WorkItem clears its current acceptance and Candidate pointers while preserving
+historical evidence; the new result must pass normal review and acceptance.
+`yui task role session resume` restores an idle retained WorkItem Host without
+submitting input. Stopped/completed Tasks, revoked or superseded ownership,
+released workspaces, changed scope, unsettled execution and unknown delivery
+remain fenced. Retain the workspace while direct repair is wanted.
+See [WorkItem continuation](workitem-continuation.md).
+
+This release also includes Project-binding updates without interrupting existing
+Agent conversations. Scope changes remain explicit and checked against current
+authority; preserving a conversation does not grant additional Project access.
+
+Storage advances **1.29 → 1.30** through the centralized migration for WorkItem
+continuation. Existing history is preserved byte-for-byte; no SQL schema change
+is required. Back up the Home and use the normal upgrade/migration path; do not
+open a migrated Home with an older binary. Controller/Host protocols remain v1.
+Runtime/Leader/Worker Skills advance to 47/17/5 respectively.
+
+Supported platforms remain Linux x64 (glibc) and macOS Apple Silicon with native
+arm64 Node.js. Exact-merge Core CI and the same archive's Node 20/22/24/26
+fresh-install matrix gate publication. Deterministic checks do not establish
+real-model behavior. Publication does not upgrade the global CLI, migrate
+production data or restart shared services.
+
 ### 2.25.0 compatibility and migration notes
 
 This minor release removes macOS Intel support. Supported runtimes are now

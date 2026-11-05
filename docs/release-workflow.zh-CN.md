@@ -36,6 +36,29 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 不能将不兼容冒称为兼容，也不为回避版本选择新增历史兼容机制。包版本与协议、
 持久存储契约仍然独立：兼容性检查和必要迁移要求不变，下文存储规则不授予发版权限。
 
+### 2.26.0 兼容性及迁移说明
+
+WorkItem 可通过 `yui task work continue` 在原生会话中继续同范围修改。
+Core 将已接收的当前 Turn 关联到新的 Run，不重发输入，也不创建替代会话。
+提问保持只读；已验收 WorkItem 返修时清除当前验收和 Candidate 指针，保留历史证据，
+新成果须重新经过正常 Review 和验收。`yui task role session resume` 可恢复保留的
+空闲 WorkItem Host，不提交输入。Task 停止／完成、身份撤权或被后继替代、
+工作区已释放、范围变化、执行未结清或投递效果未知时，仍保留安全边界。
+希望保留直接返修能力时应保留工作区。参见 [WorkItem 续作](workitem-continuation.md)。
+
+本版还包含不打断现有 Agent 会话的 Project 绑定更新。范围变更仍须显式操作并校验
+当前权限；保留会话不等于授予额外 Project 访问权。
+
+存储通过集中迁移从 **1.29 → 1.30**，声明 WorkItem 续作契约；既有历史逐字节保留，
+无需改变 SQL schema。升级前备份 Home，使用正常升级／迁移路径，
+不要用旧二进制打开已迁移的 Home。Controller/Host 协议仍为 v1；
+Runtime/Leader/Worker Skills 分别升级到 47/17/5。
+
+支持平台仍为 Linux x64（glibc）和使用原生 arm64 Node.js 的 macOS Apple Silicon。
+发布前要求确切合并提交的 Core CI，以及同一包在 Node 20/22/24/26 上的全新安装矩阵
+通过。确定性检查不证明真实模型行为。发布本身不升级全局 CLI、不迁移生产数据，
+也不重启共享服务。
+
 ### 2.25.0 兼容性及迁移说明
 
 本次 minor 版本移除 macOS Intel 支持。仅支持 Linux x64（glibc）和使用原生
