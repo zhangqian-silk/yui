@@ -2,7 +2,13 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.29. The 1.28 → 1.29 transition admits optional local Git
+Current storage is 1.30. The 1.29 → 1.30 transition admits explicit WorkItem
+continuation receipts, Role-tagged native user messages, and correlation of an
+already accepted native Turn with its newly authorized Run. Existing payloads
+remain byte-for-byte unchanged; no repair intent or acceptance is inferred,
+no WorkItem is reopened by migration, and no native input is replayed.
+
+The 1.28 → 1.29 transition admits optional local Git
 total and remote Git inactivity/total timeout settings. Existing configuration payloads remain
 byte-for-byte unchanged; absent fields use runtime defaults.
 

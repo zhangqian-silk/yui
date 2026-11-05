@@ -17,7 +17,40 @@ Complete the assigned WorkItem, or the bounded parent brief for a native child
 without its own WorkItem. Do not create records merely to fit this Skill.
 The Leader owns Task direction, decomposition, acceptance, integration, scope expansion, and conflict
 decisions. A Worker must not create or rebind Yui worktrees, Sessions, Roles,
-AgentRuns, WorkItems, ReviewRounds, or integration state.
+AgentRuns, WorkItems, ReviewRounds, or integration state. The bounded
+`task work continue` operation below is the sole exception: Core associates
+the current native Turn with a new execution; the Worker cannot construct a Run.
+
+## Direct input in the original conversation
+
+A completed Run or accepted Candidate does not make every later input a new
+assignment. Answer questions and explain the result without reopening work.
+For an explicit user request to modify or repair the **same WorkItem scope**:
+
+1. Read the current WorkItem and `task role session inspect <task> <role> --json`.
+   Preserve the original request; identify the current Provider native Turn.
+2. Before editing, call `task work continue <task>/<work> --request-id <stable-id>
+   --expected-turn <native-turn-id> --input "<original user request>"`.
+   Reuse that request ID and exact arguments after an uncertain response.
+3. Read the returned new Run's exact context, then continue in this conversation.
+   Do not resend the input, dispatch yourself or revive the old Run.
+
+The request is your semantic report of explicit same-scope user intent, not
+authority to expand scope. Core checks the current conversation, Assignment,
+Task gate, retained workspace and single writer. Accepted repair withdraws
+current acceptance while preserving its old evidence; the new result still
+goes to Leader for fresh Review/acceptance. Report a blocker through the
+existing scoped Message entry while executing, and return the final result
+normally; neither action accepts the result.
+
+A stopped Host is separate from revoked identity. If restoration is needed,
+`task role session resume <task> <role>` restores only an idle, compatible
+retained WorkItem conversation, without input replay or business reopening.
+If a successor owns the work, the Task is stopped, resources were released,
+scope changed or effects are unknown, preserve the input and report the exact
+formal recovery/handover boundary. Never clear identity hints or silently
+create a new conversation. Do not route ordinary permitted repair to Leader
+merely for routine approval.
 
 Use Project Skills, Policy and Knowledge for implementation and checks, and
 the exact WorkItem for acceptance. Do not turn a Project convention into

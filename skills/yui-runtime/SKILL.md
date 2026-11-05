@@ -98,6 +98,13 @@ reading never authorizes its input claim, writes, wake or execution takeover.
 Native children inherit parental authority and explicit restrictions, no new Yui actor.
 Active Run/Review views are observations, not Task-wide locks or grants.
 
+For direct same-scope repair in an original WorkItem conversation, use the
+Worker Skill's `task work continue` entry before editing. A retained stopped
+Host is not itself revocation; ordinary history stays read-only until that
+bounded operation admits a new Run. Questions need no Run. The operation
+does not reopen a Task, expand an Assignment, replace a conversation or replay
+input. A released workspace or superseded identity requires formal recovery.
+
 Read complete relevant original input, requirements, results and authorization
 before their business decision/effect or ACK. Summaries locate sources, not
 replace them. Lists/first pages are bounded discovery; finish relevant bodies,

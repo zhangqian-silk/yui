@@ -828,7 +828,7 @@ const taskChildren: readonly NodeInput[] = [
     ]
   },
   {
-    name: "role", discovery: { surface: "managed", audiences: ["operator","leader"] },
+    name: "role", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
     summary: "Manage Roles within a Task.",
     sections: [{ id: "manage", title: "Commands", entries: [
       "add", "list", "status", "show", "update", "enable", "disable", "remove", "bind", "unbind",
@@ -867,11 +867,16 @@ const taskChildren: readonly NodeInput[] = [
       { name: "bind", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Bind and activate an Agent for a Task Role.", usage: "yui task role bind <task> <role> <agent-id>" },
       { name: "unbind", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Unbind a dormant Agent from a Task Role.", usage: "yui task role unbind <task> <role> <agent-id>" },
       {
-        name: "session", discovery: { surface: "managed", audiences: ["operator","leader"] },
+        name: "session", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
         summary: "Inspect, stop or explicitly select a new Task Role Session.",
         executable: true,
-        sections: [{ id: "manage", title: "Commands", entries: ["inspect", "retry", "stop", "new"] }],
+        sections: [{ id: "manage", title: "Commands", entries: ["inspect", "resume", "retry", "stop", "new"] }],
         children: [
+          {
+            name: "resume", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
+            summary: "Restore an idle retained WorkItem Host in its exact conversation without replaying input or reopening work.",
+            usage: "yui task role session resume <task> <role>"
+          },
           {
             name: "retry", discovery: { surface: "managed", audiences: ["operator","leader"] },
             summary: "Inspect or control Provider recovery without stopping an admitted Turn.",
@@ -879,7 +884,7 @@ const taskChildren: readonly NodeInput[] = [
             options: ["--cursor"]
           },
           {
-            name: "inspect", discovery: { surface: "managed", audiences: ["operator","leader"] },
+            name: "inspect", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
             summary: "Read the current Session, Host process, and AgentRun facts.",
             usage: "yui task role session inspect <task> <role> [--cursor <cursor>]",
             options: ["--cursor"]
@@ -922,13 +927,13 @@ const taskChildren: readonly NodeInput[] = [
     ]
   },
   {
-    name: "work", discovery: { surface: "managed", audiences: ["operator","leader"] },
+    name: "work", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
     summary: "Manage finite Task work items.",
     sections: [{
       id: "manage",
       title: "Commands",
       entries: [
-        "create", "list", "show", "edit", "update", "scope", "dispatch", "synthesize", "isolate", "capture", "cleanup",
+        "create", "list", "show", "edit", "update", "scope", "dispatch", "continue", "synthesize", "isolate", "capture", "cleanup",
         "review", "accept", "reject", "retire"
       ]
     }],
@@ -971,6 +976,12 @@ const taskChildren: readonly NodeInput[] = [
         summary: "Dispatch a work item to its Role.",
         usage: "yui task work dispatch <task>/<work> [--input <text>] [--context-ref <store/refId@digest> ...] [--lane-role <role> ...]",
         options: ["--input", "--context-ref", "--lane-role"]
+      },
+      {
+        name: "continue", discovery: { surface: "managed", audiences: ["assignment", "leader"] },
+        summary: "Associate an explicit same-scope repair in the original conversation with a new AgentRun; never resend input or accept the result.",
+        usage: "yui task work continue <task>/<work> --request-id <id> --expected-turn <native-turn-id> --input <original-user-request>",
+        options: ["--request-id", "--expected-turn", "--input"]
       },
       {
         name: "synthesize", discovery: { surface: "managed", audiences: ["operator","leader"] },

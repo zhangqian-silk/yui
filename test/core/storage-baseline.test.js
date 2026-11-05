@@ -23,12 +23,12 @@ import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
 import { usePre19Layout, usePre114Layout, usePre124Layout } from "../helpers/pre19Storage.mjs";
 
-test("fresh storage creates only the current 1.29 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.29");
+test("fresh storage creates only the current 1.30 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.30");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.29");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.30");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -45,6 +45,31 @@ test("fresh storage creates only the current 1.29 contract", () => {
   } finally { db.close(); }
 });
 
+test("1.29 continuation admission preserves history without inventing repair or replay", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-continuation-upgrade-"));
+  let store, db;
+  t.after(() => { store?.close(); db?.close(); rmSync(home, { recursive: true, force: true }); });
+  store = new SqliteTaskStore(home);
+  const at = new Date("2026-11-05T00:00:00Z");
+  store.saveTask(createTask("task-1", "Retained history", at));
+  store.saveEvent("task-1", createTaskEvent("event-1", "task-1", "work.accepted",
+    { workItemId: "work-item-1", summary: "Original evidence" }, at));
+  store.close(); store = undefined;
+  db = new Database(join(home, "yui.db"));
+  const before = db.prepare("SELECT payload FROM events").all();
+  db.prepare("UPDATE storage_schema SET minor=29").run();
+  assert.deepEqual(schema.storageMinorUpgradePlan("1.29").map(step => step.name),
+    ["workitem-native-continuation"]);
+  assert.throws(() => new SqliteTaskStore(home), /upgrade|storage/i);
+  schema.applySqliteMinorUpgrades(db, home);
+  assert.deepEqual(db.prepare("SELECT payload FROM events").all(), before);
+  assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.30");
+  db.close(); db = undefined;
+  store = new SqliteTaskStore(home);
+  assert.equal(store.listRuns("task-1").length, 0);
+  assert.equal(store.listMessages("task-1").length, 0);
+});
+
 test("1.28 upgrade preserves config bytes and admits independently stored Git budgets", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-git-budget-upgrade-"));
   let store;
@@ -56,7 +81,8 @@ test("1.28 upgrade preserves config bytes and admits independently stored Git bu
   db = new Database(join(home, "yui.db"));
   const before = db.prepare("SELECT payload FROM config").get().payload;
   db.prepare("UPDATE storage_schema SET minor=28").run();
-  assert.deepEqual(schema.storageMinorUpgradePlan("1.28").map(step => step.name), ["git-command-budgets"]);
+  assert.deepEqual(schema.storageMinorUpgradePlan("1.28").map(step => step.name),
+    ["git-command-budgets", "workitem-native-continuation"]);
   schema.applySqliteMinorUpgrades(db, home);
   assert.equal(db.prepare("SELECT payload FROM config").get().payload, before);
   db.close(); db = undefined;
@@ -153,7 +179,7 @@ test("1.25 upgrade preserves permission bytes and admits optional workspace temp
   store.close();
   assert.throws(() => new SqliteTaskStore(home), /not current/);
   const plan = schema.storageMinorUpgradePlan("1.25");
-  assert.equal(plan.length, 4);
+  assert.equal(plan.length, 5);
   assert.equal(plan[0].sourceChecksum, plan[0].targetChecksum);
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
   const current = new SqliteTaskStore(home);
@@ -260,7 +286,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.25", "1.26", "codex-workspace-temp-exclusions"],
         ["1.26", "1.27", "host-upgrade-lifecycle-signals"],
         ["1.27", "1.28", "native-title-effect-receipts"],
-        ["1.28", "1.29", "git-command-budgets"]]);
+        ["1.28", "1.29", "git-command-budgets"],
+        ["1.29", "1.30", "workitem-native-continuation"]]);
   }
   finally { current.close(); }
 });
