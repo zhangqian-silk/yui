@@ -11,7 +11,7 @@ import { taskNotificationPresentation } from "../interaction/notificationPresent
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { interruptThenTerminalState, prepareMessageContinuations } from "../message/messageContinuation.js";
 import { assertExecutionEnvironmentCurrent } from "../runtime/executionEnvironment.js";
-import { deferProviderRetry, providerRetryPending, providerRetryProjection, recordProviderFailure } from "../runtime/providerRetry.js";
+import { deferProviderRetry, providerRetryDecision, providerRetryPending, providerRetryProjection, recordProviderFailure } from "../runtime/providerRetry.js";
 import { createTaskMessage } from "../message/message.js";
 import {
   AgentHostObservationDeferred,
@@ -745,6 +745,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
         && !providerRetryPending(binding)) {
         recordGlobalRuntimeAttention(store, fence.roleName, input.eventId, {
           fence, failure: input.payload.failure, retry: providerRetryProjection(binding),
+          retryDecision: providerRetryDecision(binding),
           confirmed: "Native Turn failed; this does not prove absence of prior side effects.",
           unknown: "External effects must be inspected before continuing."
         }, now);
@@ -1817,6 +1818,7 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
             nativeSessionId: currentProviderConversation(resolved).conversationId,
             attemptId: input.attemptId, status: input.status,
             failure: resolved.run?.failure, retry: providerRetryProjection(resolved),
+            retryDecision: providerRetryDecision(resolved),
             unknown: "External effects are not established by submission settlement."
           }, input.now);
         }

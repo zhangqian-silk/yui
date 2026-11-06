@@ -207,7 +207,7 @@ import {
 import { currentManagedRuntime } from "../runtime/managedCaller.js";
 import { continueWorkItem, retainedWorkItemAssignment } from "../execution/workItemContinuation.js";
 import { managedTaskSessionIdentity } from "../runtime/managedCaller.js";
-import { controlProviderRetry, providerRunRetry, providerRetryProjection, providerRetrySummary, renderProviderRetry } from "../runtime/providerRetry.js";
+import { controlProviderRetry, providerRunRetry, providerRetryDecision, providerRetryProjection, providerRetrySummary, renderProviderRetry } from "../runtime/providerRetry.js";
 import { taskRunRecovery } from "../controller/taskRunRecovery.js";
 import { currentProviderConversation, transferProviderAuthority } from "../runtime/providerRuntimeIdentity.js";
 import { projectProviderContinuations } from "../runtime/runtimeContinuationProjection.js";
@@ -3406,7 +3406,8 @@ function taskRoleSessionCommand(
         recordTaskEvent(tx, task.id, "provider.retry-control", { roleName: role.name, action }, clock(options));
       }
       return output(`${renderProviderRetry(binding)}\n`, {
-        roleName: role.name, retry: providerRetryProjection(binding), disabled: binding?.retryDisabled ?? false
+        roleName: role.name, retry: providerRetryProjection(binding), decision: providerRetryDecision(binding),
+        disabled: binding?.retryDisabled ?? false
       });
     });
   }

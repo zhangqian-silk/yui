@@ -51,6 +51,37 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.27.0 compatibility and migration notes
+
+Provider failures use a shared classification and bounded retry policy. An
+unclassified failure may now receive one automatic fallback attempt; known
+transient failures retain at most five attempts within ten minutes. Both use
+the same durable attempt history, backoff and server waiting hints. Permanent
+authentication, quota and other non-retryable failures take precedence.
+Automatic recovery still requires the exact accepted failed native turn and
+provider/Host recovery capability; unknown input delivery, a newer turn or
+unsettled background work remains fenced. Unsupported providers do not gain
+automatic recovery. Diagnostics expose the selected policy, remaining budget
+and refusal reason. See [Provider retry](provider-retry.md).
+
+Leader configuration can optionally override Agent/model/effort separately for
+draft and develop launches. Existing bindings remain the default; new Tasks
+freeze the template and existing Tasks require explicit updates. Desired
+settings neither mutate a running turn nor replay input. See
+[Leader stage configuration](roles-and-configuration.md#optional-leader-draftdevelop-configuration).
+
+Storage advances **1.30 → 1.31** through the centralized additive migration for
+Leader stage settings and launch provenance, preserving existing history.
+The retry changes add no storage fields. Back up the Home and use the normal
+upgrade/migration path; do not open a migrated Home with an older binary.
+Controller/Host protocols remain v1.
+
+Supported platforms remain Linux x64 (glibc) and macOS Apple Silicon with
+native arm64 Node.js. Exact-merge Core CI and the same archive's eight-row
+Node 20/22/24/26 fresh-install matrix gate publication. Deterministic checks
+do not establish real-model behavior. Publication does not upgrade the global
+CLI, migrate production data or restart shared services.
+
 ### 2.26.0 compatibility and migration notes
 
 WorkItems can continue same-scope modifications in their original native

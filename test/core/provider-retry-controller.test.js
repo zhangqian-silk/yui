@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
@@ -64,6 +64,18 @@ const transient = standardAgentError({
   source: "provider", phase: "turn-execute", message: "Too many requests",
   raw: rawFailure, inputDisposition: "accepted",
   classification: mapCodexAgentError({ message: "Too many requests", raw: rawFailure })
+});
+const unknownFailure = standardAgentError({
+  source: "provider", phase: "turn-execute", message: "Unrecognized native failure",
+  raw: '{"codexErrorInfo":"other"}', inputDisposition: "accepted"
+});
+const streamMessage = "stream disconnected before completion: stream closed before response.completed";
+const streamFailure = standardAgentError({
+  source: "provider", phase: "turn-execute", message: streamMessage,
+  raw: JSON.stringify({ message: streamMessage, codexErrorInfo: "other", additionalDetails: null }),
+  inputDisposition: "accepted",
+  classification: mapCodexAgentError({ message: streamMessage,
+    raw: JSON.stringify({ message: streamMessage, codexErrorInfo: "other", additionalDetails: null }) })
 });
 
 function fixture(t, scope = "task", roleName = scope === "task" ? "leader" : "assistant") {
@@ -294,6 +306,44 @@ function reviewFixture(t) {
   });
   return { ...f, candidate, workspace, round, dispatch };
 }
+
+test("unknown fallback is durable across Task/Global Controller restart and diagnoses exhaustion", async t => {
+  for (const scope of ["task", "global"]) {
+    const f = fixture(t, scope);
+    const work = join(f.home, "unfinished-work.txt");
+    writeFileSync(work, "confirmed tool effect before failure");
+    f.begin();
+    assert.equal(f.observe("turn.accepted"), "applied");
+    assert.equal(f.observe("turn.failed", undefined, "native-original", {
+      failure: { error: unknownFailure }
+    }), "applied");
+    const original = f.read().retry;
+    assert.equal(original.error.sessionDisposition, "unknown", "No synthetic recoverable flag.");
+    f.reopen(); f.due();
+    await f.hooks().reconcile();
+    await f.hooks().reconcile();
+    assert.equal(f.submissions.length, 1);
+    assert.equal(f.read().retry.attempts, 1);
+    assert.equal(f.observe("turn.failed", undefined, "native-retry", {
+      failure: { error: { ...unknownFailure, message: "Changed wording" } }
+    }), "applied");
+    f.reopen();
+    await f.hooks().reconcile();
+    assert.equal(f.submissions.length, 1);
+    assert.equal(f.read().retry.status, "exhausted");
+    assert.equal(f.read().retry.chainId, original.chainId);
+    assert.equal(f.read().retry.deadline, original.deadline);
+    const detail = scope === "task"
+      ? runTaskCommand(["role", "session", "retry", "task-1", f.roleName], f.store,
+        { environment: {}, now: f.now }).data
+      : JSON.parse(runGlobalRoleCommand(["session", "retry", f.roleName], f.store,
+        { env: {}, jsonOutput: true }));
+    assert.equal(detail.decision.source, "unknown-fallback");
+    assert.equal(detail.decision.remaining, 0);
+    assert.equal(detail.decision.reason, "automatic-attempt-limit");
+    assert.equal(readFileSync(work, "utf8"), "confirmed tool effect before failure");
+  }
+});
 
 test("Role disable pauses bounded retry without settling or replacing input; enable retains the retry budget", async t => {
   const f = fixture(t, "global");
@@ -763,8 +813,8 @@ test("an explicit no-Run input supersedes waiting automatic recovery at the same
 });
 
 test("manual and automatic managed Run retries share exact failed proof, including without an automatic chain", async t => {
-  for (const mode of ["automatic", "manual", "manual-without-chain"]) {
-    const manual = mode !== "automatic";
+  for (const mode of ["automatic", "unknown-automatic", "manual", "manual-without-chain"]) {
+    const manual = mode === "manual" || mode === "manual-without-chain";
     const f = fixture(t);
     const previous = createFixtureRun(f.store, f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
       createRunInput({ source: { type: "yui", channel: "task-dispatch" },
@@ -776,7 +826,8 @@ test("manual and automatic managed Run retries share exact failed proof, includi
     f.begin(`task-1/turn/${previous.id}`, f.body, previous.id);
     assert.equal(f.observe("turn.accepted"), "applied");
     f.advanceTo(epoch + 1);
-    const error = mode === "manual-without-chain" ? { ...transient, retryable: undefined } : transient;
+    const error = mode === "manual-without-chain" ? { ...transient, retryable: false }
+      : mode === "unknown-automatic" ? unknownFailure : streamFailure;
     assert.equal(f.observe("turn.failed", undefined, "native-original", { failure: { error } }), "applied");
     assert.equal(f.store.getRun("task-1", previous.id).status, "failed");
     const failedRun = f.store.getRun("task-1", previous.id);
@@ -1124,7 +1175,7 @@ test("manual recovery after exhaustion retains the original automatic count and 
   });
   assert.equal(disconnected.retryable, undefined);
   failCurrent("manual-disconnected", disconnected);
-  assert.equal(f.read().retry.status, "cancelled");
+  assert.equal(f.read().retry.status, "exhausted");
   runTaskCommand(["run", "retry", `task-1/${run.id}`], f.store, { now: f.now, environment: {} });
   assert.equal(f.read().retry.chainId, chainId);
   assert.equal(f.read().retry.startedAt, startedAt);
@@ -1152,7 +1203,7 @@ test("same-Round review recovery preserves its candidate and workspace, and canc
     assert.equal(f.observe("turn.accepted"), "applied");
     f.advanceTo(f.now().getTime() + 1);
     assert.equal(f.observe("turn.failed", undefined, "native-original", {
-      failure: { error: mode === "manual-without-chain" ? { ...transient, retryable: undefined } : transient }
+      failure: { error: mode === "manual-without-chain" ? { ...transient, retryable: false } : transient }
     }), "applied");
     assert.equal(f.store.getReviewRound("task-1", f.round.id).status, "failed");
     if (mode !== "manual-without-chain") f.due();
