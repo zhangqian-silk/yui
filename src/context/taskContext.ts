@@ -6,7 +6,7 @@ import { expandTaskMessageResult, type TaskMessage } from "../message/message.js
 import { taskMessagePresentation } from "../interaction/notificationPresentation.js";
 import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
-import { providerRetrySummary } from "../runtime/providerRetry.js";
+import { providerRetryDecision, providerRetrySummary } from "../runtime/providerRetry.js";
 import type { ContextRecordFamily, ContextRecordQuery } from "../storage/contextRecords.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { projectTaskRemoteDeliveryFromStore } from "../task/remoteDeliveryService.js";
@@ -93,6 +93,8 @@ export function readTaskContext(
         ...(entry.ref.store === "run" ? {
         execution: currentRunExecution(reader, entry.value as AgentRun, runtimeEvents)
       } : {}), ...(entry.ref.store === "role" ? {
+        providerRetryDecision: providerRetryDecision(reader.getTaskRoleSessionSet(taskId,
+          (entry.value as { name: string }).name)?.providerBinding),
         providerRetry: providerRetrySummary(reader.getTaskRoleSessionSet(taskId,
           (entry.value as { name: string }).name)?.providerBinding,
           `yui task role session retry ${taskId} ${(entry.value as { name: string }).name} show --json`)

@@ -41,6 +41,64 @@ export type ProviderRetry = Readonly<{
 export const PROVIDER_RETRY_LIMIT = 5;
 export const PROVIDER_RETRY_BUDGET_MS = 600_000;
 
+/** Classification selects a finite budget, never permission to submit.
+ * Missing positive evidence gets only the first automatic attempt of a chain.
+ * Both tiers use the same persisted count/window, including manual successors. */
+export function providerErrorRetryPolicy(error: StandardAgentError) {
+  if (error.retryable === false || error.sessionDisposition === "unrecoverable"
+    || ["access", "invalid-request", "context", "session", "conflict", "cancelled"].includes(error.category)) {
+    return { source: "known-non-retryable" as const, limit: 0 };
+  }
+  return error.retryable === true
+    ? { source: "known-transient" as const, limit: PROVIDER_RETRY_LIMIT }
+    : { source: "unknown-fallback" as const, limit: 1 };
+}
+
+/** Scheduling can require fresh native proof without asserting recoverability.
+ * The Host must still check exact latest failed Turn and background quiescence
+ * at the write boundary. A missing mapper flag is not missing delivery proof. */
+function failureBlocker(binding: ProviderRuntimeBinding, error: StandardAgentError): string | undefined {
+  const turn = binding.run;
+  if (binding.retryDisabled) return "retry-disabled";
+  if (providerErrorRetryPolicy(error).limit === 0) return "known-non-retryable";
+  if (turn?.status === "delivery-unknown" || error.inputDisposition === "unknown") return "input-delivery-unknown";
+  if (turn === null || !["failed", "rejected"].includes(turn.status)) return "terminal-failure-unconfirmed";
+  if (binding.authority.owner !== "controller" || turn.authorityEpoch !== binding.authority.epoch) return "authority-changed";
+  const conversation = binding.conversations.find(c => c.epoch === binding.currentConversationEpoch);
+  if (conversation === undefined || conversation.status !== "current") return "session-identity-unavailable";
+  if (conversation.recoverability === "unrecoverable") return "session-unrecoverable";
+  if (turn.status === "failed" && (turn.nativeTurnId === undefined || error.inputDisposition !== "accepted")) {
+    return "exact-failed-turn-unavailable";
+  }
+  if (turn.status === "rejected" && error.inputDisposition !== "not-accepted") return "non-submission-unproven";
+  if (error.sessionDisposition !== "recoverable"
+    && !(turn.status === "failed" && turn.retrySupported === true)) return "session-recovery-unproven";
+  return undefined;
+}
+
+/** Also available when no automatic chain could be created. No persisted
+ * duplicate policy state: derive from the exact current failure and binding. */
+export function providerRetryDecision(binding: ProviderRuntimeBinding | null | undefined) {
+  const error = binding?.run?.failure?.error;
+  if (binding == null || error === undefined) return null;
+  const policy = providerErrorRetryPolicy(error);
+  const retry = binding.retry;
+  const matches = retry !== undefined
+    && (retry.failedAttemptId === binding.run?.attemptId || retry.currentAttemptId === binding.run?.attemptId);
+  const attempts = matches ? retry.attempts : 0;
+  const reason = failureBlocker(binding, error)
+    ?? (binding.run?.retrySupported !== true ? "host-safe-retry-unsupported" : undefined)
+    ?? (matches && ["cancelled", "exhausted", "needs-attention"].includes(retry.status)
+      ? retry.reason ?? retry.status : undefined)
+    ?? (binding.run?.input === undefined && !matches ? "owned-input-unavailable" : undefined);
+  return {
+    ...policy, category: error.category, attempts, remaining: Math.max(0, policy.limit - attempts),
+    deadline: matches ? retry.deadline : null,
+    reason: reason ?? "awaiting-native-safe-admission",
+    failureRef: binding.run!.failure!.ref
+  };
+}
+
 export function providerRetryPending(binding: ProviderRuntimeBinding | null | undefined): boolean {
   return binding?.retry?.status === "waiting" || binding?.retry?.status === "in-flight";
 }
@@ -64,7 +122,7 @@ export function providerRunRetry(
   const failure = turn.failure;
   if (turn.status !== "failed" || turn.nativeTurnId === undefined || turn.input === undefined
     || turn.retrySupported !== true || failure?.error.inputDisposition !== "accepted"
-    || failure.error.sessionDisposition !== "recoverable") return undefined;
+    || failure.error.sessionDisposition === "unrecoverable") return undefined;
   // A manual attempt can cancel automation when its error changes character.
   // Refresh its failed-Turn proof without granting the same input a new budget.
   const continuing = previous?.status !== "recovered" && previous?.currentAttemptId === turn.attemptId
@@ -97,12 +155,15 @@ export function recordProviderFailure(
   if (previous?.currentAttemptId === turn.attemptId
     && ["cancelled", "exhausted", "needs-attention"].includes(previous.status)) return binding;
   if (previous?.failedAttemptId === turn.attemptId && previous.status !== "in-flight") return binding;
-  if (input.error.retryable !== true || input.error.inputDisposition === "unknown"
-    || input.error.sessionDisposition !== "recoverable"
-    || binding.authority.owner !== "controller" || binding.retryDisabled === true
-    || turn.status === "failed" && (turn.nativeTurnId === undefined || input.error.inputDisposition !== "accepted")) {
-    return providerRetryPending(binding)
-      ? cancelProviderRetry(binding, "failure-not-safely-retryable", input.at) : binding;
+  const blocker = failureBlocker(binding, input.error);
+  if (blocker !== undefined) {
+    if (!providerRetryPending(binding)) return binding;
+    const stopped = cancelProviderRetry(binding, blocker, input.at);
+    return { ...stopped, retry: {
+      ...stopped.retry!, error: input.error, failureRef: input.failureRef,
+      failedAttemptId: turn.attemptId, failureAttemptId: turn.attemptId,
+      ...(turn.nativeTurnId === undefined ? {} : { failedNativeTurnId: turn.nativeTurnId })
+    } };
   }
   const continuing = previous?.status === "in-flight" && previous.currentAttemptId === turn.attemptId;
   const originalInput = continuing ? previous.input : turn.input;
@@ -136,7 +197,8 @@ export function recordProviderFailure(
   const delay = serverWait === undefined ? backoff
     : Math.max(backoff, serverWait + 1 + Math.ceil(random * 1_000));
   const eligible = input.at + delay;
-  const exhausted = current.attempts >= PROVIDER_RETRY_LIMIT || eligible >= Date.parse(current.deadline);
+  const limit = providerErrorRetryPolicy(current.error).limit;
+  const exhausted = current.attempts >= limit || eligible >= Date.parse(current.deadline);
   return {
     ...binding,
     ...(!continuing && previous !== undefined
@@ -146,7 +208,7 @@ export function recordProviderFailure(
       // representable even for huge hints; the unshortened hint stays in error.
       ...current, nextEligibleAt: iso(exhausted ? Math.min(eligible, Date.parse(current.deadline)) : eligible),
       ...(turn.retrySupported !== true ? { status: "needs-attention", reason: "host-safe-retry-unsupported" }
-        : exhausted ? { status: "exhausted", reason: current.attempts >= PROVIDER_RETRY_LIMIT
+        : exhausted ? { status: "exhausted", reason: current.attempts >= limit
         ? "automatic-attempt-limit" : "retry-after-exceeds-deadline" } : {})
     }
   };
@@ -162,9 +224,10 @@ export function admitProviderRetry(
   if (retry?.status !== "waiting"
     || input.at < Date.parse(retry.nextEligibleAt)
     || retry.successorAutomatic !== false && (binding.retryDisabled === true
-      || input.at >= Date.parse(retry.deadline) || retry.attempts >= PROVIDER_RETRY_LIMIT)
+      || input.at >= Date.parse(retry.deadline) || retry.attempts >= providerErrorRetryPolicy(retry.error).limit)
     || binding.authority.owner !== "controller" || binding.authority.epoch !== retry.authorityEpoch
     || binding.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId !== retry.nativeSessionId
+    || binding.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.recoverability === "unrecoverable"
     || binding.run?.attemptId !== retry.failedAttemptId
     || !["failed", "rejected", "deferred"].includes(binding.run.status)) {
     throw new Error("Provider retry is not eligible under the current input, Session, authority or budget.");
@@ -237,8 +300,11 @@ export function providerRetryProjection(binding: ProviderRuntimeBinding | null |
     chainId: retry.chainId,
     status: retry.status === "in-flight" && binding?.run?.status === "delivery-unknown"
       ? "delivery-unknown" as const : retry.status,
-    attempts: retry.status === "recovered" ? 0 : retry.attempts,
-    limit: PROVIDER_RETRY_LIMIT, nextEligibleAt: retry.nextEligibleAt, deadline: retry.deadline,
+    attempts: retry.attempts,
+    policySource: providerErrorRetryPolicy(retry.error).source,
+    limit: providerErrorRetryPolicy(retry.error).limit,
+    remaining: Math.max(0, providerErrorRetryPolicy(retry.error).limit - retry.attempts),
+    nextEligibleAt: retry.nextEligibleAt, deadline: retry.deadline,
     category: retry.error.category, preservesWork: true, nativeSessionId: retry.nativeSessionId,
     ...(retry.reason === undefined ? {} : { reason: retry.reason }),
     failureRef: retry.failureRef,
@@ -293,8 +359,10 @@ export function controlProviderRetry(
 
 export function renderProviderRetry(binding: ProviderRuntimeBinding | null | undefined): string {
   const view = providerRetryProjection(binding);
+  const decision = providerRetryDecision(binding);
   return view === null ? `Provider retry: ${binding?.retryDisabled ? "disabled" : "none"}`
-    : `Provider retry: ${view.category}/${view.status}; ${view.attempts}/${view.limit}; next=${view.nextEligibleAt}; `
+      + (decision === null ? "" : `; ${decision.source}; ${decision.reason}`)
+    : `Provider retry: ${view.category}/${view.status}; ${view.policySource}; ${view.attempts}/${view.limit}; next=${view.nextEligibleAt}; `
       + `deadline=${view.deadline}; existing work preserved${view.reason === undefined ? "" : `; ${view.reason}`}`;
 }
 

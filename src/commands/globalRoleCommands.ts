@@ -2,7 +2,7 @@ import { roleNotFound, usageError } from "../errors/cliError.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { requireManagedGlobalCaller } from "../runtime/managedCaller.js";
 import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt, summaryText, summaryMetadata } from "../output/boundedRead.js";
-import { controlProviderRetry, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
+import { controlProviderRetry, providerRetryDecision, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
 import { globalSessionHealth } from "../runtime/globalSessionHealth.js";
 import { pendingGlobalInboxMessages, inboxHandlingState, globalInboxDeliveryState } from "../message/inboxReceipt.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
@@ -773,7 +773,8 @@ function roleSession(
       const health = globalSessionHealth(role, sessions);
       const historical = binding?.retry !== undefined && health.retry === null;
       const detail = {
-        roleName: name, retry: providerRetryProjection(binding), disabled: binding?.retryDisabled ?? false,
+        roleName: name, retry: providerRetryProjection(binding), decision: providerRetryDecision(binding),
+        disabled: binding?.retryDisabled ?? false,
         selectedNativeSessionId: health.nativeSessionId,
         retryScope: historical ? "historical-session" : "current-session"
       };

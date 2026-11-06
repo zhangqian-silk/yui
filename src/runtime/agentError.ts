@@ -61,7 +61,8 @@ export type AgentErrorClassification = Readonly<{
   code: string;
   inputDisposition?: AgentErrorInputDisposition;
   sessionDisposition?: AgentErrorSessionDisposition;
-  /** Positive Driver evidence of a transient error; absent never grants replay. */
+  /** Positive transient or negative permanent evidence. Absence selects the
+   * bounded unknown policy, never submission safety or Session recoverability. */
   retryable?: boolean;
   retryAfterMs?: number;
 }>;
