@@ -1,7 +1,7 @@
 import type { GlobalRoleSessionSet } from "../executor/agentExecutor.js";
 import type { GlobalRole } from "../role/role.js";
 import { currentProviderConversation } from "./providerRuntimeIdentity.js";
-import { providerRetrySummary } from "./providerRetry.js";
+import { providerRetryDecision, providerRetrySummary } from "./providerRetry.js";
 
 /** Read-only provenance. Writer selection is not live Host/transport health. */
 export function globalSessionHealth(role: GlobalRole, sessions: GlobalRoleSessionSet | null) {
@@ -34,6 +34,7 @@ export function globalSessionHealth(role: GlobalRole, sessions: GlobalRoleSessio
       sessionDisposition: failure.error.sessionDisposition
     },
     retry,
+    retryDecision: turnMatches ? providerRetryDecision(binding) : null,
     historicalBinding: binding != null && (!matches || (binding.run !== null && !turnMatches)),
     hostObservation: "unobserved" as const,
     note: "Selected/active writer state is not delivery or terminal-observation health. "

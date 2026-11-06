@@ -261,7 +261,8 @@ test("restoring an authorized Draft planning Session retains Host custody withou
   await rejected({ nativeSessionId: "other-session" });
   await rejected({ environment: { ...payload.environment, YUI_WORKSPACE: join(home, "wrong-workspace") } });
   store.saveTaskRoleSessionSet({ ...accepted, sessions: { codex: {
-    ...session, effective: { ...session.effective, executionAuthority: "delivery" }
+    ...session, effective: { ...session.effective, executionAuthority: "delivery",
+      leaderStage: { ...session.effective.leaderStage, stage: "develop" } }
   } } });
   await rejected();
   store.saveTaskRoleSessionSet(accepted);

@@ -3498,6 +3498,7 @@ type AgentConfigurationMutation = Readonly<{
   agentId: string;
   config: RoleAgentConfig;
   cwd: string;
+  related?: readonly AgentConfigurationMutation[];
 }>;
 
 type AgentConfigurationMutationValidator = (
@@ -3518,30 +3519,25 @@ async function preflightAgentConfigurationMutation(
     await warmConfigurationMutationCatalog(commandArgs, store, catalogs);
     return undefined;
   }
-  const agent = store.getConfiguredAgent(mutation.agentId);
-  if (agent === null) throw agentNotFound(mutation.agentId);
-  const resolved = await catalogs.resolve({
-    agent,
-    cwd: mutation.cwd,
-    config: mutation.config
-  });
-  try {
-    validateAgentLaunchConfiguration(resolved.catalog, mutation.config);
-  } catch (error) {
-    throw usageError(error instanceof Error ? error.message : String(error));
-  }
+  const checked = await Promise.all([mutation, ...(mutation.related ?? [])].map(async candidate => {
+    const agent = store.getConfiguredAgent(candidate.agentId);
+    if (agent === null) throw agentNotFound(candidate.agentId);
+    const resolved = await catalogs.resolve({ agent, cwd: candidate.cwd, config: candidate.config });
+    try { validateAgentLaunchConfiguration(resolved.catalog, candidate.config); }
+    catch (error) { throw usageError(error instanceof Error ? error.message : String(error)); }
+    return { candidate, resolved };
+  }));
   return (candidate) => {
-    if (
-      candidate.agentId !== mutation.agentId
-      || resolve(candidate.cwd) !== resolve(mutation.cwd)
-      || !isDeepStrictEqual(candidate.config, mutation.config)
-    ) {
+    const match = checked.find(entry => candidate.agentId === entry.candidate.agentId
+      && resolve(candidate.cwd) === resolve(entry.candidate.cwd)
+      && isDeepStrictEqual(candidate.config, entry.candidate.config));
+    if (match === undefined) {
       throw usageError(
         "Agent configuration changed after capability preflight; retry the command."
       );
     }
     try {
-      validateAgentLaunchConfiguration(resolved.catalog, candidate.config);
+      validateAgentLaunchConfiguration(match.resolved.catalog, candidate.config);
     } catch (error) {
       throw usageError(error instanceof Error ? error.message : String(error));
     }

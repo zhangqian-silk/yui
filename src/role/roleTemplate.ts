@@ -10,7 +10,7 @@ export type InheritedTaskRole = Pick<TaskRole,
 export type StoredTaskRole = TaskRole | InheritedTaskRole;
 const localFields = ["schemaVersion", "taskId", "name", "template", "workspace", "launchRevision",
   "createdAt", "updatedAt", "executionEnvironment", "instanceCode"] as const;
-const inheritedFields = ["activeAgentId", "agentBindings", "defaultAccess", "description",
+const inheritedFields = ["activeAgentId", "agentBindings", "leaderStages", "defaultAccess", "description",
   "responsibilities", "constraints", "expectedOutput", "systemPrompt", "skills", "enabled"] as const;
 
 export function validateStoredTaskRole(role: StoredTaskRole): void {

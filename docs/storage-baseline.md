@@ -2,12 +2,17 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.31. The 1.30 → 1.31 transition admits explicit
+Current storage is 1.32. The 1.31 → 1.32 transition admits explicit
 ExperimentLeader template references and schema-1 experimental knowledge in
 Task artifact repositories. No tables are added and no existing Task/Role,
 artifact or runtime is converted. Inherited configuration is resolved on read;
 historical execution snapshots remain fixed. Use the centralized upgrade path
 for an existing Home; rolling software back requires its matching Home backup.
+
+The 1.30 → 1.31 transition admits optional Leader draft/develop overrides and
+launch stage/source provenance. It preserves existing Role, Task, Session and
+Run payloads byte-for-byte; it neither invents overrides nor reconfigures or
+restarts existing Sessions.
 
 The 1.29 → 1.30 transition admits explicit WorkItem
 continuation receipts, Role-tagged native user messages, and correlation of an

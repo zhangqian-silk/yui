@@ -354,6 +354,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
 }, {
   fromVersion: "1.30",
   toVersion: "1.31",
+  name: "leader-stage-launch-configuration",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional Role stage overrides and actual launch provenance. Absence keeps
+  // existing defaults; do not rewrite frozen Tasks, Sessions or historical Runs.
+  sql: ""
+}, {
+  fromVersion: "1.31",
+  toVersion: "1.32",
   name: "experiment-knowledge-and-role-inheritance",
   introducedIn: "next",
   sourceChecksum: CURRENT_SCHEMA_CHECKSUM,

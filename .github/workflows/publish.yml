@@ -27,7 +27,7 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux-x64
-          - os: macos-14
+          - os: macos-15
             target: darwin-arm64
     runs-on: ${{ matrix.os }}
     steps:
@@ -172,7 +172,7 @@ jobs:
       fail-fast: true
       matrix:
         node: [20, 22, 24, 26]
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
 
     steps:
       - name: Checkout

@@ -57,6 +57,13 @@ export type RoleAgentBinding = {
   config: RoleAgentConfig;
 };
 
+export type LeaderStage = "draft" | "develop";
+export type LeaderStageOverrides = Partial<Record<LeaderStage, {
+  agentId?: string;
+  model?: string;
+  effort?: string;
+}>>;
+
 type RoleAgentOwner = RoleProfile & RoleDisplaySettings & {
   enabled?: boolean;
   /** Monotonic desired configuration revision. It only affects the next launch. */
@@ -66,6 +73,8 @@ type RoleAgentOwner = RoleProfile & RoleDisplaySettings & {
   name: string;
   activeAgentId: string;
   agentBindings: Record<string, RoleAgentBinding>;
+  /** Optional runtime selection only; never an authority or a new Role. */
+  leaderStages?: LeaderStageOverrides;
   workspace: string;
   createdAt: string;
   updatedAt: string;
@@ -179,6 +188,7 @@ export function copyGlobalRoleToTaskRole(
     name: requireSafeIdentity(name, "Role name"),
     activeAgentId: globalRole.activeAgentId,
     agentBindings: cloneBindings(globalRole.agentBindings),
+    ...(globalRole.leaderStages === undefined ? {} : { leaderStages: cloneJson(globalRole.leaderStages) }),
     workspace: globalRole.workspace,
     createdAt: timestamp,
     updatedAt: timestamp
@@ -193,7 +203,7 @@ export function activeRoleAgentBinding(role: Role | GlobalRole): RoleAgentBindin
 export function updateGlobalRole(
   role: GlobalRole,
   patch: Partial<Pick<GlobalRole,
-    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings,
+    "name" | "activeAgentId" | "agentBindings" | "leaderStages" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings,
   now: Date
 ): GlobalRole {
   validateGlobalRole(role);
@@ -214,7 +224,7 @@ export function updateGlobalRole(
 export function updateRole(
   role: Role,
   patch: Partial<Pick<Role,
-    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings & {
+    "name" | "activeAgentId" | "agentBindings" | "leaderStages" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings & {
       executionEnvironment?: ExecutionEnvironmentSnapshot | null;
     },
   now: Date
@@ -481,7 +491,43 @@ function validateRoleOwner<T extends GlobalRole | TaskRole>(role: T): T {
   if (!Object.hasOwn(role.agentBindings, role.activeAgentId)) {
     throw new Error(`Role active Agent is not bound: ${role.activeAgentId}.`);
   }
+  if (role.leaderStages !== undefined) {
+    if (role.name !== "leader") throw new Error("Only the Leader may configure draft/develop stages.");
+    if (role.leaderStages === null || typeof role.leaderStages !== "object" || Array.isArray(role.leaderStages)) {
+      throw new Error("Leader stages must be an object.");
+    }
+    requireKnownFields(role.leaderStages, ["draft", "develop"], "Leader stages");
+    for (const stage of ["draft", "develop"] as const) {
+      const override = role.leaderStages[stage];
+      if (override === undefined) continue;
+      if (override === null || typeof override !== "object" || Array.isArray(override)) {
+        throw new Error(`Leader ${stage} override must be an object.`);
+      }
+      requireKnownFields(override, ["agentId", "model", "effort"], `Leader ${stage}`);
+      if (override.agentId !== undefined) requireSafeIdentity(override.agentId, "Leader stage Agent");
+      if (override.model !== undefined) requireText(override.model, "Leader stage model");
+      if (override.effort !== undefined) requireText(override.effort, "Leader stage effort");
+      resolveLeaderStageBinding(role, stage);
+    }
+  }
   return role;
+}
+
+/** Cross-Agent fallback always uses that Agent's own frozen binding. */
+export function resolveLeaderStageBinding(
+  role: Pick<RoleAgentOwner, "name" | "activeAgentId" | "agentBindings" | "leaderStages">,
+  stage?: LeaderStage
+): RoleAgentBinding {
+  const override = role.name === "leader" && stage !== undefined ? role.leaderStages?.[stage] : undefined;
+  const agentId = override?.agentId ?? role.activeAgentId;
+  const binding = role.agentBindings[agentId];
+  if (binding === undefined) throw new Error(`Leader stage Agent is not bound: ${agentId}.`);
+  const config = resolveAgentAdapter(binding.adapterId).canonicalizeConfig({
+    ...cloneJson(binding.config),
+    ...(override?.model === undefined ? {} : { model: override.model }),
+    ...(override?.effort === undefined ? {} : { effort: override.effort })
+  } as never) as RoleAgentConfig;
+  return { ...binding, config };
 }
 
 function validateRoleAgentBinding(binding: RoleAgentBinding): RoleAgentBinding {
@@ -519,7 +565,7 @@ function assertSessionOwnerMatchesRole(role: Role | GlobalRole, sessions: RoleSe
 
 function cloneRolePatch(
   patch: Partial<Pick<GlobalRole,
-    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings
+    "name" | "activeAgentId" | "agentBindings" | "leaderStages" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings
 ): typeof patch {
   return {
     ...(patch.instanceCode === undefined ? {} : { instanceCode: validateInstanceCode(patch.instanceCode) }),
@@ -531,6 +577,7 @@ function cloneRolePatch(
     ...(patch.workspace === undefined ? {} : { workspace: requireText(patch.workspace, "Role workspace") }),
     ...(patch.defaultAccess === undefined ? {} : { defaultAccess: patch.defaultAccess }),
     ...(patch.agentBindings === undefined ? {} : { agentBindings: cloneBindings(patch.agentBindings) }),
+    ...(patch.leaderStages === undefined ? {} : { leaderStages: cloneJson(patch.leaderStages) }),
     ...cloneProfile(patch)
   };
 }
@@ -540,6 +587,7 @@ function desiredLaunchProjection(role: GlobalRole | TaskRole): unknown {
     name: role.name,
     activeAgentId: role.activeAgentId,
     agentBindings: role.agentBindings,
+    ...(role.leaderStages === undefined ? {} : { leaderStages: role.leaderStages }),
     workspace: role.workspace,
     defaultAccess: role.defaultAccess,
     ...("taskId" in role && role.executionEnvironment !== undefined

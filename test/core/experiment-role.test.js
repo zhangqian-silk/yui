@@ -48,10 +48,14 @@ test("ExperimentLeader has one Leader identity and resolves the current parent w
   const notice = createSessionSkillNotice(home);
   const environment = { YUI_SESSION_MANIFEST: bootstrap.manifestPath };
   notice.prepare("first", environment, "session").commit();
-  store.saveGlobalRole(updateGlobalRole(parent, { constraints: ["updated"], systemPrompt: "new parent rule" }, new Date()));
+  store.saveGlobalRole(updateGlobalRole(parent, { constraints: ["updated"], systemPrompt: "new parent rule",
+    leaderStages: { draft: { model: "planning-fixture" }, develop: { model: "delivery-fixture" } } }, new Date()));
   const changed = store.getRole(taskId, "leader");
   assert.deepEqual(changed.constraints, ["updated"]);
   assert.equal(changed.systemPrompt, "new parent rule");
+  assert.equal(resolveEffectiveLaunch({ role: changed, purpose: "planning" }).model, "planning-fixture");
+  assert.equal(resolveEffectiveLaunch({ role: changed, purpose: "execution" }).model, "delivery-fixture");
+  assert.throws(() => store.saveRole(taskId, updateRole(changed, { leaderStages: {} }, new Date())), /inherits/);
   assert.ok(changed.launchRevision > first.launchRevision);
   const checked = checkSessionSkills(home, bootstrap.manifestPath);
   assert.notEqual(checked.roleProfileRef.digest, bootstrap.manifest.roleProfileRef.digest);
