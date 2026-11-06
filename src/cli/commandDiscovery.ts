@@ -15,15 +15,17 @@ export function discoveryAudience(env: NodeJS.ProcessEnv): DiscoveryAudience {
 }
 
 export function discoveryCommandTree(env: NodeJS.ProcessEnv, audience = discoveryAudience(env)): CommandNode {
+  const includes = (audiences: readonly DiscoveryAudience[] | undefined) =>
+    audiences?.includes(audience) || audience === "experiment-leader" && audiences?.includes("leader");
   const project = (node: CommandNode): CommandNode | undefined => {
     const children = node.children.map(project).filter((child): child is CommandNode => child !== undefined);
-    const eligible = node.discovery?.surface !== "runtime" && node.discovery?.audiences.includes(audience);
+    const eligible = node.discovery?.surface !== "runtime" && includes(node.discovery?.audiences);
     if (!children.length && (!eligible || node.kind === "group") && node !== ROOT_COMMAND) return undefined;
     const executable = eligible && node.kind !== "group";
     const kind = children.length ? executable ? "hybrid" : "group" : node.kind;
     const template = `${node.path.join(" ")}${kind === "group" ? " <command>" : ""}`;
     const omittedOptions = Object.entries(node.discovery?.optionAudiences ?? {})
-      .filter(([, audiences]) => !audiences.includes(audience)).map(([option]) => option);
+      .filter(([, audiences]) => !includes(audiences)).map(([option]) => option);
     const text = (value: string) => omittedOptions.reduce((line, option) =>
       line.replace(new RegExp(`\\s*\\[${option}(?:\\s+[^\\]]*)?\\]`, "g"), ""), value);
     const options = node.options.filter(option => !omittedOptions.includes(option));

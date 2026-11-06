@@ -79,6 +79,8 @@ export type GlobalRole = RoleAgentOwner & {
 export type TaskRole = RoleAgentOwner & {
   schemaVersion: 1;
   taskId: string;
+  /** Logical name stays leader; this selects a live single-inheritance template. */
+  template?: "experiment-leader";
   /** Explicitly adopted environment for the next native Session. */
   executionEnvironment?: ExecutionEnvironmentSnapshot;
 };

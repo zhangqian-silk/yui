@@ -115,6 +115,10 @@ export const api = {
   artifacts: function (taskId, commit, offset) {
     return requestJson(task(taskId) + "/artifacts?" + new URLSearchParams(commit ? { commit, offset: offset || 0 } : {}));
   },
+  iteration: function (taskId, ref, cursor) {
+    const query = ref ? { ref: JSON.stringify(ref) } : cursor ? { cursor } : {};
+    return requestJson(task(taskId) + "/iteration?" + new URLSearchParams(query));
+  },
   artifact: function (taskId, path, commit, offset, before) {
     return requestJson(task(taskId) + "/artifacts?" + new URLSearchParams({
       path, commit, offset: offset || 0, ...(before ? { before } : {})

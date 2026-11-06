@@ -22,12 +22,15 @@ export function bindCreateTask(options) {
     const requirements = h("textarea", { required: true, rows: 6, maxLength: 8000 });
     const projects = h("fieldset.stack", null, h("legend", null, t("create.projects")));
     const plan = h("input", { type: "checkbox", checked: true });
+    const experiment = h("input", { type: "checkbox" });
     const receipt = receiptLine(t("receipt.notSubmitted"));
     const facets = h("div");
     const submit = button(t("create.plan"), { type: "submit", variant: "primary", disabled: true });
     const close = button(t("actions.close"), { onClick: function () { dialog.close(); } });
     form.append(h("h2", null, t("create.title")), field(t("create.name"), title),
-      field(t("goal.requirements"), requirements), projects, field(t("create.plan"), plan, t("create.hint")),
+      field(t("goal.requirements"), requirements), projects,
+      field(t("create.experiment"), experiment, t("create.experimentHint")),
+      field(t("create.plan"), plan, t("create.hint")),
       submit, close, receipt, facets);
     dialog.append(form);
     document.body.append(dialog);
@@ -63,11 +66,11 @@ export function bindCreateTask(options) {
         send: function (requestId) {
           return options.api.createTask({ title: title.value.trim(), requirements: requirements.value.trim(),
             projectIds: choices.filter(function (control) { return control.checked; }).map(function (control) { return control.value; }),
-            plan: plan.checked, requestId: requestId });
+            plan: plan.checked, requestId: requestId, ...(experiment.checked ? { mode: "experiment" } : {}) });
         },
         saved: function (result) {
           creationDialog.dataset.saved = "true";
-          [title, requirements, plan, more].concat(choices).forEach(function (control) { control.disabled = true; });
+          [title, requirements, plan, experiment, more].concat(choices).forEach(function (control) { control.disabled = true; });
           setReceipt(receipt, t("receipt.saved") + " · " + result.task.id, "ok");
           renderSubmissionFacets(facets, result.submission, t);
           facets.append(button(t("create.open"), { onClick: function () {

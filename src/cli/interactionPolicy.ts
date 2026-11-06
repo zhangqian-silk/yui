@@ -332,7 +332,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       provider: "projects",
       actionTarget: false
     }],
-    trailingOptions: { "--project": "value", "--base": "value" }
+    trailingOptions: { "--project": "value", "--base": "value", "--type": "value", "--mode": "value" }
   },
   ...["send", "list"].map((command): InteractionPolicy => ({
     commandPath: ["task", "message", command],

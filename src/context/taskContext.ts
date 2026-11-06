@@ -105,6 +105,10 @@ export function readTaskContext(
     const result = {
       taskId, coreCursor: encode(cursor), throughCursor: encode(cursor),
       view: "current",
+      ...(reader.getRole(taskId, "leader")?.template !== "experiment-leader" ? {} : {
+        iteration: { read: `yui task iteration overview ${taskId} --json`,
+          note: "Artifact knowledge is read live, independently of this DB cursor. Keep Task constraints and unresolved inputs; expand exact experimental references only as needed." }
+      }),
       phase,
       briefWriteGuard: taskBriefGuard(reader, scope.task),
       caller: scope.caller === undefined ? { kind: "unmanaged-or-global" } : {

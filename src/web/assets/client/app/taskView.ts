@@ -165,6 +165,7 @@ function detailContext(view) {
     list: api.list,
     activity: api.activity,
     artifacts: api.artifacts,
+    iteration: api.iteration,
     readArtifact: api.artifact,
     evidence: api.evidence,
     panels: api.panels,
