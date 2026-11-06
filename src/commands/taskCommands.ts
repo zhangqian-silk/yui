@@ -7,6 +7,7 @@ import type { ConfiguredAgent } from "../agent/agent.js";
 import { agentExecutionComponentLabel } from "../agent/executionComponents.js";
 import { assertLeaderArchiveAdmission } from "../task/leaderArchiveAuthority.js";
 import { assertRoleEnabled, isEnabled } from "../role/availability.js";
+import { createExperimentLeader } from "../role/roleTemplate.js";
 import {
   createRun,
   runExecutionObservation,
@@ -1501,7 +1502,7 @@ function createTaskCommand(
   const created = store.transaction((tx) => createTaskAggregate(tx, parsed.title, {
     projectBindings: parsed.projectBindings,
     ...(parsed.type === undefined ? {} : { type: parsed.type })
-  }, now, parsed.defaultProjectIds));
+  }, now, parsed.defaultProjectIds, undefined, parsed.mode));
   notifyMailbox(options.runtime, taskMailbox(created.task.id));
   return output(
     `Created Draft task ${created.task.id}: ${created.task.title}\n`
@@ -1521,18 +1522,22 @@ function parseTaskCreation(
   store: TaskWorkflowStore
 ): Readonly<{
   title: string;
+  mode?: "experiment";
   type?: string;
   projectBindings: readonly TaskProjectBinding[];
   defaultProjectIds: readonly string[];
 }> {
-  const usage = "Task create usage: yui task create <title> [--type <project-defined-type>] [--project <project> ...] [--base <project>=<ref> ...].";
+  const usage = "Task create usage: yui task create <title> [--mode experiment] [--type <project-defined-type>] [--project <project> ...] [--base <project>=<ref> ...].";
   const parsed = parseMultiValueTail(
     args,
-    new Set(["--type"]),
+    new Set(["--type", "--mode"]),
     new Set(["--project", "--base"]),
     usage
   );
   exactPositionals(parsed.positionals, 1, usage);
+  if (parsed.options.has("--mode") && parsed.options.get("--mode") !== "experiment") {
+    throw usageError("--mode must be experiment.");
+  }
   const projectReferences = parsed.multiOptions.get("--project") ?? [];
   const baseOptions = parsed.multiOptions.get("--base") ?? [];
   if (baseOptions.length > 0 && projectReferences.length === 0) {
@@ -1569,6 +1574,7 @@ function parseTaskCreation(
     .map(({ id }) => id);
   return {
     title: parsed.positionals[0],
+    ...(parsed.options.has("--mode") ? { mode: "experiment" as const } : {}),
     ...(parsed.options.has("--type")
       ? { type: requiredOption(parsed.options, "--type") }
       : {}),
@@ -1587,11 +1593,14 @@ export function createTaskAggregate(
   metadata: TaskMetadata,
   now: Date,
   defaultProjectIds: readonly string[] = [],
-  source?: Task["source"]
+  source?: Task["source"],
+  mode?: "experiment"
 ): Readonly<{ task: Task; leader: Role }> {
   const task = { ...createTask(store.nextTaskId(), title, now, metadata),
     ...(source === undefined ? {} : { source: structuredClone(source) }) };
-  const leader = createTaskRole(store, task, LEADER_ROLE, undefined, now);
+  const leader = mode === "experiment"
+    ? createExperimentLeader(task.id, planningRuntimeCwd(store.rootDirectory(), task.id), store.getGlobalRole("leader"), now)
+    : createTaskRole(store, task, LEADER_ROLE, undefined, now);
   store.saveTask(task);
   store.saveRole(task.id, leader);
   recordTaskEvent(store, task.id, "task.created", {

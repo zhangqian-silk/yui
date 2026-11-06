@@ -20,12 +20,14 @@ import {
 const root = fileURLToPath(new URL("../", import.meta.url));
 const RUNTIME_SKILLS = [
   "yui-leader",
+  "yui-experiment-leader",
   "yui-worker",
   "yui-operator",
   "yui-reviewer",
   "yui-runtime"
 ];
 const RUNTIME_DOCUMENTS = [
+  "docs/experiments.md",
   "docs/native-agent.md",
   "docs/examples/agent-offline.mjs",
   "README.md",

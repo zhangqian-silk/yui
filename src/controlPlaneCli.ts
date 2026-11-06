@@ -13,6 +13,7 @@ import { recordTaskInterruptResult } from "./message/taskInterrupt.js";
 
 import type { ConfiguredAgent } from "./agent/agent.js";
 import { nativeAgentEnvironmentNames } from "./agent/launchEnvironment.js";
+import { runIterationCommand } from "./commands/iterationCommands.js";
 import {
   listArtifactsCapability,
   readArtifactCapability,
@@ -1357,6 +1358,11 @@ export async function main(): Promise<void> {
         await workspaceCoordinator.cleanupArchivedTask(taskId, archive.disposition);
         const result = taskArchiveDiagnostics(store, store.getTask(taskId)!);
         emit(renderArchiveDiagnostics(result), false, { taskId, ...result });
+        return;
+      }
+      if (resolved[1] === "iteration") {
+        const data = await runIterationCommand(resolved.slice(2), store, process.env);
+        emit(JSON.stringify(data, null, 2), false, data);
         return;
       }
       if (resolved[1] === "artifact") {

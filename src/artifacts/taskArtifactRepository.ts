@@ -148,6 +148,8 @@ export type TaskArtifactRepository = Readonly<{
   save(input: ArtifactSaveInput): Promise<ArtifactSaveResult>;
   /** Read one artifact at HEAD (or at a pinned commit) as bytes + digest. */
   read(relativePath: string, commit?: string): Promise<ArtifactContent>;
+  /** Exact tree membership without enumerating unrelated artifact history. */
+  has(relativePath: string, commit: string): Promise<boolean>;
   /** List tracked artifacts at HEAD (or at a pinned commit). */
   list(commit?: string): Promise<readonly ArtifactEntry[]>;
   /** Uncommitted (work-in-progress) paths, if any. Empty when the tree is clean. */
@@ -345,6 +347,13 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
     }
     return entries;
   };
+  const has = async (relativePath: string, commit: string): Promise<boolean> => {
+    await checkBoundary();
+    const pinned = await artifactCommit(repoPath, commit, getConfig);
+    const safe = safeRelativeArtifactPath(relativePath);
+    const output = await managedGit(repoPath, ["ls-tree", "-z", pinned, "--", safe], { getConfig });
+    return output.length > 0;
+  };
 
   const workingChanges = async (): Promise<readonly string[]> => {
     await checkBoundary();
@@ -361,7 +370,7 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
     return changes;
   };
 
-  return { repoPath, ensure, exists, head, save, read, list, workingChanges };
+  return { repoPath, ensure, exists, head, save, read, has, list, workingChanges };
 }
 
 async function currentHead(repoPath: string, getConfig?: () => GitConfig): Promise<string> {

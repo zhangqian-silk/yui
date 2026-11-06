@@ -12,7 +12,7 @@ import {
 
 export type CommandNodeKind = "group" | "leaf" | "hybrid";
 export type CompletionProviderId = "role-agent";
-export type DiscoveryAudience = "public" | "operator" | "leader" | "assignment" | "global" | "unbound";
+export type DiscoveryAudience = "public" | "operator" | "leader" | "experiment-leader" | "assignment" | "global" | "unbound";
 export type CommandDiscovery = Readonly<{
   audiences: readonly DiscoveryAudience[];
   surface: "public" | "managed" | "runtime";
@@ -374,9 +374,27 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "create", discovery: { surface: "public", audiences: ["public","operator"] },
     summary: "Create a Draft Task.",
-    usage: "yui task create <title> [--type <project-defined-type>] [--project <project> ...] [--base <project>=<ref> ...]",
-    options: ["--type", "--project", "--base"],
-    optionValues: { "--type": ["feature", "bugfix"] }
+    usage: "yui task create <title> [--mode experiment] [--type <project-defined-type>] [--project <project> ...] [--base <project>=<ref> ...]",
+    options: ["--mode", "--type", "--project", "--base"],
+    optionValues: { "--mode": ["experiment"], "--type": ["feature", "bugfix"] }
+  },
+  {
+    name: "iteration", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+    summary: "Read and maintain fixed experimental knowledge; no execution is started.",
+    sections: [{ id: "knowledge", title: "Experimental knowledge", entries: ["init", "overview", "read", "compare", "save"] }],
+    children: [
+      { name: "init", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader"] },
+        summary: "Initialize the local artifact repository and return its HEAD.", usage: "yui task iteration init <task>" },
+      { name: "overview", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+        summary: "Read bounded current directions and exact evidence pointers.", usage: "yui task iteration overview <task> [--experiment <ref-json>] [--cursor <cursor>]", options: ["--experiment", "--cursor"] },
+      { name: "read", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+        summary: "Read an exact immutable knowledge reference.", usage: "yui task iteration read <task> <reference-json> [--experiment <ref-json>]", options: ["--experiment"] },
+      { name: "compare", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+        summary: "Compare fixed conditions or results without deciding improvement.", usage: "yui task iteration compare <task> <left-ref-json> <right-ref-json> [--experiment <ref-json>]", options: ["--experiment"] },
+      { name: "save", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+        summary: "Validate and commit knowledge with a request receipt.", usage: "yui task iteration save <task> <record-json> --request-id <id> --expected-head <commit> [--experiment <ref-json>]",
+        options: ["--request-id", "--expected-head", "--experiment"] }
+    ]
   },
   {
     name: "project", discovery: { surface: "managed", audiences: ["operator","leader"] },
@@ -1800,7 +1818,7 @@ export const ROOT_COMMAND = buildNode({
       name: "task", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Manage Tasks, WorkItems, AgentRuns, and integration.",
       sections: [
-        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "replace", "reconcile", "upstream", "artifact"] },
+        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "replace", "reconcile", "upstream", "artifact", "iteration"] },
         { id: "collaboration", title: "Collaboration", entries: ["message", "input", "grant", "workflow", "publication", "work", "run", "review", "integration", "role", "overlap", "change-set"] },
         { id: "knowledge", title: "Task Knowledge", entries: ["search", "brief", "decision", "milestone", "event", "continuation", "wake", "usage"] }
       ],

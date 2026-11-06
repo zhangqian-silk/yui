@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const BUILTIN_YUI_SKILLS: ReadonlySet<string> = new Set([
-  "yui-runtime", "yui-operator", "yui-leader", "yui-worker", "yui-reviewer"
+  "yui-runtime", "yui-operator", "yui-leader", "yui-experiment-leader", "yui-worker", "yui-reviewer"
 ]);
 
 export function currentSkillPath(home: string | undefined, id: string): string {
