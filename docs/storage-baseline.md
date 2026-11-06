@@ -2,7 +2,12 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.30. The 1.29 → 1.30 transition admits explicit WorkItem
+Current storage is 1.31. The 1.30 → 1.31 transition admits optional Leader
+draft/develop overrides and launch stage/source provenance. It preserves existing
+Role, Task, Session and Run payloads byte-for-byte; it neither invents overrides
+nor reconfigures or restarts existing Sessions.
+
+The 1.29 → 1.30 transition admits explicit WorkItem
 continuation receipts, Role-tagged native user messages, and correlation of an
 already accepted native Turn with its newly authorized Run. Existing payloads
 remain byte-for-byte unchanged; no repair intent or acceptance is inferred,

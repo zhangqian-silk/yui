@@ -351,6 +351,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Additive continuation receipts and accepted native Turn -> Run correlation.
   // Never infer historical repair intent, reopen work, or replay native input.
   sql: ""
+}, {
+  fromVersion: "1.30",
+  toVersion: "1.31",
+  name: "leader-stage-launch-configuration",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional Role stage overrides and actual launch provenance. Absence keeps
+  // existing defaults; do not rewrite frozen Tasks, Sessions or historical Runs.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

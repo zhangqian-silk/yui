@@ -325,6 +325,9 @@ import {
   hasNoRoleMutation,
   parseRoleOptions,
   patchRoleAgentBinding,
+  leaderStagePatch,
+  validateLeaderStageConfigurations,
+  leaderStageConfigurationCandidates,
   roleOptionSpecs,
   roleProfilePatch,
   type ParsedRoleOptions
@@ -504,6 +507,17 @@ export function previewTaskRoleAgentConfigurationMutation(
   store: TaskWorkflowStore
 ): TaskRoleAgentConfigurationMutation | undefined {
   if (args[0] !== "role") return undefined;
+  if (args[1] === "bind") {
+    exactPositionals(args.slice(2), 3, "Task role bind usage: yui task role bind <task> <role> <agent-id>.");
+    const role = requireRole(store, args[2]!, args[3]!);
+    const agent = requireAgent(store, args[4]!);
+    const candidates = leaderStageConfigurationCandidates({
+      ...role, activeAgentId: agent.id,
+      agentBindings: { ...role.agentBindings,
+        [agent.id]: role.agentBindings[agent.id] ?? createRoleAgentBinding(agent) }
+    });
+    return candidates.length === 0 ? undefined : { ...candidates[0]!, related: candidates.slice(1) };
+  }
   if (args[1] === "add") {
     const usage = "Task role add usage: yui task role add <task> <name> [Role and Agent settings].";
     const [taskId, roleName, ...tail] = args.slice(2);
@@ -565,6 +579,12 @@ export function previewTaskRoleAgentConfigurationMutation(
       throw usageError("--agent is required.", usage);
     }
     const role = requireRole(store, taskId, roleName);
+    if (parsed.has("--stage")) {
+      let candidate: TaskRoleAgentConfigurationMutation | undefined;
+      const patch = leaderStagePatch(role, parsed, id => requireAgent(store, id),
+        value => { candidate = value; });
+      return { ...candidate!, related: leaderStageConfigurationCandidates({ ...role, ...patch }) };
+    }
     const profileId = parsed.one("--profile");
     const bindingUpdate = resolveTaskRoleAgentBindingUpdate(
       parsed,
@@ -576,7 +596,10 @@ export function previewTaskRoleAgentConfigurationMutation(
     return {
       agentId: bindingUpdate.agentId,
       config: bindingUpdate.binding.config,
-      cwd: role.workspace
+      cwd: role.workspace,
+      ...(role.leaderStages === undefined ? {} : { related: leaderStageConfigurationCandidates({
+        ...role, agentBindings: { ...role.agentBindings, [bindingUpdate.agentId]: bindingUpdate.binding }
+      }) })
     };
   }
   return undefined;
@@ -3788,7 +3811,7 @@ function updateTaskRole(
       && isEnabled(role) === roleProfilePatch(parsed).enabled) return role;
     const changesLaunchContext = hasRoleLaunchContextOptions(parsed) || parsed.has("--profile")
       || changesEnvironment;
-    const changesAgentConfig = hasAgentConfigOptions(parsed);
+    const changesAgentConfig = hasAgentConfigOptions(parsed) || parsed.has("--stage");
     if (changesLaunchContext || changesAgentConfig) {
       assertRoleRuntimeMutationAllowed(tx, {
         scope: "task",
@@ -3800,7 +3823,9 @@ function updateTaskRole(
     const agentProfile = profileId === undefined
       ? undefined
       : requireAgentProfile(tx, profileId);
-    const bindingUpdate = resolveTaskRoleAgentBindingUpdate(
+    const stagePatch = leaderStagePatch(role, parsed, id => requireAgent(tx, id),
+      options.validateAgentConfiguration);
+    const bindingUpdate = stagePatch !== undefined ? undefined : resolveTaskRoleAgentBindingUpdate(
       parsed,
       role,
       agentProfile,
@@ -3818,8 +3843,12 @@ function updateTaskRole(
         }
       }, now);
     let next = updateRole(withBinding, {
-      ...roleProfilePatch(parsed)
+      ...roleProfilePatch(parsed),
+      ...stagePatch
     }, now);
+    if (stagePatch !== undefined || bindingUpdate !== undefined) {
+      validateLeaderStageConfigurations(next, options.validateAgentConfiguration);
+    }
     if (bindingUpdate !== undefined) {
       validateTaskRoleAgentBinding(next, bindingUpdate.agentId, options);
     }
@@ -3914,6 +3943,7 @@ function bindTaskRole(
     const bound = updateRole(role, {
       agentBindings: { ...role.agentBindings, [agent.id]: binding }
     }, now);
+    validateLeaderStageConfigurations({ ...bound, activeAgentId: agent.id }, options.validateAgentConfiguration);
     enqueueWork(tx, taskMailbox(task.id), "role-bound", now, [taskRef(task.id)]);
     if (agent.id === role.activeAgentId) {
       tx.saveRole(task.id, bound);
@@ -4037,7 +4067,7 @@ function transferTaskRoleAuthority(
       taskActor(tx, options, task.id);
       const role = requireRole(tx, task.id, args[1]);
       const sessions = tx.getTaskRoleSessionSet(task.id, role.name);
-      const session = sessions?.sessions[role.activeAgentId];
+      const session = sessions?.sessions[sessions.activeAgentId];
       const binding = sessions?.providerBinding;
       if (sessions === null || sessions === undefined || session === undefined || binding === null || binding === undefined || session.status === "ended") {
         throw new Error(`Task Role has no live managed Provider: ${task.id}/${role.name}.`);
@@ -6672,7 +6702,7 @@ function retryRunOperation(
     // New source/Role defaults are adopted only after formal replacement.
     const directSession = retryItem === null && previous.purpose === "execution"
       && retryManagedWorkspace?.owner.type === "task"
-      ? sessions?.sessions[role.activeAgentId] : undefined;
+      ? sessions?.sessions[sessions.activeAgentId] : undefined;
     const effective = retryLane?.effective
       ?? (directSession === undefined ? undefined
         : effectiveLaunchWithTaskMainWorkspace(directSession.effective, retryManagedWorkspace!))

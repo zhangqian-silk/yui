@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { assertJobRoleRunnable } from "../job/agentRoleScope.js";
 import { recordJobAgentObservation } from "../job/agentJobObservation.js";
 import { isDeepStrictEqual } from "node:util";
+import { resolveLeaderStageBinding } from "../role/role.js";
 import { nonReplayableMessageWake, pinMessageRevisions, taskMessageInboxReceipt, unfinishedLeaderInbox } from "../message/taskInboxOwnership.js";
 import { ControllerWorkObserver, compactWorkObservation } from "../core/controllerTelemetry.js";
 import { contextSnapshotRef } from "../context/contextSnapshot.js";
@@ -92,7 +93,6 @@ import {
   recordTaskMessageControlOutcome
 } from "../message/message.js";
 import { snapshotExecutionLaneWorkspaceSync } from "../repository/executionLaneGitSnapshot.js";
-import { activeRoleAgentBinding } from "../role/role.js";
 import { SYSTEM_OPERATOR_ROLE } from "../role/systemRoles.js";
 import type { AgentDriverRegistry } from "../runtime/agentDriver.js";
 import { standardAgentError } from "../runtime/agentError.js";
@@ -2272,7 +2272,19 @@ export class FileSchedulerStoreAdapter implements SchedulerStorePort {
       }
       if (disposition === "replace-session" && owner.scope === "task") {
         const set = store.getTaskRoleSessionSet(owner.taskId, owner.roleName);
-        if (set !== null) store.saveTaskRoleSessionSet(selectNewTaskRoleSession(set, set.activeAgentId, now));
+        const role = store.getRole(owner.taskId, owner.roleName);
+        if (set !== null) {
+          // Clear the stopped writer's input custody before selecting a
+          // different stage Agent. Selection itself grants no new authority.
+          let next = selectNewTaskRoleSession(set, set.activeAgentId, now);
+          const agentId = role?.name === "leader"
+            ? resolveLeaderStageBinding(role, store.getTask(owner.taskId)?.status === "draft" ? "draft" : "develop").agentId
+            : set.activeAgentId;
+          if (agentId !== next.activeAgentId) {
+            next = selectNewTaskRoleSession({ ...next, activeAgentId: agentId }, agentId, now);
+          }
+          store.saveTaskRoleSessionSet(next);
+        }
         const event = createTaskEvent(store.nextEventId(owner.taskId), owner.taskId,
           "runtime.session-replaced", { roleName: owner.roleName }, now);
         store.saveEvent(owner.taskId, event);
@@ -4003,7 +4015,8 @@ function preallocatedRuntimeReadyAwaitingProjection(
   const run = store.getActiveRun(taskId, observation.fence.roleName);
   const sessions = store.getTaskRoleSessionSet(taskId, observation.fence.roleName);
   if (task == null || run == null || !runPurposeAdmitsTaskState(run.purpose, task)
-    || role?.activeAgentId !== observation.fence.agentId
+    || role == null
+    || (run.effective.leaderStage === undefined && role.activeAgentId !== observation.fence.agentId)
     || run?.id !== runId
     || run.status !== "active"
     || run.effective.agentId !== observation.fence.agentId
@@ -4195,8 +4208,11 @@ function recordTaskRuntimeNativeSession(
     );
   }
   const role = requireRole(store, input.taskId, input.roleName);
-  if (role.activeAgentId !== input.agentId
-    || activeRoleAgentBinding(role).adapterId !== input.adapterId) {
+  const selectedAgent = role.name === "leader"
+    ? admittingRun?.effective.agentId ?? existingPlanning?.effective.agentId
+      ?? resolveLeaderStageBinding(role, task.status === "draft" ? "draft" : "develop").agentId
+    : role.activeAgentId;
+  if (selectedAgent !== input.agentId || role.agentBindings[input.agentId]?.adapterId !== input.adapterId) {
     throw new Error("Native Session registration does not match the active Role Agent.");
   }
   const current = store.getRoleSessionSet(input.taskId, input.roleName)
@@ -4347,8 +4363,8 @@ function mapRole(
   store: TaskStore,
   role: NonNullable<ReturnType<TaskStore["getRole"]>>
 ): SchedulerRole {
-  const binding = activeRoleAgentBinding(role);
   const purpose = store.getTask(role.taskId)?.status === "draft" ? "planning" as const : "execution" as const;
+  const binding = resolveLeaderStageBinding(role, purpose === "planning" ? "draft" : "develop");
   const item = store.listWorkItems(role.taskId).find((candidate) => (
     candidate.assignee === role.name
       && !["accepted", "retired"].includes(candidate.status)
@@ -4363,31 +4379,27 @@ function mapRole(
   const liveSession = activeLiveRoleAgentSession(
     store.getTaskRoleSessionSet(role.taskId, role.name)
   );
-  // This projection plans future dispatch. A live Session retains its actual
-  // source, but cannot silently override an explicit next-Agent selection.
+  const resolveDesired = () => resolveEffectiveLaunch({
+    store, role, purpose,
+    ...(workspace === undefined ? {} : { workspace }),
+    ...(item === null ? {} : { workItemWriteProjectIds: item.writeProjectIds })
+  });
+  // Stage edits are next-launch intent. Keep a live Leader's captured Agent
+  // until the existing replacement/handover boundary has ended that Session.
+  // Other Role binding selection retains its existing dispatch behavior.
   // Active AgentRun delivery separately and exclusively uses turn.effective.
-  const effective = reopened || (liveSession !== null && liveSession.agentId !== role.activeAgentId)
-    ? resolveEffectiveLaunch({
-        store,
-        role,
-        purpose,
-        ...(workspace === undefined ? {} : { workspace }),
-        ...(item === null ? {} : { workItemWriteProjectIds: item.writeProjectIds })
-      })
+  const stageAwareLeader = role.name === "leader"
+    && (role.leaderStages !== undefined || liveSession?.effective.leaderStage !== undefined);
+  const effective = reopened || (!stageAwareLeader && liveSession !== null && liveSession.agentId !== binding.agentId)
+    ? resolveDesired()
     : liveSession !== null && workspace?.owner.type === "task"
       ? effectiveLaunchWithTaskMainWorkspace(liveSession.effective, workspace)
-      : liveSession?.effective ?? resolveEffectiveLaunch({
-          store,
-          role,
-          purpose,
-          ...(workspace === undefined ? {} : { workspace }),
-          ...(item === null ? {} : { workItemWriteProjectIds: item.writeProjectIds })
-        });
+      : liveSession?.effective ?? resolveDesired();
   return {
     taskId: role.taskId,
     name: role.name,
     enabled: role.enabled !== false,
-    activeAgentId: role.activeAgentId,
+    activeAgentId: binding.agentId,
     adapterId: binding.adapterId,
     ...(binding.config.model === undefined ? {} : { model: binding.config.model }),
     ...(binding.config.effort === undefined ? {} : { effort: binding.config.effort }),

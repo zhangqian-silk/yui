@@ -130,6 +130,38 @@ Worker 的编辑不会改写既有的 Task Role。重新套用一个 Profile 是
 原生子代继承其父 Agent 和权限。Profile 可以引导它们的行为；model/effort 覆盖
 需要真实的原生工具支持。它们不获得 Yui Role、独立 Assignment 或更大范围。
 
+## Leader 可选 draft/develop 配置
+
+同一逻辑 Leader 可以为规划（`draft`）和正式交付（`develop`）设置可选的
+Agent/model/effort 覆盖项。阶段不是新 Role，也不授予权限；不影响 Worker 或 Reviewer。
+
+```sh
+yui config role update leader --stage draft --agent planner --model <model> --effort <effort>
+yui config role update leader --stage develop --model <model>
+yui task role update <task> leader --stage draft --effort <effort>
+yui task role show <task> leader
+yui task role capabilities <task> leader --stage draft
+```
+
+不传 `--stage` 时保持原有 binding 更新和 `role bind` 语义。阶段内的 `--agent`
+只选择该阶段的 Agent，不修改默认 active Agent。未覆盖 Agent 时使用默认 active Agent；
+model/effort 逐字段由**所选 Agent 自身已冻结的 Role binding**兜底，再由原生默认值兜底。
+切换 Agent 不复制另一 Agent 的模型、effort、组件、权限或供应商专属配置；
+首次选择未绑定 Agent 时建立其适配器默认 binding，必要时另行配置该 binding。
+已存在的阶段 model/effort 显式覆盖仍保留，并按新 Agent 校验。
+
+`--clear-agent`、`--clear-model`、`--clear-effort` 分别移除覆盖项；
+`--clear-agent-config` 清空该阶段。清除表示继承，不表示强制使用原生默认值。
+阶段更新不能混合 Profile、环境或权限设置；两个阶段都可以完全不配置。
+
+新 Task 冻结全局 Leader bindings 和阶段配置；之后修改全局模板不会静默改写既有 Task，
+需要使用 Task 级更新。阶段来自实际 planning/delivery 启动权限，不从标题、输入文本或
+任意 purpose 猜测。Draft 激活沿现有工作区/权限交接自动选择 develop，不增加阶段专用
+会话替换机制。期望更新不修改正在执行的回合，也不重放输入；保留 Session 的 Host
+重建仍使用已记录的生效快照，需要采用新设置时走既有显式 Session 替换边界。
+查看命令显示期望覆盖、解析值以及生效快照的阶段和逐字段来源；这些是启动请求事实，
+不是原生模型的实时观察。
+
 ## 期望、生效与观察
 
 期望设置是下一次启动的意图。AgentRun 和 Session 捕获生效启动：Agent/组件、

@@ -3,7 +3,7 @@ import {
   activeRoleAgentSession,
   type RoleSessionSet
 } from "../executor/agentExecutor.js";
-import type { GlobalRole, Role, RoleAgentBinding } from "../role/role.js";
+import { resolveLeaderStageBinding, type GlobalRole, type Role, type RoleAgentBinding } from "../role/role.js";
 import { effectiveRoleForLaunch, type EffectiveLaunchSnapshot } from "../executor/effectiveLaunch.js";
 import { defaultTableWidth, renderTable } from "./table.js";
 
@@ -15,6 +15,11 @@ export function renderRoleLaunchComparison(
   effective: EffectiveLaunchSnapshot
 ): string {
   const pinned = effectiveRoleForLaunch(role, effective);
+  const desiredBinding = resolveLeaderStageBinding(role, effective.leaderStage?.stage);
+  const desired = {
+    ...role, activeAgentId: desiredBinding.agentId,
+    agentBindings: { ...role.agentBindings, [desiredBinding.agentId]: desiredBinding }
+  };
   return renderTable(
     "Configuration intent (not observed Provider state)",
     [
@@ -25,7 +30,7 @@ export function renderRoleLaunchComparison(
       { header: "Permission", minWidth: 12, maxWidth: 34 },
       { header: "Profile intent", minWidth: 14, maxWidth: 14 }
     ],
-    ([[`Role desired r${role.launchRevision}`, role],
+    ([[`Role desired r${role.launchRevision}`, desired],
       [`Session pinned r${effective.sourceDesiredRevision}`, pinned]] as const).map(([source, current]) => {
       const binding = current.agentBindings[current.activeAgentId]!;
       return [
@@ -38,7 +43,8 @@ export function renderRoleLaunchComparison(
       ];
     }),
     defaultTableWidth()
-  ) + "\n\nSkill package evidence:\n" + (effective.skillPackages === undefined
+  ) + (effective.leaderStage === undefined ? "" : `\nLeader stage: ${effective.leaderStage.stage}; sources: ${JSON.stringify(effective.leaderStage.sources)}`)
+    + "\n\nSkill package evidence:\n" + (effective.skillPackages === undefined
     ? "  Legacy / externally recorded: complete package versions were not recorded."
     : effective.skillPackages.map(skill =>
       `  ${skill.id} @ ${skill.digest}\n    ${skill.source.kind}: ${skill.source.path}\n`
@@ -80,6 +86,10 @@ export function renderRoleDetails(
     `  Enabled          ${isEnabled(role)}`,
     ...(!isEnabled(role) ? [`  Availability     ${roleDisabledReason(role)}`] : []),
     `  Active Agent     ${role.activeAgentId}`,
+    ...(role.name !== "leader" ? [] : (["draft", "develop"] as const).map(stage => {
+      const binding = resolveLeaderStageBinding(role, stage);
+      return `  ${stage.padEnd(16)} ${JSON.stringify(role.leaderStages?.[stage] ?? {})}; resolved=${binding.agentId}, model=${binding.config.model ?? "Agent default"}, effort=${binding.config.effort ?? "Agent default"}`;
+    })),
     `  Workspace        ${role.workspace}`,
     `  Instance code    ${role.instanceCode ?? "-"} (display only; next Session launch)`,
     ...("taskId" in role ? [
@@ -95,7 +105,7 @@ export function renderRoleDetails(
     // Naming the plan alone would show two different ACP products identically.
     `  Effective launch ${effective === undefined
       ? "not started"
-      : `${effective.agentId}/${effective.component}; r${effective.sourceDesiredRevision}; Profile intent=${effective.profileAccess}; permission=${effective.permission.strategy}`}`,
+      : `${effective.agentId}/${effective.component}; r${effective.sourceDesiredRevision}; stage=${effective.leaderStage?.stage ?? "-"}; model=${effective.model ?? "Agent default"}; effort=${effective.effort ?? "Agent default"}; Profile intent=${effective.profileAccess}; permission=${effective.permission.strategy}`}`,
     `  Desired drift    ${effective === undefined
       ? "-"
       : effective.sourceDesiredRevision === role.launchRevision

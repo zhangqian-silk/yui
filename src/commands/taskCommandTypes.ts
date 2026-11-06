@@ -124,6 +124,7 @@ export type TaskWorkflowStore = TaskStore;
 
 
 export type TaskRoleAgentConfigurationMutation = Readonly<{
+  related?: readonly TaskRoleAgentConfigurationMutation[];
   agentId: string;
   config: RoleAgentConfig;
   cwd: string;

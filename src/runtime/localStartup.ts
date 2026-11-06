@@ -4,6 +4,7 @@ import {
   type ConfiguredAgent
 } from "../agent/agent.js";
 import type { TaskStore } from "../storage/taskStore.js";
+import { resolveLeaderStageBinding } from "../role/role.js";
 import {
   codexSharedSocketPath,
   ensureCodexSharedDaemon,
@@ -26,7 +27,12 @@ export function codexAgentsInUse(store: TaskStore, targetAgentId?: string): Conf
   } else {
     for (const role of store.listGlobalRoles()) ids.add(role.activeAgentId);
     for (const taskId of store.listActiveTaskIds()) {
-      for (const role of store.listRoles(taskId)) ids.add(role.activeAgentId);
+      for (const role of store.listRoles(taskId)) {
+        ids.add(resolveLeaderStageBinding(role,
+          store.getTask(taskId)?.status === "draft" ? "draft" : "develop").agentId);
+        const sessions = store.getTaskRoleSessionSet(taskId, role.name);
+        if (sessions?.sessions[sessions.activeAgentId]?.status === "active") ids.add(sessions.activeAgentId);
+      }
     }
   }
   return [...ids].flatMap((id) => {

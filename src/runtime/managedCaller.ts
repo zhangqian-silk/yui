@@ -3,6 +3,7 @@ import type { Role } from "../role/role.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { AgentRun } from "../agentRun/agentRun.js";
 import { currentProviderConversation } from "./providerRuntimeIdentity.js";
+import type { EffectiveLaunchSnapshot } from "../executor/effectiveLaunch.js";
 
 /** Native Session identity supplied by the Agent transport. */
 export const MANAGED_NATIVE_SESSION_ENV = "YUI_NATIVE_SESSION_ID";
@@ -199,14 +200,16 @@ export function currentManagedRuntime(
 }
 
 /** Select execution identity, not a credential or grant. Workers retain their
- * active Assignment; Leader management follows the current Role selection. */
-export function taskRoleRuntimeIdentity(role: Role, activeRun: AgentRun | null): Readonly<{
+ * active Assignment; a stage-aware Leader retains its captured launch identity.
+ * Explicit rebinding revocation and exact Session fences still apply. */
+export function taskRoleRuntimeIdentity(role: Role, activeRun: AgentRun | null, sessionEffective?: EffectiveLaunchSnapshot): Readonly<{
   agentId: string;
   adapterId: string;
 }> {
-  const effective = role.name !== "leader" && activeRun?.status === "active"
+  const effective = activeRun?.status === "active"
+    && (role.name !== "leader" || activeRun.effective.leaderStage !== undefined)
     ? activeRun.effective
-    : undefined;
+    : role.name === "leader" && sessionEffective?.leaderStage !== undefined ? sessionEffective : undefined;
   return {
     agentId: effective?.agentId ?? role.activeAgentId,
     adapterId: effective?.adapterId ?? activeRoleAgentBinding(role).adapterId
@@ -225,8 +228,9 @@ function requireCurrentRuntime(
     );
   }
   const activeRun = store.getActiveRun(self.taskId, self.roleName);
-  const { agentId, adapterId } = taskRoleRuntimeIdentity(role, activeRun);
   const sessions = store.getTaskRoleSessionSet(self.taskId, self.roleName);
+  const { agentId, adapterId } = taskRoleRuntimeIdentity(role, activeRun,
+    sessions?.sessions[sessions.activeAgentId]?.effective);
   const session = sessions?.sessions[agentId];
   if (self.nativeSessionId === undefined) {
     throw new ManagedRuntimeDriftError(
