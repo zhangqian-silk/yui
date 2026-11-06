@@ -5,6 +5,7 @@ import {
 } from "../resources/projectResource.js";
 
 import type { WorkerAccess } from "../profile/agentProfile.js";
+import { resolveLeaderStageBinding, type LeaderStage } from "../role/role.js";
 import type {
   GlobalRole,
   RoleAgentBinding,
@@ -52,6 +53,10 @@ type EffectiveLaunchBase = Readonly<{
   schemaVersion: 1;
   executionAuthority: "planning" | "delivery";
   sourceDesiredRevision: number;
+  leaderStage?: Readonly<{
+    stage: LeaderStage;
+    sources: Readonly<{ agentId: "stage" | "default"; model: "stage" | "binding" | "native-default"; effort: "stage" | "binding" | "native-default" }>;
+  }>;
   agentId: string;
   /**
    * The execution component this Session is pinned to. The connection plan
@@ -136,7 +141,14 @@ export function resolveEffectiveLaunch(
     throw new Error("Planning cannot request delivery authority.");
   }
   validateDesiredRole(input.role);
-  const binding = input.role.agentBindings[input.role.activeAgentId]!;
+  const executionAuthority = input.executionAuthority ?? (input.purpose === "planning" ? "planning" : "delivery");
+  // The caller's captured execution authority is the stage source, not input
+  // prose or arbitrary purposes. Global templates are not Task executions.
+  const stage = "taskId" in input.role && input.role.name === "leader"
+    ? executionAuthority === "planning" ? "draft" : "develop"
+    : undefined;
+  const binding = resolveLeaderStageBinding(input.role, stage);
+  const override = stage === undefined ? undefined : input.role.leaderStages?.[stage];
   const workspace = snapshotWorkspace(input.role.workspace, input.workspace);
   const writeProjectIds = effectiveWriteProjects(input, workspace);
   const config = resolveAgentAdapter(binding.adapterId).canonicalizeConfig(
@@ -154,7 +166,17 @@ export function resolveEffectiveLaunch(
       "taskId" in input.role ? { scope: "task", taskId: input.role.taskId } : { scope: "global" },
       input.purpose))).map(skill => skill.package!);
   return snapshotFromConfig({
-    executionAuthority: input.executionAuthority ?? (input.purpose === "planning" ? "planning" : "delivery"),
+    executionAuthority,
+    ...(stage === undefined ? {} : { leaderStage: {
+      stage,
+      sources: {
+        agentId: override?.agentId === undefined ? "default" as const : "stage" as const,
+        model: override?.model !== undefined ? "stage" as const
+          : binding.config.model === undefined ? "native-default" as const : "binding" as const,
+        effort: override?.effort !== undefined ? "stage" as const
+          : binding.config.effort === undefined ? "native-default" as const : "binding" as const
+      }
+    } }),
     sourceDesiredRevision: input.role.launchRevision,
     agentId: binding.agentId,
     component: resolveAgentExecutionComponent(binding.adapterId, binding.component),
@@ -380,6 +402,15 @@ export function validateEffectiveLaunchSnapshot<T extends EffectiveLaunchSnapsho
     throw new Error("Effective launch requires its captured execution authority.");
   }
   positiveInteger(snapshot.sourceDesiredRevision, "Source desired revision");
+  if (snapshot.leaderStage !== undefined) {
+    const expected = snapshot.executionAuthority === "planning" ? "draft" : "develop";
+    if (snapshot.leaderStage.stage !== expected
+      || !["stage", "default"].includes(snapshot.leaderStage.sources.agentId)
+      || !["stage", "binding", "native-default"].includes(snapshot.leaderStage.sources.model)
+      || !["stage", "binding", "native-default"].includes(snapshot.leaderStage.sources.effort)) {
+      throw new Error("Effective Leader stage provenance is invalid.");
+    }
+  }
   identity(snapshot.agentId, "Effective Agent id");
   if (!isAgentExecutionComponentId(snapshot.component)
     || adapterIdForExecutionComponent(snapshot.component) !== snapshot.adapterId) {
@@ -468,6 +499,9 @@ export function effectiveRoleForLaunch<T extends EffectiveLaunchRole>(
     defaultAccess: snapshot.profileAccess,
     workspace: snapshot.workspace.root
   } as T;
+  // This transient Role represents one already-resolved launch, not desired
+  // stage defaults that should be applied again to its selected Agent.
+  delete result.leaderStages;
   if ("taskId" in result) {
     if (snapshot.executionEnvironment === undefined) delete result.executionEnvironment;
     else {
@@ -485,6 +519,7 @@ export function effectiveRoleForLaunch<T extends EffectiveLaunchRole>(
 
 function snapshotFromConfig(input: Readonly<{
   executionAuthority: "planning" | "delivery";
+  leaderStage?: EffectiveLaunchSnapshot["leaderStage"];
   sourceDesiredRevision: number;
   agentId: string;
   component: AgentExecutionComponentId;
@@ -513,6 +548,7 @@ function snapshotFromConfig(input: Readonly<{
   const common = {
     schemaVersion: 1 as const,
     executionAuthority: input.executionAuthority,
+    ...(input.leaderStage === undefined ? {} : { leaderStage: clone(input.leaderStage) }),
     sourceDesiredRevision: positiveInteger(
       input.sourceDesiredRevision,
       "Source desired revision"

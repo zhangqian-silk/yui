@@ -10,6 +10,7 @@ import { validateExactRunReviewRound } from "../lifecycle/exactRunTerminalizatio
 import { isDeepStrictEqual } from "node:util";
 import { isHandlingReminder } from "../message/inboxTurn.js";
 import { roleSessionMayContinue } from "../executor/effectiveLaunch.js";
+import { resolveLeaderStageBinding } from "../role/role.js";
 
 export type OwnedProviderAdmission = Readonly<{
   taskId?: string; roleName: string; runId?: string; agentId: string;
@@ -55,7 +56,8 @@ export function retryIntentBlocker(
   const role = store.getRole(input.taskId, input.roleName);
   if (role !== null && !isEnabled(role)) return "role-disabled";
   const sessions = store.getTaskRoleSessionSet(input.taskId, input.roleName);
-  if (role === null || sessions?.activeAgentId !== role.activeAgentId) return "role-changed";
+  if (role === null || sessions?.activeAgentId !== resolveLeaderStageBinding(role,
+    task.status === "draft" ? "draft" : "develop").agentId) return "role-changed";
   if (sessions.sessions[sessions.activeAgentId]?.effective.sourceDesiredRevision !== role.launchRevision) return "role-configuration-changed";
   if (store.listMessages(input.taskId).some(message =>
     (message.kind === "operator" || message.kind === "user")

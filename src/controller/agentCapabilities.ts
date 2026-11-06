@@ -31,11 +31,12 @@ export async function readTaskAgentCapabilities(
     throw usageError("Task capability query parameters are invalid.");
   }
   const input = params as { readonly [key: string]: JsonValue };
-  if (Object.keys(input).some(key => !["taskId", "roleName", "errorId", "refresh", "reader"].includes(key))
+  if (Object.keys(input).some(key => !["taskId", "roleName", "errorId", "stage", "refresh", "reader"].includes(key))
     || typeof input.taskId !== "string" || input.taskId.length === 0
     || typeof input.roleName !== "string" || input.roleName.length === 0
     || (input.errorId !== undefined && (typeof input.errorId !== "string" || input.errorId.length === 0))
     || (input.refresh !== undefined && typeof input.refresh !== "boolean")
+    || (input.stage !== undefined && input.stage !== "draft" && input.stage !== "develop")
     || !input.reader || typeof input.reader !== "object" || Array.isArray(input.reader)) {
     throw usageError("Task capability query parameters are invalid.");
   }
@@ -55,6 +56,7 @@ export async function readTaskAgentCapabilities(
   const request = resolveTaskAgentCapabilities({
     taskId: input.taskId, roleName: input.roleName,
     ...(input.errorId === undefined ? {} : { errorId: input.errorId as string }),
+    ...(input.stage === undefined ? {} : { stage: input.stage as "draft" | "develop" }),
     refresh: input.refresh === true,
   }, store, reader);
   const resolved = await catalogs.resolve(request.input);

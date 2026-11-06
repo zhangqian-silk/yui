@@ -278,10 +278,10 @@ const roleChildren: readonly NodeInput[] = [
   {
     name: "update", discovery: { surface: "public", audiences: ["public","operator"] },
     summary: "Update a global Role.",
-    usage: "yui config role update <name> [profile options] [clear options]",
-    options: ["--enabled", "--agent", "--workspace", ...roleProfileOptions, ...roleAgentOptions,
+    usage: "yui config role update <name> [--stage draft|develop] [profile options] [clear options]",
+    options: ["--stage", "--clear-agent", "--enabled", "--agent", "--workspace", ...roleProfileOptions, ...roleAgentOptions,
       ...roleProfileClearOptions, ...roleAgentClearOptions, "--yes"],
-    optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"] },
+    optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"], "--stage": ["draft", "develop"] },
     fileOptions: ["--workspace"]
   },
   { name: "remove", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Remove a global Role.", usage: "yui config role remove <name>" },
@@ -853,15 +853,15 @@ const taskChildren: readonly NodeInput[] = [
       { name: "enable", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Enable this Task Role; does not change Task execution authority.", usage: "yui task role enable <task> <role>" },
       { name: "disable", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Block new execution of this Task Role without stopping its current Run.", usage: "yui task role disable <task> <role>" },
       { name: "capabilities", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Read native options using this Role's desired or exact failed launch configuration.",
-        usage: "yui task role capabilities <task> <role> [--error <event-id>] [--refresh]",
-        options: ["--error", "--refresh"] },
+        usage: "yui task role capabilities <task> <role> [--stage draft|develop | --error <event-id>] [--refresh]",
+        options: ["--error", "--stage", "--refresh"], optionValues: { "--stage": ["draft", "develop"] } },
       {
         name: "update", discovery: { surface: "managed", audiences: ["operator","leader"] },
-        summary: "Update a Task Role; Agent settings target the named or active binding without switching it.",
-        usage: "yui task role update <task> <role> [--profile <id>] [--agent <id>] [--environment <preparation-id> | --managed-environment] [Role and Agent settings]",
-        options: ["--enabled", "--profile", "--agent", "--environment", "--managed-environment", ...roleProfileOptions, ...roleAgentOptions,
+        summary: "Update default bindings, or optional Leader --stage draft|develop Agent/model/effort overrides.",
+        usage: "yui task role update <task> <role> [--stage draft|develop] [--profile <id>] [--agent <id>] [--environment <preparation-id> | --managed-environment] [Role and Agent settings]",
+        options: ["--stage", "--clear-agent", "--enabled", "--profile", "--agent", "--environment", "--managed-environment", ...roleProfileOptions, ...roleAgentOptions,
           ...roleProfileClearOptions, ...roleAgentClearOptions, "--yes"],
-        optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"] }
+        optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"], "--stage": ["draft", "develop"] }
       },
       { name: "remove", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Remove a Task Role.", usage: "yui task role remove <task> <role>" },
       { name: "bind", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Bind and activate an Agent for a Task Role.", usage: "yui task role bind <task> <role> <agent-id>" },

@@ -1,7 +1,7 @@
 import { usageError, taskNotFound, roleNotFound, agentNotFound } from "../errors/cliError.js";
 import type { ResolveAgentConfigurationInput, ResolvedAgentConfigurationCatalog } from "./agentConfigurationCatalog.js";
 import { projectAgentCapabilityConfig, type AgentCapabilityConfig } from "./agentCapabilityConfig.js";
-import { activeRoleAgentBinding } from "../role/role.js";
+import { resolveLeaderStageBinding, type LeaderStage } from "../role/role.js";
 import { configuredAgentFingerprint, readAgentFailureContext } from "../runtime/agentFailureContext.js";
 import { resolveManagedTaskReader } from "../runtime/managedCaller.js";
 import { assertTaskReadable } from "../context/taskContext.js";
@@ -9,11 +9,13 @@ import type { TaskStore } from "../storage/taskStore.js";
 
 export type TaskAgentCapabilityQuery = Readonly<{
   taskId: string; roleName: string; errorId?: string; refresh?: boolean;
+  stage?: LeaderStage;
 }>;
 
 export type TaskAgentCapabilityContext = Readonly<{
   taskId: string; roleName: string; selection: "desired-role" | "failed-launch";
   errorId?: string; agentId: string; requestedModel?: string; cwd: string;
+  stage?: LeaderStage;
 }>;
 export type TaskAgentCapabilityResult = ResolvedAgentConfigurationCatalog & Readonly<{
   context: TaskAgentCapabilityContext & Readonly<{ environmentSource: "controller" }>;
@@ -27,6 +29,10 @@ export function resolveTaskAgentCapabilities(
   context: TaskAgentCapabilityContext;
 }> {
   const { taskId, roleName, errorId } = query;
+  if (query.stage !== undefined && (roleName !== "leader"
+    || !["draft", "develop"].includes(query.stage) || errorId !== undefined)) {
+    throw usageError("--stage requires Leader draft|develop and cannot be combined with --error.");
+  }
   const reader = resolveManagedTaskReader(store, environment);
   if (reader !== undefined && (reader.taskId !== taskId
     || reader.roleName !== "leader" && reader.roleName !== roleName)) {
@@ -53,7 +59,7 @@ export function resolveTaskAgentCapabilities(
   } else {
     const role = store.getRole(taskId, roleName);
     if (role === null) throw roleNotFound(roleName);
-    const binding = activeRoleAgentBinding(role);
+    const binding = resolveLeaderStageBinding(role, query.stage);
     agentId = binding.agentId;
     expectedComponent = binding.component;
     cwd = role.workspace;
@@ -74,6 +80,7 @@ export function resolveTaskAgentCapabilities(
       refresh: query.refresh === true },
     context: { taskId, roleName, selection: errorId === undefined ? "desired-role" : "failed-launch",
       ...(errorId === undefined ? {} : { errorId }), agentId: agent.id,
+      ...(query.stage === undefined ? {} : { stage: query.stage }),
       ...(config.model === undefined ? {} : { requestedModel: config.model }),
       cwd }
   };

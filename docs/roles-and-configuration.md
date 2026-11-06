@@ -162,6 +162,46 @@ Native children inherit their parent Agent and authority. A Profile can guide
 their behavior; model/effort overrides require actual native tool support.
 They do not acquire Yui Roles, independent Assignments or broader scope.
 
+## Optional Leader draft/develop configuration
+
+One logical Leader can use different runtime settings for planning (`draft`)
+and delivery (`develop`). These are optional Agent/model/effort overrides, not
+new Roles or permission sources. Worker and Reviewer configurations are unaffected.
+
+```sh
+yui config role update leader --stage draft --agent planner --model <model> --effort <effort>
+yui config role update leader --stage develop --model <model>
+yui task role update <task> leader --stage draft --effort <effort>
+yui task role show <task> leader
+yui task role capabilities <task> leader --stage draft
+```
+
+Without `--stage`, existing binding configuration and `role bind` semantics remain
+unchanged. Within a stage, `--agent` selects that stage's Agent without changing
+the default active Agent. Omitted Agent uses the default active Agent; omitted
+model/effort use the **selected Agent's own frozen Role binding**, then its native
+defaults. Switching Agents never copies another Agent's model, effort, component,
+permissions, or provider-specific settings. A newly selected unbound Agent receives
+its adapter defaults; configure its binding separately if needed. Retained explicit
+stage model/effort overrides are validated for the selected Agent.
+
+`--clear-agent`, `--clear-model`, and `--clear-effort` remove the respective stage
+override; `--clear-agent-config` removes the whole stage. Clearing means inherit,
+not “force native default.” Stage updates cannot mix Profile, environment, or
+permission changes. Both stages may be entirely absent.
+
+New Tasks freeze the global Leader bindings and stage overrides. Global template
+edits never silently rewrite existing Tasks; use the Task-level update explicitly.
+The actual planning/delivery launch authority determines the stage, not the title,
+prompt, or a guessed purpose. Draft activation automatically selects develop at
+the existing workspace/permission handover. Existing lifecycle and compatibility
+rules govern replacement, without a new stage-specific replacement mechanism.
+Desired updates never alter a running turn or replay input. A retained Session/Host
+restoration uses its recorded effective snapshot; apply new desired settings
+through the existing explicit Session replacement boundary. Inspection shows desired
+overrides, resolved settings, and the effective launch's stage and per-field source.
+These are requested launch facts, not native model observations.
+
 ## Desired, effective and observed
 
 Desired settings are next-launch intent. An AgentRun and Session capture the
