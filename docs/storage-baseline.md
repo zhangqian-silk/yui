@@ -2,7 +2,30 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.32. The 1.31 → 1.32 transition admits explicit
+Current storage is 1.33. The 1.32 → 1.33 transition separates frozen Context
+metadata from immutable resource content. SQLite retains identity, scope,
+sequence and fixed references; `task-data/<task-id>/context-values/<digest>.json`
+holds the exact values, deduplicated only within that Task. Snapshot digests,
+authorized values and historical references do not change. Scope lookups use
+the existing SQLite index before loading selected content. Missing or corrupt
+content is an error, never reconstructed from current state.
+
+Upgrade runs under the existing maintenance fence, first backing up the old
+database (which still embeds all old values). It fsyncs objects before committing
+metadata. On a handled failure the database is rolled back/restored and only
+this attempt's new files are removed; cleanup/restoration errors are reported.
+A process crash before commit may leave unreferenced immutable objects. They
+are not authoritative snapshots and a retry verifies and reuses them.
+Backups of a current Home must include `task-data/` as well as `yui.db` and the
+existing artifact repositories. Worktree cleanup must never remove these
+durable namespaces. These changes do not themselves implement Task deletion.
+
+New Task/Run Context includes portable Project policy and the effective
+Knowledge version, not registration paths, proposals or the entire Knowledge
+revision history. Explicit Project commands still expose those records.
+Already frozen Context retains its original values, including old projections.
+
+The 1.31 → 1.32 transition admits explicit
 ExperimentLeader template references and schema-1 experimental knowledge in
 Task artifact repositories. No tables are added and no existing Task/Role,
 artifact or runtime is converted. Inherited configuration is resolved on read;

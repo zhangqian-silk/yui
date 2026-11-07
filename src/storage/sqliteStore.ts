@@ -23,8 +23,10 @@ import { validateAgentJobRun, assertAgentJobRunTransition, type AgentJobRun, typ
  *   - Evidence retention .......... events/review_rounds/change_sets/
  *                                    integration_attempts are never pruned.
  *
- * Records are stored as full current JSON in `payload` columns, with typed
- * columns for the fields that are queried/filtered/used-for-CAS (§4). A
+ * Mutable records are stored as full current JSON in `payload` columns, with
+ * typed columns for fields queried/filtered/used-for-CAS (§4). Frozen Context
+ * stores only metadata here; its resource values use task-owned immutable
+ * content (storage 1.33). A
  * high-frequency runtime telemetry observation is a single-row upsert into
  * `telemetry` scoped by its primary key — it never rewrites global
  * state and never touches another Task's rows (§4.4).
@@ -34,6 +36,7 @@ import { validateAgentJobRun, assertAgentJobRunTransition, type AgentJobRun, typ
  * in-process contract or deferred validation phase.
  */
 import Database from "../sqlite/driver.js";
+import { loadSnapshotContent, storeSnapshotContent, type ContextSnapshotQuery } from "./taskContent.js";
 import { ControllerWorkObserver, compactWorkObservation } from "../core/controllerTelemetry.js";
 import { findNativeSessionSets } from "./nativeSessionLookup.js";
 import { existsSync, mkdirSync } from "node:fs";
@@ -415,6 +418,13 @@ export class SqliteTaskStore implements TaskStore {
   validateCurrentRecords(): void {
     this.getConfig();
     for (const table of STORED_RECORD_TABLES) {
+      if (table === "context_snapshots") {
+        for (const row of this.#db.prepare("SELECT task_id,snapshot_id FROM context_snapshots").iterate() as
+          Iterable<{ task_id: string; snapshot_id: string }>) {
+          this.getContextSnapshot(row.task_id, row.snapshot_id);
+        }
+        continue;
+      }
       for (const row of this.#db.prepare(`SELECT payload FROM ${table}`).iterate() as Iterable<{ payload: string }>) {
         this.#validateTaskPayload(table, row.payload);
       }
@@ -2759,18 +2769,32 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   getContextSnapshot(taskId: string, snapshotId: string): ContextSnapshot | null {
-    return this.#getPayload<ContextSnapshot>(
-      "context_snapshots",
-      "task_id = ? AND snapshot_id = ?",
-      [taskId, snapshotId]
-    );
+    const row = this.#db.prepare("SELECT payload FROM context_snapshots WHERE task_id=? AND snapshot_id=?")
+      .get(taskId, snapshotId) as { payload: string } | undefined;
+    if (!row) return null;
+    const value = JSON.parse(row.payload);
+    if (value?.taskId !== taskId || value?.id !== snapshotId) {
+      throw new StorageRecordError("Context Snapshot ownership differs from its database key.");
+    }
+    return loadSnapshotContent(this.#rootDir, value);
   }
 
   listContextSnapshots(taskId: string): ContextSnapshot[] {
-    return this.#sortById(
-      this.#listPayload<ContextSnapshot>("context_snapshots", "task_id = ?", [taskId]),
-      (snapshot) => snapshot.id
-    );
+    const rows = this.#db.prepare("SELECT snapshot_id FROM context_snapshots WHERE task_id=?")
+      .all(taskId) as { snapshot_id: string }[];
+    return this.#sortById(rows.map(row => this.getContextSnapshot(taskId, row.snapshot_id)!), snapshot => snapshot.id);
+  }
+
+  queryContextSnapshots(taskId: string, query: ContextSnapshotQuery): ContextSnapshot[] {
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 256) {
+      throw new StorageRecordError("Context Snapshot query requires a limit from 1 to 256.");
+    }
+    const rows = this.#db.prepare(`SELECT snapshot_id FROM context_snapshots
+      WHERE task_id=? AND scope=? AND COALESCE(scope_ref, '')=?
+      ${query.rootOnly ? "AND json_extract(payload, '$.parentRef') IS NULL" : ""}
+      ORDER BY sequence ${query.descending ? "DESC" : "ASC"} LIMIT ?`
+    ).all(taskId, query.scope, query.scopeRef ?? "", query.limit) as { snapshot_id: string }[];
+    return rows.map(row => this.getContextSnapshot(taskId, row.snapshot_id)!);
   }
 
   saveContextSnapshot(snapshot: ContextSnapshot): void {
@@ -2804,7 +2828,7 @@ export class SqliteTaskStore implements TaskStore {
         stored.scopeRef ?? null,
         stored.sequence,
         stored.digest,
-        this.#recordJson("context_snapshots", stored),
+        JSON.stringify(storeSnapshotContent(this.#rootDir, stored)),
         stored.frozenAt
       );
     });

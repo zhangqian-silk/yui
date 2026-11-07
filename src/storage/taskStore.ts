@@ -401,6 +401,7 @@ export type TaskStore = {
   nextContextSnapshotId(taskId: string): string;
   getContextSnapshot(taskId: string, snapshotId: string): ContextSnapshot | null;
   listContextSnapshots(taskId: string): ContextSnapshot[];
+  queryContextSnapshots(taskId: string, query: import("./taskContent.js").ContextSnapshotQuery): ContextSnapshot[];
   saveContextSnapshot(snapshot: ContextSnapshot): void;
   nextRunId(taskId: string): string;
   peekNextRunId(taskId: string): string;

@@ -17,6 +17,7 @@ import { sourceRunContextValue } from "./sourceRunContext.js";
 import { boundedDocument, fitsReadBudget, summaryText, recordPage, readDigest, type ReadPageOptions } from "../output/boundedRead.js";
 import { taskBriefGuard, taskPhase } from "./taskPhase.js";
 import { CONTEXT_FAMILIES } from "./contextFamilies.js";
+import { projectKnowledgeContext, projectPolicyContext } from "./projectContext.js";
 
 const MAX_RECORDS = 64;
 const MAX_VALUE_BYTES = 2048;
@@ -497,10 +498,9 @@ function inspectValue(
       if (binding === undefined) return null;
       const project = store.getProject(binding.projectId);
       if (project === null) return null;
-      const { knowledge, ...policy } = project;
-      if (family === "project-policy") return policy;
-      const entry = knowledge.find((item) => item.status === "active" && `${project.id}:${item.id}` === refId);
-      return entry === undefined ? null : { projectId: project.id, ...entry };
+      if (family === "project-policy") return projectPolicyContext(project);
+      const entry = project.knowledge.find((item) => item.status === "active" && `${project.id}:${item.id}` === refId);
+      return entry === undefined ? null : projectKnowledgeContext(project.id, entry);
     }
     case "input-request": return store.getInputRequest(taskId, refId);
     case "work-item": return store.getWorkItem(taskId, refId);
@@ -606,10 +606,9 @@ function authorizedSources(store: TaskStore, { task, caller }: ReturnType<typeof
   for (const binding of task.projectBindings) {
     const project = store.getProject(binding.projectId);
     if (project === null) continue;
-    const { knowledge, ...policy } = project;
-    add("project-policy", project.id, policy);
-    for (const entry of knowledge.filter((k) => k.status === "active")) {
-      add("project-knowledge", `${project.id}:${entry.id}`, { projectId: project.id, ...entry });
+    add("project-policy", project.id, projectPolicyContext(project));
+    for (const entry of project.knowledge.filter((k) => k.status === "active")) {
+      add("project-knowledge", `${project.id}:${entry.id}`, projectKnowledgeContext(project.id, entry));
     }
   }
   // Current responsibilities and unanswered inputs precede historical bulk.

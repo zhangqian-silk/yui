@@ -2,7 +2,7 @@
 
 Read this before changing persistent records, schema or the update handshake.
 
-Yui Home has one authoritative **major.minor** storage version, currently 1.32.
+Yui Home has one authoritative **major.minor** storage version, currently 1.33.
 It is independent of software releases, record schema tags and business
 revisions. `storage_schema` identifies the format and schema checksum. New
 Homes initialize the complete current schema directly.
@@ -35,6 +35,13 @@ Persistent changes after the published 1.0 baseline require an explicit
 same-major minor transition; never rewrite the baseline. Keep current bounded
 retry, lock waiting, transactions, replay protection and exact-identity caches:
 they are current runtime behavior.
+Storage 1.33 keeps frozen Context metadata in SQLite and its immutable resource
+values in `task-data/<task-id>/context-values/`. Preserve both when backing up a
+current Home; these are durable evidence, not a runtime cache or a worktree.
+The 1.32 upgrade backup is self-contained because its snapshots still embed
+their values. Migration publishes fsynced content before committing references,
+and tracks only its own new file/directory effects for rollback. Never refill
+missing frozen content from live records or garbage-collect it by age.
 Real Home operations and publication require explicit user authority;
 development uses isolated fixtures. See
 [the storage baseline](../../../../docs/storage-baseline.md) for current
