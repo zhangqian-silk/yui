@@ -27,6 +27,7 @@ const required = [
   "docs/storage-baseline.md",
   "docs/storage-baseline.zh-CN.md",
   "skills/yui-leader/SKILL.md",
+  "skills/yui-experiment-leader/SKILL.md",
   "skills/yui-worker/SKILL.md",
   "skills/yui-operator/SKILL.md",
   "skills/yui-operator/scripts/verify-submission.mjs",

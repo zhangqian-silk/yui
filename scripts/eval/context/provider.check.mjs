@@ -11,6 +11,89 @@ import { FrameworkFixture } from "./fixture.mjs";
 import { attributeNativeEvents, rejectedNativeCleanup } from "./native-ownership.mjs";
 import { nativeEvidence, nativeCommandFailures } from "./native-evidence.mjs";
 import { subjectFailure } from "./judge.mjs";
+import { prepareFixtureShell, fixtureThreadParameters, fixtureShellPolicy } from "./fixture-shell.mjs";
+import { CLI_AUDIT_NAME } from "./cli-receipt.mjs";
+import { createHash } from "node:crypto";
+import { controllerSandboxPreflight } from "./controller-preflight.mjs";
+
+test("native Controller preflight reports denial before any model and releases its process", async t => {
+  const root = mkdtempSync(join(tmpdir(), "yui-controller-preflight-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const providerBin = join(root, "native"), trace = join(root, "calls.jsonl");
+  writeFileSync(providerBin, `#!${process.execPath}
+    const fs=require("node:fs");
+    require("node:readline").createInterface({input:process.stdin}).on("line",line=>{
+      const m=JSON.parse(line);fs.appendFileSync(${JSON.stringify(trace)},line+"\\n");
+      if(m.id)console.log(JSON.stringify({id:m.id,result:m.method==="command/exec"
+        ? {exitCode:5,stdout:"",stderr:"CONTROLLER_ACCESS_DENIED delivery=not-sent"}
+        : {}}));
+    });`, { mode: 0o755 });
+  const result = await controllerSandboxPreflight({ providerBin, product: root, root, home: join(root, "state") });
+  assert.equal(result.status, "blocked");
+  assert.equal(result.modelStarted, false);
+  assert.match(result.stderr, /CONTROLLER_ACCESS_DENIED/);
+  const calls = readFileSync(trace, "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(calls.map(c => c.method), ["initialize", "initialized", "command/exec"]);
+  assert.deepEqual(calls[2].params.sandboxPolicy, {
+    type: "workspaceWrite", writableRoots: [join(root, "controller-preflight-work")], excludeSlashTmp: true,
+    excludeTmpdirEnvVar: true, networkAccess: false
+  });
+  assert.deepEqual(calls[2].params.command.slice(0, 3), [process.execPath, "--input-type=module", "-e"]);
+  assert.match(calls[2].params.command[3], /controller\.status/);
+});
+
+test("fixture shell binds bare CLI, nested shells, Home and audit before Subject work", t => {
+  const root = mkdtempSync(join(tmpdir(), "yui-shell 'binding-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const bin = join(root, "bin"), home = join(root, "state"), cwd = join(root, "delivery");
+  for (const dir of [bin, home, cwd]) mkdirSync(dir);
+  prepareFixtureShell(root);
+  const cli = join(root, "product-cli"), entry = join(bin, "yui");
+  writeFileSync(cli, `#!${process.execPath}\nconsole.log(JSON.stringify({home:process.env.YUI_HOME,role:process.env.YUI_ROLE,thread:process.env.CODEX_THREAD_ID,args:process.argv.slice(2)}));\n`, { mode: 0o755 });
+  writeFileSync(entry, fixtureCliScript(cli, process.execPath, bin, {
+    module: fileURLToPath(new URL("./cli-receipt.mjs", import.meta.url)), product: root, home,
+    launcherSha256: createHash("sha256").update(readFileSync(cli)).digest("hex"), auditInCwd: true
+  }), { mode: 0o755 });
+  const params = { cwd, model: "unchanged", sandbox: "workspace-write", approvalPolicy: "never",
+    config: { shell_environment_policy: { set: { YUI_HOME: home, YUI_ROLE: "leader", CODEX_THREAD_ID: "owned" } } } };
+  const bound = fixtureThreadParameters(params, root);
+  assert.equal(bound.config.allow_login_shell, false);
+  assert.equal(bound.config.shell_environment_policy.inherit, "none");
+  assert.equal(bound.model, params.model);
+  assert.equal(bound.sandbox, params.sandbox);
+  assert.equal(bound.cwd, params.cwd);
+  assert.equal(params.config.allow_login_shell, undefined, "Do not mutate the original Host request");
+  const bridge = { home, directory: join(root, ".controller-bridge") };
+  const bridged = fixtureThreadParameters({ ...params, runtimeWorkspaceRoots: [cwd] }, root, bridge);
+  assert.deepEqual(bridged.runtimeWorkspaceRoots, [cwd, home, bridge.directory]);
+  assert.equal(bridged.config.sandbox_workspace_write.network_access, false);
+  assert.throws(() => fixtureThreadParameters(params, root, { ...bridge, home: "/foreign" }), /Foreign/);
+  assert.throws(() => fixtureThreadParameters(params, root, { ...bridge, directory: "/tmp" }), /Foreign/);
+  const env = bound.config.shell_environment_policy.set;
+  for (const shell of ["/bin/bash", "/usr/bin/zsh"].filter(existsSync)) {
+    for (const mode of ["-c", "-lc"]) {
+      for (const command of ["yui version --json", `${shellQuote(entry)} version --json`,
+        `${shellQuote(shell)} -lc 'yui version --json'`]) {
+        const run = spawnSync(shell, [mode, command], { cwd, env, encoding: "utf8", timeout: 5000 });
+        assert.equal(run.status, 0, `${shell} ${mode}: ${run.stderr}`);
+        assert.deepEqual(JSON.parse(run.stdout), { home, role: "leader", thread: "owned", args: ["version", "--json"] });
+      }
+    }
+  }
+  const denied = spawnSync(entry, ["version"], { cwd, env: { ...env, YUI_HOME: join(root, "foreign") }, encoding: "utf8" });
+  assert.notEqual(denied.status, 0);
+  assert.match(denied.stderr, /binding mismatch/);
+  const receipts = readFileSync(join(cwd, CLI_AUDIT_NAME), "utf8").trim().split("\n").map(JSON.parse);
+  assert.ok(receipts.length > 0 && receipts.every(r => r.home === home && r.cwd === cwd));
+  const evidence = join(root, "evidence");
+  mkdirSync(evidence);
+  writeFileSync(join(evidence, "transport-test.jsonl"), JSON.stringify({ binding: { home, cwd } }) + "\n");
+  const collect = () => FrameworkFixture.prototype.collectCliReceipts.call({ root, home, evidence });
+  assert.deepEqual(collect(), { receipts, incomplete: false });
+  assert.deepEqual(collect(), { receipts, incomplete: false }, "Repeated stage/final collection refreshes one snapshot");
+  assert.equal(existsSync(join(root, CLI_AUDIT_NAME)), false, "Subject audit writes stay in its actual writable cwd");
+  assert.ok(!readdirSync(cwd).some(name => name.startsWith(".yui-eval-stdout-")), "Temporary capture is released");
+});
 for (const category of ["version", "help", "signal"]) test(`ordinary ${category} preserves stdio and exit without WS or native-lifecycle claims`, async t => {
   const root = mkdtempSync(join(tmpdir(), "yui-native-metadata-"));
   let child, terminal;
@@ -94,11 +177,16 @@ for (const isolated of [true, false]) test(`actual proxy ${isolated ? "handshake
   });
   fixture = new FrameworkFixture(root, root, "fake", "proxy-cleanup", undefined);
   const home = fixture.home, descriptor = join(root, "config.json");
-  const frame = (message, opcode = 1, fin = true) => {
+  const frame = (message, opcode = 1, fin = true, masked = false) => {
     const body = Buffer.isBuffer(message) ? message : Buffer.from(JSON.stringify(message));
     const wide = body.length > 65535, header = Buffer.alloc(wide ? 10 : 4);
-    header[0] = (fin ? 0x80 : 0) | opcode; header[1] = wide ? 127 : 126;
+    header[0] = (fin ? 0x80 : 0) | opcode; header[1] = (masked ? 128 : 0) | (wide ? 127 : 126);
     if (wide) header.writeBigUInt64BE(BigInt(body.length), 2); else header.writeUInt16BE(body.length, 2);
+    if (masked) {
+      const key = Buffer.from([1, 2, 3, 4]), encoded = Buffer.from(body);
+      for (let i = 0; i < encoded.length; i++) encoded[i] ^= key[i % 4];
+      return Buffer.concat([header, key, encoded]);
+    }
     return Buffer.concat([header, body]);
   };
   const tool = (id, threadId, command, aggregatedOutput, exitCode = 0) => ({
@@ -114,7 +202,8 @@ for (const isolated of [true, false]) test(`actual proxy ${isolated ? "handshake
     ...[
       { id: "s", result: { thread: { id: "owned" },
         cwd: join(home, "runtime/task-runtimes/planning/task-1"), approvalPolicy: "never",
-        sandbox: { type: "workspaceWrite", writableRoots: [], excludeSlashTmp: isolated, excludeTmpdirEnvVar: true } } },
+        sandbox: { type: "workspaceWrite", writableRoots: [home, join(fixture.root, ".controller-bridge")],
+          networkAccess: false, excludeSlashTmp: isolated, excludeTmpdirEnvVar: true } } },
       tool("early", "owned", "yui EARLY_PRIVATE", "EARLY_PRIVATE", 2),
       { id: "t", result: { turn: { id: "turn" } } },
       tool("later", "owned", "yui session skills --json", '{"data":{"skills":[]}}'),
@@ -133,14 +222,21 @@ for (const isolated of [true, false]) test(`actual proxy ${isolated ? "handshake
   const incomingFile = join(root, "incoming.bin");
   writeFileSync(incomingFile, incoming);
   const producer = join(root, "producer");
+  const received = join(root, "received.bin");
   writeFileSync(producer, `#!${process.execPath}\nconst body=require('node:fs').readFileSync(${JSON.stringify(incomingFile)});
+    const chunks=[];process.stdin.on('data',b=>chunks.push(b));
+    process.stdin.on('end',()=>require('node:fs').writeFileSync(${JSON.stringify(received)},Buffer.concat(chunks)));
     process.stdin.resume();process.stdin.once('data',()=>{
       process.stdout.write(body.subarray(0,${split}));
       process.stdin.on('end',()=>process.stdout.write(body.subarray(${split})));
     });`, { mode: 0o755 });
-  writeFileSync(descriptor, JSON.stringify({ mode: "real", providerBin: producer, product: root, evidence: root }));
+  writeFileSync(descriptor, JSON.stringify({ mode: "real", providerBin: producer, product: root, evidence: root,
+    subjectShell: fixtureShellPolicy, controllerBridge: { home, directory: join(fixture.root, ".controller-bridge") } }));
+  const launchCwd = join(home, "runtime/task-runtimes/planning/task-1");
+  mkdirSync(launchCwd, { recursive: true });
   child = spawn(process.execPath, [fileURLToPath(new URL("./provider.mjs", import.meta.url)),
     "app-server", "proxy"], {
+    cwd: launchCwd,
     env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root,
       COLLAB_EVAL_CONFIG: descriptor, YUI_HOME: home, YUI_ROLE: "leader",
       YUI_TASK_ID: "task-1", YUI_SESSION_MANIFEST: join(root, "manifest.json") },
@@ -157,10 +253,12 @@ for (const isolated of [true, false]) test(`actual proxy ${isolated ? "handshake
     }
   });
   child.stderr.on("data", b => errors.push(b));
-  child.stdin.write(Buffer.concat([Buffer.from("GET / HTTP/1.1\r\n\r\n"),
-    frame({ id: "s", method: "thread/start", params: { cwd: join(home, "runtime/task-runtimes/planning/task-1"),
+  const startupBody = Buffer.from(JSON.stringify({ id: "s", method: "thread/start", params: { cwd: join(home, "runtime/task-runtimes/planning/task-1"),
       approvalPolicy: "never", sandbox: "workspace-write", runtimeWorkspaceRoots: [home],
-      config: { sandbox_workspace_write: { exclude_tmpdir_env_var: true, exclude_slash_tmp: true } } } })]));
+      config: { sandbox_workspace_write: { exclude_tmpdir_env_var: true, exclude_slash_tmp: true } } } }));
+  child.stdin.write(Buffer.concat([Buffer.from("GET / HTTP/1.1\r\n\r\n"),
+    frame(startupBody.subarray(0, 37), 1, false, true),
+    frame(startupBody.subarray(37), 0, true, true)]));
   const [code, signal] = await terminal;
   const records = readdirSync(root).filter(n => n.startsWith("transport-"))
     .flatMap(n => readFileSync(join(root, n), "utf8").trim().split("\n")
@@ -183,6 +281,26 @@ for (const isolated of [true, false]) test(`actual proxy ${isolated ? "handshake
     return;
   }
   assert.equal(code, 0, Buffer.concat(errors).toString());
+  const wire = readFileSync(received);
+  const start = wire.indexOf("\r\n\r\n") + 4;
+  const size = wire[start + 1] & 127;
+  const maskOffset = start + (size === 126 ? 4 : size === 127 ? 10 : 2), offset = maskOffset + 4;
+  const length = size === 126 ? wire.readUInt16BE(start + 2) : size === 127 ? Number(wire.readBigUInt64BE(start + 2)) : size;
+  assert.equal(wire[start + 1] & 128, 128, "Preserve client WS masking");
+  const decoded = Buffer.from(wire.subarray(offset, offset + length));
+  for (let i = 0; i < decoded.length; i++) decoded[i] ^= wire[maskOffset + i % 4];
+  const forwarded = JSON.parse(decoded);
+  assert.equal(forwarded.params.cwd, launchCwd);
+  assert.equal(forwarded.params.sandbox, "workspace-write");
+  assert.equal(forwarded.params.config.sandbox_workspace_write.exclude_slash_tmp, true);
+  assert.equal(forwarded.params.config.sandbox_workspace_write.network_access, false);
+  assert.deepEqual(forwarded.params.runtimeWorkspaceRoots, [home, join(fixture.root, ".controller-bridge")]);
+  assert.equal(forwarded.params.config.allow_login_shell, false);
+  assert.equal(forwarded.params.config.shell_environment_policy.set.HOME, join(fixture.root, "user"));
+  assert.equal(forwarded.params.config.shell_environment_policy.set.PATH, `${fixture.root}/bin:/usr/bin:/bin`);
+  assert.deepEqual(wire.subarray(offset + length),
+    frame({ id: "t", method: "turn/start", params: { threadId: "owned" } }));
+  assert.equal(records.filter(e => e.direction === "fixture-shell-binding").length, 1);
   assert.deepEqual(Buffer.concat(output), incoming, "Observation must not alter valid forwarding");
   const find = id => records.find(e => e.direction === "native" && e.message?.params?.item?.id === id);
   assert.equal(find("later").nativeContent, "owned-full");
@@ -276,7 +394,9 @@ test("real proxy forwards post-start naming/Goal requests, replies and WS contro
   const descriptor = join(root, "config.json");
   writeFileSync(descriptor, JSON.stringify({ mode: "real", providerBin: producer,
     product: root, evidence: root, permissionMode: "session-only" }));
+  mkdirSync(cwd, { recursive: true });
   child = spawn(process.execPath, [fileURLToPath(new URL("./provider.mjs", import.meta.url)), "app-server", "proxy"], {
+    cwd,
     env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, COLLAB_EVAL_CONFIG: descriptor,
       YUI_HOME: home, YUI_ROLE: "leader", YUI_TASK_ID: "task-1", YUI_SESSION_MANIFEST: join(root, "manifest.json") },
     stdio: ["pipe", "pipe", "pipe"],

@@ -6,6 +6,25 @@ import * as native from "./native-evidence.mjs";
 import { hash, groupStopFor } from "./common.mjs";
 import { nativeEvidence, epochAt, selectTerminal, cliArguments, nativeCommandFailures, completeJsonLines, words } from "./native-evidence.mjs";
 import { attributeNativeEvents, nativeDiagnostic, nativeControlObservation, rejectedNativeCleanup, recordedStopControls } from "./native-ownership.mjs";
+test("delivery attribution uses the exact launcher cwd, not a planning path or any fixture child", () => {
+  const cwd = "/fixture/state/environments/owned-delivery";
+  const binding = { roleName: "leader", taskId: "task-1", home: "/fixture/state", cwd };
+  const records = [
+    { direction: "host", message: { id: "s", method: "thread/start", params: { cwd } } },
+    { direction: "native", message: { id: "s", result: { thread: { id: "owned", cwd }, cwd } } },
+    { direction: "host", message: { id: "t", method: "turn/start", params: { threadId: "owned" } } },
+    { direction: "native", message: { id: "t", result: { turn: { id: "turn" } } } },
+    { direction: "native", message: { method: "turn/completed",
+      params: { threadId: "owned", turn: { id: "turn", status: "completed" } } } }
+  ].map((e, i) => ({ ...e, binding, at: `2026-11-07T00:00:0${i}Z`, sourceConnection: "owned" }));
+  assert.equal(attributeNativeEvents(records).proofs[0]?.cwd, cwd);
+  assert.equal(attributeNativeEvents(records).events.length, 5);
+  for (const wrong of ["/fixture/state/environments/other-task", "/outside", "/fixture/../outside"]) {
+    assert.equal(attributeNativeEvents(records.map(e => ({ ...e, binding: { ...binding, cwd: wrong } }))).proofs.length, 0);
+  }
+  assert.equal(attributeNativeEvents(records.map((e, i) => i === 2
+    ? { ...e, binding: { ...binding, cwd: "/fixture/other" } } : e)).proofs.length, 0);
+});
 test("broadcast notifications cannot borrow a connection Role, response id or owned Thread", () => {
   const binding = { roleName: "leader", taskId: "task-1", home: "/fixture/state" };
   const entry = (direction, message, second, extra = {}) => ({ direction, message, binding,

@@ -2,7 +2,9 @@
 
 # 存储基线 1.0
 
-当前存储为 1.31。1.30 → 1.31 声明可选 Leader draft/develop 覆盖项及启动阶段/来源记录。既有 Role、Task、Session、Run payload 逐字节保留，不补写阶段配置、不重新配置或重启已有 Session。
+当前存储为 1.32。1.31 → 1.32 声明显式 ExperimentLeader 模板引用和 Task artifacts 内的 schema-1 实验知识，不新增表，不转换既有 Task、Role、文件或运行。继承配置按当前父模板读取，历史执行快照不变。既有 Home 使用集中升级路径；软件回退需要匹配版本的 Home 备份。
+
+1.30 → 1.31 声明可选 Leader draft/develop 覆盖项及启动阶段/来源记录。既有 Role、Task、Session、Run payload 逐字节保留，不补写阶段配置、不重新配置或重启已有 Session。
 
 1.29 → 1.30 声明显式 WorkItem 续作回执、带 Role 标识的原生用户消息，以及已接受原生 Turn 与新授权 Run 的精确关联。既有 payload 逐字节保留；迁移不推断返修意图或验收、不重新打开 WorkItem，也不重放原生输入。
 

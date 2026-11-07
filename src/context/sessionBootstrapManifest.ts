@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type { GlobalRole, TaskRole } from "../role/role.js";
+import { readCurrentTaskLeader } from "../storage/currentTaskLeader.js";
+import { roleSkillIds } from "./roleSessionContext.js";
 import { writeTextFileAtomically } from "../storage/durableFile.js";
 import type { RoleSessionOwner, RoleSkillContext } from "./roleSessionContext.js";
 import { validateSkillPackageRef, type SkillPackageRef } from "./skillPackage.js";
@@ -77,9 +79,10 @@ export function sessionContextInstructions(manifestPath: string, digest?: string
  * Skill IDs against the currently executing installation and Home. */
 export function checkSessionSkills(home: string, manifestPath: string) {
   const manifest = readSessionBootstrapManifest(manifestPath);
+  const current = currentInheritedProfile(home, manifest);
   return {
-    skills: checkCurrentSkills(home, manifest.skills.map(skill => skill.id)),
-    roleProfileRef: manifest.roleProfileRef,
+    skills: checkCurrentSkills(home, current.ids),
+    roleProfileRef: current.profile,
     rule: SKILL_REUSE_RULE,
     historicalPackagesAreAuditOnly: true
   };
@@ -88,12 +91,32 @@ export function checkSessionSkills(home: string, manifestPath: string) {
 export async function checkSessionSkillsAsync(home: string, manifestPath: string, signal: AbortSignal) {
   const manifest = validateSessionBootstrapManifest(JSON.parse(
     await readFile(resolve(manifestPath), { encoding: "utf8", signal })));
+  const current = currentInheritedProfile(home, manifest);
   return {
-    skills: await checkCurrentSkillsAsync(home, manifest.skills.map(skill => skill.id), signal),
-    roleProfileRef: manifest.roleProfileRef,
+    skills: await checkCurrentSkillsAsync(home, current.ids, signal),
+    roleProfileRef: current.profile,
     rule: SKILL_REUSE_RULE,
     historicalPackagesAreAuditOnly: true
   };
+}
+
+/** Parent configuration changes refresh the next input's exact profile/Skill
+ * pointers. The launch snapshot and old manifests remain historical evidence. */
+function currentInheritedProfile(home: string, manifest: SessionBootstrapManifest) {
+  if (manifest.owner.scope !== "task" || !manifest.skills.some(skill => skill.id === "yui-experiment-leader")) {
+    return { ids: manifest.skills.map(skill => skill.id), profile: manifest.roleProfileRef };
+  }
+  const role = readCurrentTaskLeader(home, manifest.owner.taskId);
+  if (role?.template !== "experiment-leader") throw new Error("ExperimentLeader template binding is unavailable.");
+  const content = JSON.stringify({
+    roleName: role.name, roleKind: "leader", defaultAccess: role.defaultAccess,
+    description: role.description, responsibilities: role.responsibilities ?? [],
+    constraints: role.constraints ?? [], expectedOutput: role.expectedOutput, systemPrompt: role.systemPrompt
+  }, null, 2) + "\n";
+  const profileDigest = digest(content);
+  const path = resolve(home, "runtime", "role-profiles", `${profileDigest}.json`);
+  writeImmutableText(path, content);
+  return { ids: roleSkillIds(role, "leader"), profile: { digest: profileDigest, path } };
 }
 
 /** Explicit entry for self-contained Global Context reads across clients. */

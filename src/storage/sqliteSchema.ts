@@ -361,6 +361,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Optional Role stage overrides and actual launch provenance. Absence keeps
   // existing defaults; do not rewrite frozen Tasks, Sessions or historical Runs.
   sql: ""
+}, {
+  fromVersion: "1.31",
+  toVersion: "1.32",
+  name: "experiment-knowledge-and-role-inheritance",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Additive artifact knowledge schema and explicit inherited Task Role bindings.
+  // Existing Tasks and copied Roles remain byte-for-byte unchanged.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

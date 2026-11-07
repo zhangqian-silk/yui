@@ -542,6 +542,8 @@ export const ZH_CN: Readonly<Partial<Record<MessageKey, string>>> = {
   "create.title": "新建任务",
   "create.name": "任务标题",
   "create.projects": "项目上下文",
+  "create.experiment": "长期实验任务",
+  "create.experimentHint": "使用实验 Leader，维护版本化方向、方案与证据；不会因此授权实验调用或启动开发。",
   "create.plan": "创建并规划",
   "create.only": "仅创建",
   "create.hint": "保存 Draft 并通知 Leader 规划，不启动开发。取消勾选则仅保存任务。",

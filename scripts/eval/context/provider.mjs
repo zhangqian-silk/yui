@@ -2,10 +2,12 @@
 import { createConnection } from "node:net";
 import { spawn } from "node:child_process";
 import { readFileSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative, isAbsolute } from "node:path";
 import { pidIdentity, now, redactTransport } from "./common.mjs";
 import { attributeNativeEvents, nativeDiagnostic, nativeControlObservation } from "./native-ownership.mjs";
 import { assertIsolationRequest, assertIsolationReceipt } from "./isolation.mjs";
+import { fixtureThreadParameters } from "./fixture-shell.mjs";
+import { createHash, randomBytes } from "node:crypto";
 const descriptor = JSON.parse(readFileSync(process.env.COLLAB_EVAL_CONFIG, "utf8"));
 const args = process.argv.slice(2);
 if (args.includes("daemon") && !args.includes("version")) throw Error("Shared daemon mutation forbidden");
@@ -25,14 +27,15 @@ if (descriptor.mode === "fake" && !proxy) {
   const managed = proxy && process.env.YUI_HOME && process.env.YUI_ROLE && process.env.YUI_SESSION_MANIFEST;
   const binding = managed ? { taskId: process.env.YUI_TASK_ID, roleName: process.env.YUI_ROLE,
     home: process.env.YUI_HOME, cli: join(process.env.YUI_HOME, "../bin/yui"),
-    product: descriptor.product, node: process.execPath, manifestPath: process.env.YUI_SESSION_MANIFEST,
+      product: descriptor.product, node: process.execPath, cwd: process.cwd(), manifestPath: process.env.YUI_SESSION_MANIFEST,
     ...(descriptor.originalTool ? { originalTool: descriptor.originalTool } : {}) } : undefined;
   const log = value => appendFileSync(join(descriptor.evidence, `transport-${process.pid}.jsonl`),
     JSON.stringify({ at: now(), connectionKind: !proxy ? "metadata" : managed ? "managed" : "detached-control",
       protocol: proxy ? "app-server-ws" : "ordinary-stdio", commandClass,
       binding, ...redactTransport(value) }) + "\n");
   // Retain only tiny request/response identity history, not broadcast bodies.
-  // Valid forwarding is unchanged. Unproven input stays explicitly metadata-only.
+  // Native output is unchanged; Subject startup receives the frozen fixture
+  // shell binding below. Unproven input stays explicitly metadata-only.
   const controls = [], controlIds = new Set(), inspections = new Map();
   const startups = new Map(), isolatedThreads = new Set();
   let rejectedStartup;
@@ -55,6 +58,7 @@ if (descriptor.mode === "fake" && !proxy) {
       const root = join(process.env.YUI_HOME, ".."), id = JSON.stringify(message.id);
       if (direction === "host" && ["thread/start", "thread/resume"].includes(message.method)) {
         assertIsolationRequest(message.params, root, descriptor.permissionMode);
+        if (message.params.cwd !== binding.cwd) throw Error("Fixture native cwd differs from the exact proxy launch directory.");
         startups.set(id, { params: message.params, method: message.method, requestId: message.id });
       } else if (direction === "host" && message.method === "turn/start"
         && !isolatedThreads.has(message.params?.threadId)) {
@@ -65,6 +69,12 @@ if (descriptor.mode === "fake" && !proxy) {
           rejectedStartup = { method: startup.method, requestId: startup.requestId,
             threadId: message.result.thread?.id };
           assertIsolationReceipt(message.result, startup.params, root, descriptor.permissionMode);
+          if (descriptor.controllerBridge && ![descriptor.controllerBridge.home, descriptor.controllerBridge.directory]
+            .every(path => [message.result.cwd, ...message.result.sandbox.writableRoots].some(writable => {
+              const child = relative(writable, path);
+              return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith("../"));
+            })))
+            throw Error("Isolation native fixture Home/mailbox permission is absent");
           rejectedStartup = undefined;
           isolatedThreads.add(message.result.thread.id);
         }
@@ -85,31 +95,39 @@ if (descriptor.mode === "fake" && !proxy) {
   // Capture decoded WS messages for both modes. Credential fields are removed;
   // stderr/config/account payloads are never persisted.
   function decoder(direction) {
-    let buffer = Buffer.alloc(0), upgraded = false, fragments = [], fragmentBytes = 0, finished = false;
+    const bindShell = direction === "host" && managed && descriptor.subjectShell;
+    let buffer = Buffer.alloc(0), upgraded = false, fragments = [], fragmentBytes = 0, finished = false, originalFrames = [];
     const push = chunk => {
+      const forwarded = [];
+      const result = () => bindShell ? Buffer.concat(forwarded) : chunk;
       buffer = Buffer.concat([buffer, chunk]);
       if (!upgraded) {
-        const end = buffer.indexOf("\r\n\r\n"); if (end < 0) return;
+        const end = buffer.indexOf("\r\n\r\n"); if (end < 0) return result();
         // Record only a protocol category, never headers (which can carry auth).
         const firstLine = buffer.subarray(0, buffer.indexOf("\r\n")).toString("ascii");
         const phase = /^GET \S+ HTTP\/1\.[01]$/.test(firstLine) ? "upgrade-request"
           : /^HTTP\/1\.[01] 101(?: |$)/.test(firstLine) ? "upgrade-response" : undefined;
         if (!phase) throw Error("Unexpected app-server WS upgrade header");
         log({ direction, protocolEvidence: phase });
+        if (bindShell) forwarded.push(buffer.subarray(0, end + 4));
         buffer = buffer.subarray(end + 4); upgraded = true;
       }
       while (buffer.length >= 2) {
         let n = buffer[1] & 127, o = 2; const masked = !!(buffer[1] & 128);
-        if (n === 126) { if (buffer.length < 4) return; n = buffer.readUInt16BE(2); o = 4; }
-        if (n === 127) { if (buffer.length < 10) return; n = Number(buffer.readBigUInt64BE(2)); o = 10; }
+        if (n === 126) { if (buffer.length < 4) return result(); n = buffer.readUInt16BE(2); o = 4; }
+        if (n === 127) { if (buffer.length < 10) return result(); n = Number(buffer.readBigUInt64BE(2)); o = 10; }
         if (n > 32 * 1024 * 1024) throw Error("Oversized native frame");
-        if (buffer.length < o + (masked ? 4 : 0) + n) return;
+        if (buffer.length < o + (masked ? 4 : 0) + n) return result();
         const mask = masked ? buffer.subarray(o, o + 4) : null; o += masked ? 4 : 0;
         let b = Buffer.from(buffer.subarray(o, o + n));
         const op = buffer[0] & 15, fin = Boolean(buffer[0] & 0x80);
+        if (bindShell) originalFrames.push(Buffer.from(buffer.subarray(0, o + n)));
         buffer = buffer.subarray(o + n);
         if (mask) for (let i = 0; i < b.length; i++) b[i] ^= mask[i % 4];
-        if ([8, 9, 10].includes(op)) continue;
+        if ([8, 9, 10].includes(op)) {
+          if (bindShell && !fragments.length) { forwarded.push(...originalFrames); originalFrames = []; }
+          continue;
+        }
         if (op === 1 && fragments.length || op === 0 && !fragments.length || ![0, 1].includes(op))
           throw Error("Unsupported/interleaved native WS message");
         if (op === 0 || !fin) {
@@ -120,9 +138,38 @@ if (descriptor.mode === "fake" && !proxy) {
         }
         let message;
         try { message = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(b)); }
-        catch { log({ direction, invalidFrame: true }); continue; }
+        catch {
+          log({ direction, invalidFrame: true });
+          if (bindShell) throw Error("Invalid fixture startup transport");
+          continue;
+        }
+        const startup = bindShell && ["thread/start", "thread/resume"].includes(message.method);
+        if (startup) {
+          // Frozen evaluator-only per-Thread configuration. Never change cwd,
+          // model or Yui identity, nor shared daemon defaults. The optional
+          // fixed-Home bridge adds only the fixture's Home (CLI writes local
+          // knowledge/state) and mailbox write roots.
+          assertIsolationRequest(message.params, join(process.env.YUI_HOME, ".."), descriptor.permissionMode);
+          log({ direction: "fixture-shell-binding", requestId: message.id,
+            originalSha256: createHash("sha256").update(b).digest("hex"), policy: descriptor.subjectShell });
+          message.params = fixtureThreadParameters(message.params, join(process.env.YUI_HOME, ".."), descriptor.controllerBridge);
+        }
         capture(direction, message);
+        if (bindShell) {
+          if (startup) {
+            const body = Buffer.from(JSON.stringify(message)), wide = body.length > 65535;
+            const header = Buffer.alloc(wide ? 10 : 4);
+            header[0] = 129; header[1] = (masked ? 128 : 0) | (wide ? 127 : 126);
+            if (wide) header.writeBigUInt64BE(BigInt(body.length), 2); else header.writeUInt16BE(body.length, 2);
+            const mask = masked ? randomBytes(4) : Buffer.alloc(0);
+            if (masked) for (let i = 0; i < body.length; i++) body[i] ^= mask[i % 4];
+            forwarded.push(header, mask, body);
+            forwarded.push(...originalFrames.filter(frame => [8, 9, 10].includes(frame[0] & 15)));
+          } else forwarded.push(...originalFrames);
+          originalFrames = [];
+        }
       }
+      return result();
     };
     push.finish = () => {
       if (finished) return;
@@ -177,7 +224,7 @@ if (descriptor.mode === "fake" && !proxy) {
   output.once("close", () => incoming?.finish());
   process.stdin.on("data", b => {
     if (failed) return;
-    try { outgoing?.(b); upstream.write(b); } catch (error) { fail(error); }
+    try { upstream.write(outgoing ? outgoing(b) : b); } catch (error) { fail(error); }
   });
   process.stdin.on("end", () => { outgoing?.finish(); upstream.end(); });
   if (!child) {

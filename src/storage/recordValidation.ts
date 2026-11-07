@@ -19,7 +19,8 @@ import { validateAgentProfile } from "../profile/agentProfile.js";
 import { validateProject } from "../repository/project.js";
 import { validateEnvironmentPreparation, validateLocalResource } from "../resources/projectResource.js";
 import { validateReviewRound } from "../review/reviewRound.js";
-import { validateGlobalRole, validateTaskRole } from "../role/role.js";
+import { validateGlobalRole } from "../role/role.js";
+import { validateStoredTaskRole } from "../role/roleTemplate.js";
 import { createSessionOwnerIdentity, type SessionOwnerIdentity } from "../runtime/sessionOwnerIdentity.js";
 import { validateTaskWake } from "../scheduler/taskWake.js";
 import { validateTask } from "../task/task.js";
@@ -41,7 +42,7 @@ const validators = {
   configured_agents: check(validateConfiguredAgent),
   agent_profiles: check(validateAgentProfile),
   projects: check(validateProject),
-  task_roles: check(validateTaskRole),
+  task_roles: check(validateStoredTaskRole),
   global_roles: check(validateGlobalRole),
   role_session_sets: check<RoleSessionSet>(record => {
     if (record.owner?.scope !== "task") throw new Error("Task Session set requires task scope.");

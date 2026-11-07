@@ -10,6 +10,7 @@ import { fixturePermissionArguments } from "./isolation.mjs";
 import { invocationCompletion } from "./completion.mjs";
 import { reportingCarrier } from "./obligations.mjs";
 import { executionModules, RUN_VERSION } from "./versions.mjs";
+import { fixtureShellPolicy } from "./fixture-shell.mjs";
 const options = parseOptions(process.argv.slice(2));
 const businessOnly = options.scenarios.every(isBusinessScenario);
 if (options.scenarios.some(isBusinessScenario) && !businessOnly)
@@ -115,8 +116,14 @@ else {
       .map(name => [name, modules[name.startsWith("../") ? name.slice(3) : `context/${name}`]])),
     osIsolation: options["permission-mode"] === "session-only" ? "explicitly-disabled; not evaluated" : "unproven",
     permissionArguments: fixturePermissionArguments(options["permission-mode"]),
-    configurationIdentityVersion: 2,
+    subjectShell: fixtureShellPolicy,
+    controllerPreflight: "native-workspace-rpc-before-model-v1",
+    controllerBridge: "linux-fixed-home-file-relay-v1",
+    configurationIdentityVersion: 5,
     configurationIdentity: hash(JSON.stringify({ instructions, routingContract,
+      subjectShell: fixtureShellPolicy,
+      controllerPreflight: "native-workspace-rpc-before-model-v1",
+      controllerBridge: "linux-fixed-home-file-relay-v1",
       permissionMode: options["permission-mode"],
       cliEntryMode: options["cli-entry-mode"],
       permissionArguments: fixturePermissionArguments(options["permission-mode"]), ...(recovery ? { recoveryContract: recovery } : {}) })),

@@ -426,6 +426,23 @@ test("reviewed lifecycle candidate selects action manuals, not a file-existence 
       "An unreviewed body or version must not inherit the current obligation mapping");
   }
 });
+test("reviewed current Skill tree binds reporting and Task-fact obligations without waiving reads", () => {
+  const inventory = treeHashes(fileURLToPath(new URL("../../../skills", import.meta.url)));
+  assert.equal(currentPlanningContract(inventory)?.digest,
+    "7cd272ba86afbf3d11b6e44771445a82153f50d30ffae04ca45d737d915c665c");
+  assert.equal(reportingCarrier(inventory).kind, "reviewed-inline-action-core");
+  assert.equal(obligations.taskFactsCarrier(inventory).path, "yui-runtime/SKILL.md");
+  assert.deepEqual(planningReferences("operator", inventory), [
+    "yui-operator/references/submission.md", "yui-operator/references/body-transport.md"
+  ]);
+  for (const path of ["yui-runtime/SKILL.md", "yui-runtime/VERSION",
+    "yui-leader/references/integration.md", "yui-operator/references/configuration.md"]) {
+    const changed = { ...inventory, [path]: { sha256: hash("unreviewed change") } };
+    assert.equal(currentPlanningContract(changed), undefined);
+    assert.equal(reportingCarrier(changed).status, "unknown");
+    assert.equal(obligations.taskFactsCarrier(changed).status, "unknown");
+  }
+});
 test("product preparation never shares mutable dependency installation with its source", () => {
   const root = mkdtempSync(join(tmpdir(), "eval-product-isolation-"));
   try {

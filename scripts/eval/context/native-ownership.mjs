@@ -1,7 +1,7 @@
 // A proxy connection can receive native broadcasts for unrelated Threads.
 // Derive ownership from this connection's exact Host request/response pairs,
 // never from the connection's Role label or an unsolicited notification.
-import { resolve, join } from "node:path";
+import { resolve, join, relative, isAbsolute } from "node:path";
 import { readdirSync, readFileSync } from "node:fs";
 import { hash, redactTransport, completeJsonLines } from "./common.mjs";
 export function readNativeTransports(directory) {
@@ -179,12 +179,17 @@ export function attributeNativeEvents(raw) {
     const pending = new Map(), threads = new Map(), turns = new Map(), responses = new Set();
     const binding = sorted.find(e => e.binding)?.binding;
     const root = binding?.home ? resolve(binding.home, "..") : undefined;
-    const expectedCwd = binding?.roleName === "leader" && binding.taskId
+    const legacyCwd = binding?.roleName === "leader" && binding.taskId
       ? join(binding.home, "runtime/task-runtimes/planning", binding.taskId)
       : binding?.roleName === "operator" && !binding.taskId ? root : undefined;
-    const managed = Boolean(root && expectedCwd && sorted.every(e => !e.binding
+    // New capture binds the proxy's actual launch directory. The legacy
+    // planning convention is retained only for reading frozen old evidence.
+    const expectedCwd = binding?.cwd ?? legacyCwd;
+    const child = root && typeof expectedCwd === "string" ? relative(root, expectedCwd) : undefined;
+    const managed = Boolean(root && expectedCwd && isAbsolute(expectedCwd) && child !== undefined
+      && child !== ".." && !child.startsWith("../") && !isAbsolute(child) && sorted.every(e => !e.binding
       || e.binding.home === binding.home && e.binding.roleName === binding.roleName
-        && e.binding.taskId === binding.taskId));
+        && e.binding.taskId === binding.taskId && e.binding.cwd === binding.cwd));
     for (const e of sorted) {
       const m = e.message;
       if (!managed || !m || m.id === undefined) continue;
@@ -200,6 +205,7 @@ export function attributeNativeEvents(raw) {
           const thread = result.thread;
           if (typeof thread?.id !== "string" || resolve(p.cwd ?? "") !== expectedCwd
             || thread.cwd && resolve(thread.cwd) !== expectedCwd
+            || result.cwd && resolve(result.cwd) !== expectedCwd
             || q.method === "thread/resume" && thread.id !== p.threadId) continue;
           threads.set(thread.id, { at: request.at, requestId: q.id });
           responses.add(e);

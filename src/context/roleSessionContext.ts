@@ -63,7 +63,9 @@ export function compileRoleSessionContext(
 }
 
 export function roleSkillIds(role: Pick<GlobalRole | TaskRole, "skills">, kind: RoleSessionKind): string[] {
-  const builtInSkillId = kind === "global" ? undefined : `yui-${kind}`;
+  const builtInSkillId = kind === "global" ? undefined
+    : kind === "leader" && role.skills?.includes("yui-experiment-leader")
+      ? "yui-experiment-leader" : `yui-${kind}`;
   return unique([
     "yui-runtime",
     ...(builtInSkillId === undefined ? [] : [builtInSkillId]),
@@ -123,7 +125,7 @@ function renderRoleCore(
       return [
         `You are the Yui Leader for Task ${owner.scope === "task" ? owner.taskId : role.name}.`,
         "Own the Task outcome; do bounded work directly or delegate independently owned requirements when useful.",
-        "Follow the injected yui-leader Skill for Yui coordination."
+        "Follow the injected Leader Role Skill for Yui coordination."
       ];
     case "reviewer":
       return [

@@ -20,11 +20,80 @@ export function renderOverviewPanel(panel, data, t, locale, ctx) {
     h("div", { dataset: { slot: "now" } }), h("p.next-line", { dataset: { slot: "next" } }));
   panel.append(now);
   panel.append(taskActions(data.task, t, ctx));
+  if (data.task.mode === "experiment") panel.append(iterationCard(data, t, locale, ctx));
   if (data.core.attention.openInputs.count) panel.append(needsCard(data, t, locale, ctx));
   const progress = progressCard(data, t, locale, ctx);
   const goal = goalCard(data, t, ctx);
   panel.append(progress);
   panel.append(goal, workAndEvidence(data, t, ctx), decisionsCard(data, t, locale, ctx));
+}
+
+function iterationCard(data, t, locale, ctx) {
+  const zh = locale.startsWith("zh");
+  const reload = button(t("evidence.reload"), { variant: "ghost", icon: "refresh" });
+  const element = card({ title: zh ? "实验方向" : "Experimental directions", icon: "target", actions: reload });
+  const list = h("div");
+  const detail = h("div", { "aria-live": "polite" });
+  element.body.append(list, detail);
+  let sequence = 0;
+  let loadSequence = 0;
+  async function open(ref) {
+    const selected = ++sequence;
+    detail.replaceChildren(note(t("evidence.reading")));
+    try {
+      const result = await ctx.iteration(ref.taskId, ref);
+      if (selected !== sequence || !element.isConnected) return;
+      detail.replaceChildren(richText(result.value.title || result.value.id,
+        result.value.document || result.value.conclusion || result.value.hypothesis || "", t),
+        codeBlock(JSON.stringify(result, null, 2)));
+      // Exact nested references preserve history and scheme versions.
+      const links = [];
+      function visit(value) {
+        if (!value || typeof value !== "object") return;
+        if (value.taskId && value.kind && value.id && value.commit) { links.push(value); return; }
+        Object.values(value).forEach(visit);
+      }
+      visit(result.value);
+      links.forEach(function (reference) {
+        detail.append(button(reference.kind + " · " + reference.id, { variant: "link", onClick: () => open(reference) }));
+      });
+    } catch (error) { if (selected === sequence && element.isConnected) detail.replaceChildren(note(error.message, "bad")); }
+  }
+  async function load(cursor) {
+    const loading = ++loadSequence;
+    reload.disabled = true;
+    list.replaceChildren(note(t("evidence.reading")));
+    try {
+      const result = await ctx.iteration(data.task.id, undefined, typeof cursor === "string" ? cursor : undefined);
+      if (!element.isConnected || loading !== loadSequence) return;
+      list.replaceChildren();
+      if (!result.directions.length) list.append(emptyState(zh ? "尚无方向。与实验 Leader 讨论目标后建立方向与方案。" : "No directions yet. Discuss goals and a plan with the Experiment Leader."));
+      result.directions.forEach(function (direction) {
+        const item = h("article.prose-block", null,
+          h("h4", null, direction.title + " · " + direction.status),
+          richText(zh ? "目标" : "Goal", direction.goal, t),
+          direction.conclusion ? richText(zh ? "当前结论" : "Current conclusion",
+            direction.conclusion.summary + (direction.conclusion.omitted ? "…" : ""), t) : null,
+          richText(zh ? "下一步" : "Next", direction.next, t),
+          bulletList(direction.unresolved));
+        [["currentExperiment", zh ? "当前实验" : "Current experiment"],
+          ["currentConclusion", zh ? "当前结论与依据" : "Current conclusion and evidence"]].forEach(function (entry) {
+          const ref = direction[entry[0]];
+          item.append(ref ? button(entry[1] + " · " + ref.id, { variant: "link", onClick: () => open(ref) })
+            : note(entry[1] + " —"));
+        });
+        list.append(item);
+      });
+      if (result.nextCursor) list.append(button(zh ? "下一页方向" : "Next directions", {
+        variant: "ghost", onClick: () => load(result.nextCursor)
+      }));
+    } catch (error) { if (element.isConnected && loading === loadSequence) list.replaceChildren(note(error.message, "bad")); }
+    finally { if (loading === loadSequence) reload.disabled = false; }
+  }
+  reload.addEventListener("click", load);
+  // Let the containing page attach before accepting asynchronous results.
+  queueMicrotask(load);
+  return element;
 }
 
 // Needs you: open InputRequests with their answer controls. Open questions

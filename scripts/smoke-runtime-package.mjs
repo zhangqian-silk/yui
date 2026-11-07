@@ -75,6 +75,7 @@ let operatorHostPid;
 let scopeRefreshProject;
 const skills = [
   "yui-leader",
+  "yui-experiment-leader",
   "yui-worker",
   "yui-operator",
   "yui-reviewer",
@@ -489,6 +490,20 @@ try {
     phase("doctor/identity");
     const { task } = json("task", "create", "runtime smoke");
     assert.equal(task.status, "draft");
+    if (profile === "full") {
+      const experimentTask = json("task", "create", "experimental knowledge fixture", "--mode", "experiment").task;
+      const initialized = json("task", "iteration", "init", experimentTask.id);
+      const direction = { schemaVersion: 1, kind: "direction", id: "latency", title: "Latency",
+        problem: "slow", goal: "lower latency", metrics: ["p95"], constraints: ["offline fixture"],
+        priority: "high", status: "active", next: "design measurement", unresolved: [] };
+      const request = ["task", "iteration", "save", experimentTask.id, JSON.stringify(direction),
+        "--request-id", "direction-fixture", "--expected-head", initialized.commit];
+      const saved = json(...request);
+      assert.deepEqual(json(...request), saved);
+      assert.equal(json("task", "iteration", "read", experimentTask.id, JSON.stringify(saved.ref)).value.goal, direction.goal);
+      assert.equal(json("task", "iteration", "overview", experimentTask.id).directions[0].id, "latency");
+      assert.equal(json("task", "show", experimentTask.id).task.status, "draft");
+    }
     assert.throws(() => runCli(cli, ["task", "activate", task.id], environment), error => {
       assert.match(String(error.stderr), /activation request.*required/i);
       return true;
