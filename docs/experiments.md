@@ -41,6 +41,11 @@ Task's existing local Git artifact repository, with no new database tables.
 | `execution` | fixed `experiment`, distinct `sample`, actual `conditions`, `observations`, `evidence`, collection `outcome` (observed/failed/unknown), `limitations` |
 | `analysis` | `title`, fixed execution `inputs`, fixed plan `method`, `conclusion`, `limitations`, `evidence`, `relations`, `document` |
 
+Before constructing records, use the installed
+[record contract](../skills/yui-experiment-leader/references/records.md) for
+field types, optional fields, bounds and dependency ordering. The Experiment
+Leader loads it before writes; command help alone is not the JSON schema.
+
 A fixed reference is `{taskId, kind, id, commit}` with a full artifact commit.
 A code condition is `{repository, commit, tree}`; commit may explicitly be
 `unknown`, tree is clean/dirty/unknown, and dirty requires a `diff` evidence
@@ -54,6 +59,11 @@ yui task iteration save task-1 '{"schemaVersion":1,"kind":"direction","id":"late
 ```
 
 The detail, request receipt and affected current index commit atomically.
+The successful save returns `{ref, commit}` (inside `data` for `--json`);
+retain its exact `ref` for dependent records and its `commit` as the next
+save's `--expected-head`. An exact read returns `{ref, value}`. A fresh
+overview returns `commit` and the currently selected directions. These are
+artifact commits, not source-code commits.
 Conflicts do not overwrite another save. Repeating the exact request returns
 its original committed result; different input under the same ID is rejected.
 Uncommitted iteration changes are preserved and require inspection, not blind
@@ -93,6 +103,12 @@ Overview pages contain at most eight directions and 60 KiB of direction data.
 Pass the returned `nextCursor` as `--cursor` to continue the same fixed snapshot;
 reload without it to observe a new HEAD. The index supports up to 10,000
 retained directions; exceeding that limit is rejected before saving.
+Typed reads validate the selected record's direct local references; overview
+also checks that current experiments and conclusion inputs belong to the selected
+direction. Missing or malformed referenced records cannot become current
+knowledge through manual artifact edits. Raw artifacts remain readable for
+diagnosis, without recursively expanding the entire history. Retry references
+compare Task/kind/id/commit values, independent of JSON property order.
 
 To delegate measurement, include existing `workItemIds` on the immutable
 experiment. A current execution Worker supplies `--experiment REFERENCE_JSON`;

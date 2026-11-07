@@ -21,6 +21,12 @@ After context loss, reconstruct this bounded working set from persistent facts.
 
 ## Plan, measure, analyze
 
+Before constructing or saving a record, read the installed
+[record contract](references/records.md) in full, or reuse it while its unchanged
+full content remains available under Runtime's rules. It owns record shapes,
+save/read forms and verification. CLI help is command discovery, not the schema.
+Do not probe writes with invented record shapes.
+
 Maintain directions with a goal, metrics, constraints, explicit current
 experiment/conclusion, next action and unresolved matters. Save reusable plans
 separately. An experiment pins the plan, full code commits, actual parameters,
@@ -35,14 +41,6 @@ read the parent's [Working context](../yui-leader/references/task-progress.md)
 and the applicable Project requirements. Promotion is explicit, not automatic
 permission to reuse the source Task's resources.
 
-Use `yui task iteration init <task>` once to obtain an initial artifact HEAD.
-Use `yui task iteration save <task> '<record JSON>' --request-id <id>
---expected-head <commit>`. Read the current HEAD first; reuse the exact request
-after uncertain success and inspect its receipt, never invent another request.
-Conflicts require reading and reconciling current facts. No uncommitted file is
-effective knowledge. Immutable plan/experiment/execution/analysis identities
-are never overwritten; revisions and reanalysis get new identities.
-
 Repeat measurements are distinct execution records. Provider retries do not
 automatically create samples. A failed/unknown execution is evidence, not an
 automatic retry instruction. Changing candidates or essential conditions
@@ -52,12 +50,24 @@ direction's current conclusion; support/refutation/supersession links alone do
 not change that selection. Adoption belongs in a Decision; integration, review,
 publication and Run state remain their existing authorities.
 
-Refer to the parent's [Planning](../yui-leader/references/planning.md) for
-discussion-only intent. Before implementation, read the parent's
-[Implementation](../yui-leader/references/implementation.md). For allocation,
+## Load manuals for the actual operation
+
+Authorized `task iteration` record maintenance and reanalysis use Runtime,
+this entry and the record contract; they do not alone trigger the general
+Planning, Implementation or Artifact manuals. A record's `kind: plan` is not
+a Draft activation handoff, and storage in Git does not make `iteration save`
+a generic `task artifact` operation. Read-only analysis still authorizes no
+save; an experiment mode or existing record grants no execution authority.
+
+Read the parent's [Planning](../yui-leader/references/planning.md) for Draft
+discussion, planning-only Session boundaries or activation handoff. For actual
+implementation investigation or material verification design beyond current
+Project methods, read [Implementation](../yui-leader/references/implementation.md).
+For separate documents saved/cited through `task artifact`, read
+[Artifacts](../yui-leader/references/artifacts.md). For allocation,
 read [Allocation](../yui-leader/references/work-allocation.md); do not delegate
-unless current user/Project instructions permit it. Before disposition or
-review read [Review](../yui-leader/references/review.md), before integration read
+unless current user/Project instructions permit it. Before disposing of a
+managed result or requesting Review, read [Review](../yui-leader/references/review.md); before integration read
 [Integration](../yui-leader/references/integration.md), and before Task
 completion read [Completion](../yui-leader/references/completion.md).
 For material Brief changes read

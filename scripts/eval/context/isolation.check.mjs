@@ -67,4 +67,14 @@ test("fixture permissions and native startup fail closed without bypass fallback
   await assert.rejects(startIsolatedThread(async () => { count++; throw Error("native refused"); },
     request, "/owned"), /native refused/);
   assert.equal(count, 1, "Native failure is not retried with weaker permissions");
+  assert.throws(() => assertIsolationRequest({ ...request, config: {
+    sandbox_workspace_write: { ...request.config.sandbox_workspace_write, network_access: true }
+  } }, "/owned"), /networking/);
+  const networkBound = { ...request, config: {
+    sandbox_workspace_write: { ...request.config.sandbox_workspace_write, network_access: false }
+  } };
+  for (const networkAccess of [true, undefined]) {
+    assert.throws(() => assertIsolationReceipt({ ...receipt, sandbox: { ...receipt.sandbox, networkAccess } },
+      networkBound, "/owned"), /network restriction/);
+  }
 });

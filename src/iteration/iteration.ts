@@ -46,6 +46,18 @@ const fields: Record<KnowledgeKind, string[]> = {
 const json = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
 const hash = (value: unknown) => createHash("sha256").update(json(value)).digest("hex");
 const pathFor = (kind: KnowledgeKind, id: string) => `iteration/${kind}/${identity(id)}.json`;
+const sameRef = (left: KnowledgeRef, right: KnowledgeRef) => left.taskId === right.taskId
+  && left.kind === right.kind && left.id === right.id && left.commit === right.commit;
+function localReferences(record: KnowledgeRecord): KnowledgeRef[] {
+  switch (record.kind) {
+    case "direction": return [record.currentExperiment, record.currentConclusion].filter((r): r is KnowledgeRef => r !== undefined);
+    // Cross-Task imports are resolved by the command's Task store, not this repository.
+    case "plan": return [];
+    case "experiment": return [record.plan, ...(record.revises ? [record.revises] : [])];
+    case "execution": return [record.experiment, ...(record.retryOf ? [record.retryOf] : [])];
+    case "analysis": return [record.method, ...record.inputs, ...record.relations.map(r => r.report)];
+  }
+}
 function identity(value: string): string {
   if (typeof value !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/u.test(value)) throw new Error("Invalid iteration identity.");
   return value;
@@ -147,11 +159,28 @@ export function validateKnowledge(record: KnowledgeRecord): KnowledgeRecord {
  * Immutable records use a new identity for a revision, retry or reanalysis. */
 export function openIteration(repo: TaskArtifactRepository) {
   const readJson = async (path: string, commit: string) => JSON.parse((await repo.read(path, commit)).bytes.toString("utf8"));
-  const read = async (reference: KnowledgeRef): Promise<KnowledgeRecord> => {
+  const readRecord = async (reference: KnowledgeRef): Promise<KnowledgeRecord> => {
     ref(reference);
     if (reference.taskId !== repo.taskId) throw new Error("Iteration reference belongs to another Task; import a reusable plan explicitly.");
     const record = validateKnowledge(await readJson(pathFor(reference.kind, reference.id), reference.commit));
     if (record.kind !== reference.kind || record.id !== reference.id) throw new Error("Iteration reference identity mismatch.");
+    return record;
+  };
+  const read = async (reference: KnowledgeRef): Promise<KnowledgeRecord> => {
+    const record = await readRecord(reference);
+    // Check the selected record's direct edges, not an unbounded recursive
+    // history traversal. Raw artifacts remain available for diagnosis.
+    for (const target of localReferences(record)) await readRecord(target);
+    if (record.kind === "execution" && record.retryOf) {
+      const prior = await readRecord(record.retryOf) as Execution;
+      if (!sameRef(prior.experiment, record.experiment)) throw new Error("A retry must retain the exact experiment revision.");
+    }
+    if (record.kind === "experiment") {
+      const plan = await readRecord(record.plan) as ExperimentPlan;
+      if (Object.keys(plan.parameters).some(key => !Object.hasOwn(record.parameters, key))) {
+        throw new Error("Experiment parameters must explicitly expand every plan parameter.");
+      }
+    }
     return record;
   };
   const indexAt = async (head: string): Promise<Index> => {
@@ -174,8 +203,20 @@ export function openIteration(repo: TaskArtifactRepository) {
     const directions: (Direction & { conclusion?: { summary: string; omitted: boolean } })[] = [];
     for (const id of index.directions.slice(offset, offset + 8)) {
       const direction = await read({ taskId: repo.taskId, kind: "direction", id, commit: head }) as Direction;
-      if (direction.currentExperiment) await read(direction.currentExperiment);
+      if (direction.currentExperiment) {
+        const experiment = await read(direction.currentExperiment) as Experiment;
+        if (!experiment.directions.includes(id)) throw new Error("Current experiment does not belong to this direction.");
+      }
       const report = direction.currentConclusion ? await read(direction.currentConclusion) as Analysis : undefined;
+      if (report) {
+        let related = false;
+        for (const input of report.inputs) {
+          const execution = await read(input) as Execution;
+          const experiment = await read(execution.experiment) as Experiment;
+          if (experiment.directions.includes(id)) related = true;
+        }
+        if (!related) throw new Error("Current conclusion has no input for this direction.");
+      }
       const presented = { ...direction, ...(report ? {
         conclusion: { summary: report.conclusion.slice(0, 1200), omitted: report.conclusion.length > 1200 }
       } : {}) };
@@ -250,7 +291,7 @@ export function openIteration(repo: TaskArtifactRepository) {
         references.push(record.experiment, ...(record.retryOf ? [record.retryOf] : []));
         if (record.retryOf) {
           const prior = await read(record.retryOf) as Execution;
-          if (json(prior.experiment) !== json(record.experiment)) throw new Error("A retry must retain the exact experiment revision.");
+          if (!sameRef(prior.experiment, record.experiment)) throw new Error("A retry must retain the exact experiment revision.");
         }
         break;
       case "analysis":

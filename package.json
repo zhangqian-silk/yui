@@ -1,6 +1,6 @@
 {
   "name": "@zq-silk/yui",
-  "version": "2.27.0",
+  "version": "2.28.0",
   "description": "Local control plane for long-running native agent CLI sessions backed by tmux.",
   "license": "MIT",
   "private": true,
@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "eval:context": "node scripts/eval/context/run.mjs",
-    "eval:check": "node --test scripts/eval/context/check.mjs scripts/eval/context/native.check.mjs scripts/eval/context/provider.check.mjs scripts/eval/context/isolation.check.mjs",
+    "eval:check": "node --test scripts/eval/context/check.mjs scripts/eval/context/native.check.mjs scripts/eval/context/provider.check.mjs scripts/eval/context/isolation.check.mjs scripts/eval/context/controller-bridge.check.mjs",
     "eval:context:wiring": "node scripts/eval/context/wiring-check.mjs",
     "eval:context:analyze": "node scripts/eval/context/analyze.mjs",
     "eval:review": "node scripts/eval/review/evaluate.mjs",

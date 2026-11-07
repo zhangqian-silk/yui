@@ -136,9 +136,12 @@ export const executionLimits = mode => mode === "real"
   : { stageWaitMs: 45000, idleWaitMs: 45000, cliBudgetMs: 120000 };
 export const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
 export const fixtureCliScript = (cli, node, bin, receipt) =>
-  `#!/bin/sh\nexport PATH=${shellQuote(`${dirname(node)}:${bin}:/usr/bin:/bin`)}\nexec ${
+  `#!/bin/sh\nexport PATH=${shellQuote(`${bin}:${dirname(node)}:/usr/bin:/bin`)}\nexec ${
     receipt ? `${shellQuote(node)} ${shellQuote(receipt.module)} ${shellQuote(JSON.stringify({
-      cli, node, entry: join(bin, "yui"), audit: receipt.audit, product: receipt.product
+      cli, node, entry: join(bin, "yui"), audit: receipt.audit, product: receipt.product,
+      ...(receipt.home ? { home: receipt.home, launcherSha256: receipt.launcherSha256 } : {}),
+      ...(receipt.controllerBridge ? { controllerBridge: receipt.controllerBridge } : {}),
+      ...(receipt.auditInCwd ? { auditInCwd: true } : {})
     }))}` : shellQuote(cli)} "$@"\n`;
 export const environmentInstructions = (cli, product, entryMode = "absolute") =>
   `Evaluation environment: ${entryMode === "owned-relative"
@@ -184,7 +187,12 @@ export function currentPlanningContract(inventory) {
   // only their carrier; complete output, native ownership and handling still apply.
   // Operator23 aligns its repeated inbox description with Runtime's optional
   // original carrier; no source, claim, disposition or ACK obligation changes.
-  if (["e15d1fc9fa0a194e4235b04c6202256c8dd021804edd39c4c58cb1db6bb26d1f",
+  // Reviewed 94f167af tree: Runtime's on-demand Host notice and scoped Worker
+  // repair, Leader integration retention and Operator stage configuration do
+  // not waive original reads, reporting, or planning/routing action manuals.
+  // This maps instruction carriers only, not Host notices or model memory.
+  if (["7cd272ba86afbf3d11b6e44771445a82153f50d30ffae04ca45d737d915c665c",
+    "e15d1fc9fa0a194e4235b04c6202256c8dd021804edd39c4c58cb1db6bb26d1f",
     "ec5949fff3811e0f86b071f98b4ba8fcb5241d4ea4aa331868fa46019d4109a6",
     "e38ecc88c13abeb4d8ac3e3453be4f08026e81ffd7401f8ab8ae7c6d86251004",
     "3fb416851f1dc11d2659d02d0efd86c297d62ecdf1a174779c3d51e2b008cca4",

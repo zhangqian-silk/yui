@@ -38,7 +38,8 @@ ws.on("connection", (socket, request, environment) => {
       : params.sandbox === "danger-full-access" ? "dangerFullAccess" : params.sandbox,
       writableRoots: params.runtimeWorkspaceRoots,
       excludeTmpdirEnvVar: params.config?.sandbox_workspace_write?.exclude_tmpdir_env_var,
-      excludeSlashTmp: params.config?.sandbox_workspace_write?.exclude_slash_tmp } });
+      excludeSlashTmp: params.config?.sandbox_workspace_write?.exclude_slash_tmp,
+      networkAccess: params.config?.sandbox_workspace_write?.network_access ?? false } });
   socket.on("message", bytes => {
     const m = JSON.parse(bytes.toString());
     if (m.id === undefined) return;
@@ -59,15 +60,18 @@ ws.on("connection", (socket, request, environment) => {
             scope: "file present at native thread/start; not automatic inclusion or model comprehension" });
       }
       const row = { id: randomUUID(), turns: [], active: null, model: m.params.model ?? "fixture-default",
-        role: environment.YUI_ROLE,
+        role: environment.YUI_ROLE, shellEnvironment: m.params.config?.shell_environment_policy?.set ?? {},
         recoverySuccessor: isSessionRecovery(config.scenario) && environment.YUI_ROLE === "leader" && ++leaderStarts > 1 };
       threads.set(row.id, row);
       return respond({ ...policy(m.params), model: row.model, thread: { id: row.id, status: { type: "idle" }, turns: [] } });
     }
     const row = threads.get(m.params?.threadId);
     if (!row) return error("Unknown exact fixture Thread; no idle state fabricated");
-    if (m.method === "thread/resume") return respond({ ...policy(m.params), model: row.model,
-      thread: { id: row.id, status: { type: row.active ? "active" : "idle" }, turns: row.turns } });
+    if (m.method === "thread/resume") {
+      row.shellEnvironment = m.params.config?.shell_environment_policy?.set ?? {};
+      return respond({ ...policy(m.params), model: row.model,
+        thread: { id: row.id, status: { type: row.active ? "active" : "idle" }, turns: row.turns } });
+    }
     if (m.method === "thread/read") return respond({ thread: { id: row.id,
       status: { type: row.active ? "active" : "idle" }, turns: row.turns } });
     if (m.method === "thread/turns/list") return respond({ data: row.turns, nextCursor: null });
@@ -104,7 +108,7 @@ ws.on("connection", (socket, request, environment) => {
     setImmediate(async () => {
       try {
         const text = await handleTurn({ threadId: row.id, turnId: turn.id,
-          environment: { ...environment, CODEX_THREAD_ID: row.id }, input: m.params, config,
+          environment: { ...environment, ...row.shellEnvironment, CODEX_THREAD_ID: row.id }, input: m.params, config,
           initializationOnly: row.recoverySuccessor && row.turns.length === 1,
           command: (tool, phase = "completed") => {
             const id = tool.id ?? randomUUID();

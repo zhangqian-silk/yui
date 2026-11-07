@@ -51,6 +51,36 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.28.0 compatibility and migration notes
+
+Tasks can explicitly select `--mode experiment`, independently of their project
+type. The specialized Leader inherits current global Leader configuration;
+existing ordinary Tasks retain their existing configuration behavior. Creation
+still produces a Draft and grants no measurement, model or shared-resource
+authority. See [Experimental Tasks](experiments.md).
+
+Directions explicitly select current experiments and conclusions. Plans,
+experiments, executions and analyses use immutable Git-backed references;
+failed or unknown measurements remain evidence rather than successful samples.
+Typed reads and current selections validate their local reference integrity.
+The packaged Experiment Leader includes the record contract and bounded,
+on-demand context instructions.
+
+Evaluation tooling now pins the checkout CLI and isolated Home, checks native
+working-directory ownership, and supports a bounded Linux sandbox bridge to the
+fixture Controller. This is evaluation-only transport, not a production
+Controller fallback. Unknown observation evidence remains unknown.
+
+Storage advances **1.31 → 1.32** through the centralized migration for explicit
+Task mode and inherited experiment Leader metadata, preserving existing history.
+Back up the Home and use the normal upgrade/migration path; do not open a migrated
+Home with an older binary. Controller/Host protocols remain v1.
+
+Supported platforms remain Linux x64 (glibc) and macOS Apple Silicon with native
+arm64 Node.js. Exact-merge Core CI and the same archive's eight-row Node
+20/22/24/26 fresh-install matrix gate publication. Publication does not upgrade
+the global CLI, migrate production data or restart shared services.
+
 ### 2.27.0 compatibility and migration notes
 
 Provider failures use a shared classification and bounded retry policy. An

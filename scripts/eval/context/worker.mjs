@@ -53,11 +53,8 @@ const traces = () => existsSync(join(output, "participant")) ? readdirSync(join(
   .map(n => JSON.parse(readFileSync(join(output, "participant", n)))) : [];
 const expectedSources = new Map();
 function cliProcessEvidence() {
-  const path = join(output, "cli-process-receipts.jsonl");
-  if (!existsSync(path)) return undefined;
   try {
-    const { records, tail } = completeJsonLines(readFileSync(path, "utf8"));
-    return { receipts: records, incomplete: Boolean(tail), launcherSha256: preflight.launcher };
+    return { ...f.collectCliReceipts(), launcherSha256: preflight.launcher };
   } catch { return { receipts: [], incomplete: true, launcherSha256: preflight.launcher }; }
 }
 const skillBinding = (bundles, roleName, scope) => gradeSkillBinding(bundles, expectedSkillSources(roleName), scope,

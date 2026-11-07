@@ -23,6 +23,12 @@ executing Agent owns trajectory interpretation, semantic quality, comparability,
 causal attribution and the keep/revise/drop decision. Neither process exit nor
 a program grade is an adoption decision. No model review starts automatically.
 Historical plans, receipts, grades and seals retain their original meanings.
+New runs also recognize the reviewed complete Runtime/Leader/Operator tree at
+94f167af (digest `7cd272ba86afbf3d11b6e44771445a82153f50d30ffae04ca45d737d915c665c`).
+Its inline Runtime carries reporting and Task-fact obligations; required action
+manuals, full-byte reads and pre-action deadlines remain independently checked.
+An unreviewed file or VERSION change still yields unknown. This mapping neither
+proves Host notice delivery/model memory nor retroactively changes frozen grades.
 
 Default experiment workflow:
 
@@ -843,7 +849,32 @@ planning Leader cwd before the first Thread. Role profile instructions alone
 cannot constrain CLI selection before that profile is read. Its body/hash/bytes
 are recorded separately; `native-normal` checks file availability at actual
 `thread/start`, not automatic native inclusion or comprehension. This explicit
-entry condition does not establish that the default bare-CLI path is fixed.
+entry condition alone does not establish that the default bare-CLI path is fixed.
+New configuration-identity version 3 freezes a separate Subject shell binding:
+the managed proxy adds only per-Thread shell configuration to `thread/start` and
+`thread/resume`, preserving cwd, model, permission policy and managed Yui identity.
+It disables top-level login shells, uses `inherit = "none"`, and pins a disposable
+HOME, fixture-first minimal PATH, and fixture-owned nested-shell startup files.
+The Provider process keeps its normal authentication environment; shared daemon
+defaults and the user's global CLI/Home are not changed. Startup overlay policy
+and original request hash are recorded, and captured requests reflect the bytes
+actually forwarded. Other requests and native output remain unchanged.
+Before any Subject launch, an actual bare `yui version` shell preflight must pass.
+The wrapper also refuses a different YUI_HOME or launcher hash before execution.
+This prevents accidental global-CLI selection, including the tested nested
+bash/zsh login forms; it is command binding, **not container/OS isolation against
+deliberate absolute-path access or environment replacement**. Native filesystem
+sandbox checks remain independently enforced without granting extra write roots.
+
+New native capture binds the proxy's exact actual launch cwd, including delivery
+workspaces inside the fixture, and requires matching startup request/response
+identity. Another directory under the same root is not interchangeable. Historical
+capture without a cwd binding retains its original planning-cwd interpretation.
+CLI process receipts are written in the command's owned, already-writable cwd;
+the evaluator collects them from observed owned directories into evidence storage.
+It rejects escaping/symlink/oversized receipt files and reports incomplete tails.
+Receipts remain telemetry, not authoritative proof of model reads or a substitute
+for native output. Old frozen runs and their grades are not rewritten.
 An opt-in new freeze may use `--cli-entry-mode owned-relative`. It offers the
 same wrapper as `./bin/yui` at the owned root, or
 `../../../../../bin/yui` at the planning Task cwd; other cwd changes require the
@@ -1034,6 +1065,41 @@ model ends its Turn as completed. A free-text EPERM, unknown command attribution
 or unknown delivery cannot establish that classification. Preserve prior sealed
 grades and record any corrected attribution separately; do not rerun the model
 to repair a report or relax the socket/sandbox boundary automatically.
+Linux `workspace-write` fixtures use a fixed-Home file-to-socket relay because
+the restricted native sandbox denies direct Unix socket connections. The bound
+CLI still runs inside the sandbox, with its original Controller credentials and
+protocol validation. A Node preload adapts only the exact owned Controller socket;
+other connections are unchanged. The independent relay process never runs shell
+commands or accepts a caller-selected destination. It forwards one bounded raw
+protocol frame once, checks both Home identities, and pins its mailbox directory
+by an open descriptor. Symlinks, non-regular/hardlinked request files, oversized
+frames, cross-Home requests and reused mailbox IDs are rejected. There is no
+retry or bridge restart/replay; a lost response remains delivery-unconfirmed.
+
+Subject write roots additionally include only this disposable Yui Home (normal
+CLI knowledge/state writes) and its mailbox. Native startup must acknowledge
+those roots and networking disabled; both temporary-directory exclusions remain.
+The relay does not change Controller authorization or restrict the existing
+capabilities of that Home. It is not a hostile-Agent containment guarantee for
+the control plane, and must never be pointed at a shared/user Home. Original
+protocol credentials can occur in private fixture files/archives; do not publish
+raw evidence. Relay resources are stopped and observed before Home release.
+Fake-provider chains exercise the same relay on Linux without a live model.
+
+The recorded CLI captures stdout into a private regular file inside its current
+sandboxed cwd, then replays it at command completion and removes the file. This
+avoids the observed empty-output/zero-exit behavior of Node child stdout socketpair
+capture under the native Linux network restriction. Output is terminal-replayed,
+not streamed; process status, hashes and bounded envelopes remain real evidence.
+
+Before real Subject launch, an isolated native `command/exec` verifies authenticated
+RPC, the complete bound CLI output, owned-Home writes, and denial of direct
+own/neighbor socket access, TCP and shared `/tmp` writes. It starts no model or
+Thread, copies no credentials into its disposable Codex Home, and releases its
+private app-server. A failed probe writes `controller-sandbox-preflight.json`
+and stops before model use; callers still run fixture teardown. This is not
+proof of every later command or real-model business acceptance. Do not bypass
+failures with `session-only`, unrestricted networking or all-Unix-socket access.
 Pre-fix mixed originals must remain restricted; derived shared bundles filter
 subject events and carry separate hashes/seals rather than copying foreign bodies.
 

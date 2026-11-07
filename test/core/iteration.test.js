@@ -41,7 +41,9 @@ test("experiment knowledge fixes evidence, preserves retries, and atomically sel
   assert.throws(() => validateKnowledge({ ...execution("invalid"), retryOf: null }), /object/);
   const experimentRecord = await iteration.read(experiment.ref);
   assert.throws(() => validateKnowledge({ ...experimentRecord, revises: null }), /object/);
-  const measured = await save({ ...execution("measured"), retryOf: failed.ref });
+  const measured = await save({ ...execution("measured"), retryOf: failed.ref,
+    experiment: { commit: experiment.ref.commit, id: experiment.ref.id,
+      kind: experiment.ref.kind, taskId: experiment.ref.taskId } });
   const report = await save({ schemaVersion: 1, kind: "analysis", id: "analysis-1", title: "mixed result",
     inputs: [measured.ref], method: plan.ref, conclusion: "latency improved; quality unknown",
     limitations: ["synthetic"], evidence: [], relations: [], document: "No adoption without quality." });
@@ -79,6 +81,33 @@ test("experiment knowledge fixes evidence, preserves retries, and atomically sel
   writeFileSync(join(repo.repoPath, "iteration", "partial.json"), '{"unfinished":true}');
   await assert.rejects(save(direction("interrupted")), /Uncommitted/);
   assert.equal((await iteration.overview()).total, 11, "unfinished files do not become current knowledge");
+});
+
+test("manual reports with missing inputs remain inspectable as artifacts but cannot become current knowledge", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-iteration-manual-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const repo = openTaskArtifactRepository(home, "task-1");
+  await repo.ensure();
+  const knowledge = openIteration(repo);
+  const plan = await knowledge.save({ requestId: "method", expectedHead: await repo.head(),
+    record: { schemaVersion: 1, kind: "plan", id: "method", title: "Method",
+      method: "paired", parameters: {}, document: "Use actual observations." } });
+  const report = { schemaVersion: 1, kind: "analysis", id: "unsupported", title: "Unsupported",
+    inputs: [{ ...plan.ref, kind: "execution", id: "missing" }], method: plan.ref,
+    conclusion: "Improved", limitations: [], evidence: [], relations: [], document: "Missing input." };
+  const saved = await repo.save({ expectedHead: plan.commit, message: "Manual report",
+    files: [{ relativePath: "iteration/analysis/unsupported.json", bytes: Buffer.from(JSON.stringify(report)) }] });
+  const reference = { taskId: "task-1", kind: "analysis", id: "unsupported", commit: saved.commit };
+  const direction = { schemaVersion: 1, kind: "direction", id: "latency", title: "Latency", problem: "Slow",
+    goal: "Faster", metrics: [], constraints: [], priority: "high", status: "active",
+    next: "Inspect missing evidence", unresolved: [], currentConclusion: reference };
+  await repo.save({ expectedHead: saved.commit, message: "Manual selection", files: [
+    { relativePath: "iteration/direction/latency.json", bytes: Buffer.from(JSON.stringify(direction)) },
+    { relativePath: "iteration/index.json", bytes: Buffer.from(JSON.stringify({ schemaVersion: 1, directions: ["latency"] })) }
+  ] });
+  assert.equal(JSON.parse((await repo.read("iteration/analysis/unsupported.json")).bytes).conclusion, "Improved");
+  await assert.rejects(knowledge.read(reference), /unavailable|missing/i);
+  await assert.rejects(knowledge.overview(), /unavailable|missing/i);
 });
 
 test("direction navigation remains bounded beyond one hundred retained directions", async t => {

@@ -26,6 +26,7 @@ export function assertIsolationRequest(params, root, mode = "workspace-write") {
   else {
     assert.equal(config?.exclude_tmpdir_env_var, true, "Isolation request must exclude TMPDIR");
     assert.equal(config?.exclude_slash_tmp, true, "Isolation request must exclude shared /tmp");
+    assert.notEqual(config?.network_access, true, "Isolation request must not enable networking");
   }
   assert.ok(inside(root, params.cwd), "Isolation cwd must belong to fixture");
   assert.ok(Array.isArray(params.runtimeWorkspaceRoots)
@@ -46,6 +47,8 @@ export function assertIsolationReceipt(startup, params, root, mode = "workspace-
   assert.equal(sandbox?.type, "workspaceWrite", "Isolation native policy is not workspaceWrite");
   assert.equal(sandbox.excludeSlashTmp, true, "Isolation native policy allows shared /tmp or is unknown");
   assert.equal(sandbox.excludeTmpdirEnvVar, true, "Isolation native TMPDIR exclusion is absent or unknown");
+  if (params.config?.sandbox_workspace_write?.network_access === false)
+    assert.equal(sandbox.networkAccess, false, "Isolation native network restriction is absent or unknown");
   assert.ok(Array.isArray(sandbox.writableRoots)
     && sandbox.writableRoots.every(path => inside(root, path)),
   "Isolation native policy has external or unknown writable roots");
