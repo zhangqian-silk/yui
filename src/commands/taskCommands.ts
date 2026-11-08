@@ -7,7 +7,7 @@ import type { ConfiguredAgent } from "../agent/agent.js";
 import { agentExecutionComponentLabel } from "../agent/executionComponents.js";
 import { assertLeaderArchiveAdmission } from "../task/leaderArchiveAuthority.js";
 import { assertRoleEnabled, isEnabled } from "../role/availability.js";
-import { createExperimentLeader } from "../role/roleTemplate.js";
+import { createExperimentLeaderFromRole } from "../role/roleTemplate.js";
 import {
   createRun,
   runExecutionObservation,
@@ -327,8 +327,6 @@ import {
   parseRoleOptions,
   patchRoleAgentBinding,
   leaderStagePatch,
-  experimentLeaderConfigurationUpdate,
-  experimentLeaderConfigurationCandidates,
   validateLeaderStageConfigurations,
   leaderStageConfigurationCandidates,
   roleOptionSpecs,
@@ -513,9 +511,6 @@ export function previewTaskRoleAgentConfigurationMutation(
   if (args[1] === "bind") {
     exactPositionals(args.slice(2), 3, "Task role bind usage: yui task role bind <task> <role> <agent-id>.");
     const role = requireRole(store, args[2]!, args[3]!);
-    if (role.template === "experiment-leader") {
-      return previewTaskRoleAgentConfigurationMutation(["role", "update", args[2]!, args[3]!, "--agent", args[4]!], store);
-    }
     const agent = requireAgent(store, args[4]!);
     const candidates = leaderStageConfigurationCandidates({
       ...role, activeAgentId: agent.id,
@@ -585,12 +580,6 @@ export function previewTaskRoleAgentConfigurationMutation(
       throw usageError("--agent is required.", usage);
     }
     const role = requireRole(store, taskId, roleName);
-    const experiment = experimentLeaderConfigurationUpdate(role, store.getGlobalRole("leader"), parsed,
-      id => requireAgent(store, id), new Date(role.updatedAt));
-    if (experiment !== undefined) {
-      const [candidate, ...related] = experimentLeaderConfigurationCandidates(experiment);
-      return { ...candidate!, related };
-    }
     if (parsed.has("--stage")) {
       let candidate: TaskRoleAgentConfigurationMutation | undefined;
       const patch = leaderStagePatch(role, parsed, id => requireAgent(store, id),
@@ -1610,7 +1599,7 @@ export function createTaskAggregate(
   const task = { ...createTask(store.nextTaskId(), title, now, metadata),
     ...(source === undefined ? {} : { source: structuredClone(source) }) };
   const leader = mode === "experiment"
-    ? createExperimentLeader(task.id, planningRuntimeCwd(store.rootDirectory(), task.id), store.getGlobalRole("leader"), now)
+    ? createExperimentLeaderFromRole(createTaskRole(store, task, LEADER_ROLE, undefined, now))
     : createTaskRole(store, task, LEADER_ROLE, undefined, now);
   store.saveTask(task);
   store.saveRole(task.id, leader);
@@ -3152,13 +3141,7 @@ function taskRoleCommand(
     return updateTaskRole([...rest, "--enabled", String(command === "enable")], store, options);
   }
   if (command === "remove") return output(removeTaskRole(rest, store, options));
-  if (command === "bind") {
-    exactPositionals(rest, 3, "Task role bind usage: yui task role bind <task> <role> <agent-id>.");
-    if (requireRole(store, rest[0]!, rest[1]!).template === "experiment-leader") {
-      return updateTaskRole([rest[0]!, rest[1]!, "--agent", rest[2]!], store, options);
-    }
-    return output(bindTaskRole(rest, store, options));
-  }
+  if (command === "bind") return output(bindTaskRole(rest, store, options));
   if (command === "unbind") return output(unbindTaskRole(rest, store, options));
   if (command === "session") return taskRoleSessionCommand(rest, store, options);
   if (command === "interrupt") return interruptTaskRole(rest, store, options);
@@ -3480,11 +3463,7 @@ function taskRoleSessionCommand(
         taskId: task.id,
         roleName: role.name,
         desired: { launchRevision: role.launchRevision, activeAgentId: role.activeAgentId,
-          binding: activeRoleAgentBinding(role),
-          ...(role.template === "experiment-leader" ? {
-            launchOverrides: role.launchOverrides ?? {}, configurationSources: role.configurationSources,
-            stages: role.leaderStages
-          } : {}) },
+          binding: activeRoleAgentBinding(role), stages: role.leaderStages },
         session: active,
         providerBinding: binding === null ? null : {
           providerNamespace: binding.providerNamespace, accountScope: binding.accountScope,
@@ -3828,7 +3807,7 @@ function updateTaskRole(
   if (parsed.has("--agent") && (parsed.one("--agent")?.trim().length ?? 0) === 0) {
     throw usageError("--agent is required.", usage);
   }
-  if (hasNoRoleMutation(parsed) && !parsed.has("--agent")) {
+  if (hasNoRoleMutation(parsed)) {
     throw usageError("At least one role update option is required.", usage);
   }
   const now = clock(options);
@@ -3837,31 +3816,18 @@ function updateTaskRole(
     assertTaskOpen(task);
     taskActor(tx, options, task.id);
     const role = requireRole(tx, task.id, roleName);
-    if (hasNoRoleMutation(parsed) && role.template !== "experiment-leader") {
-      throw usageError("At least one role update option is required.", usage);
-    }
     const changesEnvironment = parsed.has("--environment") || parsed.has("--managed-environment");
     if (parsed.seen.size === 1 && parsed.has("--enabled")
       && isEnabled(role) === roleProfilePatch(parsed).enabled) return role;
     const changesLaunchContext = hasRoleLaunchContextOptions(parsed) || parsed.has("--profile")
       || changesEnvironment;
-    const changesAgentConfig = hasAgentConfigOptions(parsed) || parsed.has("--stage")
-      || (role.template === "experiment-leader" && (parsed.has("--agent") || parsed.has("--clear-agent")));
+    const changesAgentConfig = hasAgentConfigOptions(parsed) || parsed.has("--stage");
     if (changesLaunchContext || changesAgentConfig) {
       assertRoleRuntimeMutationAllowed(tx, {
         scope: "task",
         taskId: task.id,
         roleName: role.name
       }, "desired launch configuration update");
-    }
-    const experiment = experimentLeaderConfigurationUpdate(role, tx.getGlobalRole("leader"), parsed,
-      id => requireAgent(tx, id), now);
-    if (experiment !== undefined) {
-      for (const candidate of experimentLeaderConfigurationCandidates(experiment)) options.validateAgentConfiguration?.(candidate);
-      saveTaskRoleUpdate(tx, role, experiment, now, {
-        source: "task.role.update", actor: taskActor(tx, options, task.id)
-      });
-      return experiment;
     }
     const profileId = parsed.one("--profile");
     const agentProfile = profileId === undefined

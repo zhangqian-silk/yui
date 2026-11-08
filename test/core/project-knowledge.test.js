@@ -190,7 +190,7 @@ test(`1.${minor} migration preserves knowledge, frozen Context and input intent 
       ["1.29", "1.30", "workitem-native-continuation"],
       ["1.30", "1.31", "leader-stage-launch-configuration"],
       ["1.31", "1.32", "experiment-knowledge-and-role-inheritance"],
-      ["1.32", "1.33", "experiment-leader-launch-overrides"]
+      ["1.32", "1.33", "experiment-leader-copied-configuration"]
     ];
     assert.deepEqual(storageMinorUpgradePlan(`1.${minor}`).map(step =>
       [step.fromVersion, step.toVersion, step.name]), expectedChain.slice(minor));

@@ -218,12 +218,11 @@ for (const experiment of [false, true]) test(`stage Agent survives planning foll
   assert.throws(() => resolveManagedTaskCaller(store, { ...planned.launch.env, CODEX_THREAD_ID: "stage-planning" }), /no longer/);
   runTaskCommand(["role", "update", "task-1", "leader", "--stage", "develop", "--model", "next-model"],
     store, { environment: {}, now: () => later });
-  if (experiment) {
+  {
     const inspected = runTaskCommand(["role", "session", "inspect", "task-1", "leader"], store, { environment: {} }).data;
     assert.equal(inspected.desired.stages.develop.model, "next-model");
-    assert.equal(inspected.desired.configurationSources.develop.model, "task-stage");
     assert.equal(inspected.session.effective.model, "delivery-model");
-    assert.equal(inspected.session.effective.leaderStage.sources.model, "global-stage");
+    assert.equal(inspected.session.effective.leaderStage.sources.model, "stage");
     assert.ok(inspected.desired.launchRevision > inspected.session.effective.sourceDesiredRevision);
   }
   const resumed = planner.plan({ taskId: "task-1", roleName: "leader", agentId: "delivery-code", adapterId: "codex",
@@ -241,7 +240,7 @@ for (const experiment of [false, true]) test(`stage Agent survives planning foll
   const replacement = scheduler.getRole("task-1", "leader").effective;
   assert.equal(replacement.agentId, "draft-code");
   assert.equal(store.getTaskRoleSessionSet("task-1", "leader").activeAgentId, "draft-code");
-  assert.equal(replacement.model, experiment ? undefined : "next-model",
-    "Experiment model overrides are scoped to the selected Agent; copied ordinary stage behavior is unchanged.");
+  assert.equal(replacement.model, "next-model",
+    "Experiment and ordinary Leaders use the same stage configuration and replacement path.");
   assert.equal(replacement.leaderStage.stage, "develop");
 });

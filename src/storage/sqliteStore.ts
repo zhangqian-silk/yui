@@ -42,7 +42,6 @@ import { isDeepStrictEqual } from "node:util";
 import type { ConfiguredAgent } from "../agent/agent.js";
 import { runPurposeAdmitsTaskState, type AgentRun } from "../agentRun/agentRun.js";
 import { validateTaskBrief, type TaskBrief } from "../brief/taskBrief.js";
-import { resolveTaskRoleTemplate, taskRoleStorageRecord, type StoredTaskRole } from "../role/roleTemplate.js";
 import {
   validateContextSnapshot,
   type ContextSnapshot
@@ -2047,21 +2046,19 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO task_roles (task_id, role_name, payload, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, role_name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(taskId, role.name, this.#recordJson("task_roles", taskRoleStorageRecord(role, role.template ? this.getGlobalRole("leader") : null)), this.#now());
+      ).run(taskId, role.name, this.#recordJson("task_roles", role), this.#now());
     });
   }
 
   listRoles(taskId: string): TaskRole[] {
     return this.#sortById(
-      this.#listPayload<StoredTaskRole>("task_roles", "task_id = ?", [taskId])
-        .map(role => resolveTaskRoleTemplate(role, role.template ? this.getGlobalRole("leader") : null)),
+      this.#listPayload<TaskRole>("task_roles", "task_id = ?", [taskId]),
       (role) => role.name
     );
   }
 
   getRole(taskId: string, name: string): TaskRole | null {
-    const role = this.#getPayload<StoredTaskRole>("task_roles", "task_id = ? AND role_name = ?", [taskId, name]);
-    return role === null ? null : resolveTaskRoleTemplate(role, role.template ? this.getGlobalRole("leader") : null);
+    return this.#getPayload<TaskRole>("task_roles", "task_id = ? AND role_name = ?", [taskId, name]);
   }
 
   saveTaskRoleWithSessionSet(role: TaskRole, sessions: TaskRoleSessionSet): void {
@@ -2070,7 +2067,7 @@ export class SqliteTaskStore implements TaskStore {
       this.#db.prepare(
         `INSERT INTO task_roles (task_id, role_name, payload, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, role_name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`
-      ).run(sessions.owner.taskId, role.name, this.#recordJson("task_roles", taskRoleStorageRecord(role, role.template ? this.getGlobalRole("leader") : null)), this.#now());
+      ).run(sessions.owner.taskId, role.name, this.#recordJson("task_roles", role), this.#now());
       this.#db.prepare(
         `INSERT INTO role_session_sets (task_id, role_name, payload, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, role_name) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`

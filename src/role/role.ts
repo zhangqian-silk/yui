@@ -63,19 +63,6 @@ export type LeaderStageOverrides = Partial<Record<LeaderStage, {
   model?: string;
   effort?: string;
 }>>;
-/** Sparse, Agent-keyed selection: never copy another Agent's settings or permissions. */
-export type LeaderSelectionOverride = {
-  agentId?: string;
-  bindings?: Record<string, Pick<RoleAgentBinding, "adapterId" | "component"> & {
-    model?: string;
-    effort?: string;
-  }>;
-};
-export type LeaderLaunchOverrides = LeaderSelectionOverride & {
-  stages?: Partial<Record<LeaderStage, LeaderSelectionOverride>>;
-};
-export type LeaderConfigurationSource = "task-default" | "task-stage" | "global-default" | "global-stage" | "global-binding" | "native-default";
-export type LeaderConfigurationSources = Record<"agentId" | "model" | "effort", LeaderConfigurationSource>;
 
 type RoleAgentOwner = RoleProfile & RoleDisplaySettings & {
   enabled?: boolean;
@@ -101,11 +88,8 @@ export type GlobalRole = RoleAgentOwner & {
 export type TaskRole = RoleAgentOwner & {
   schemaVersion: 1;
   taskId: string;
-  /** Logical name stays leader; this selects a live single-inheritance template. */
+  /** Logical name stays leader; this adds experiment capabilities, not inheritance. */
   template?: "experiment-leader";
-  launchOverrides?: LeaderLaunchOverrides;
-  /** Derived on read; not independently persisted or writable. */
-  configurationSources?: Record<"default" | LeaderStage, LeaderConfigurationSources>;
   /** Explicitly adopted environment for the next native Session. */
   executionEnvironment?: ExecutionEnvironmentSnapshot;
 };
@@ -438,9 +422,8 @@ export function validateGlobalRole(role: GlobalRole): GlobalRole {
 
 export function validateTaskRole(role: TaskRole): TaskRole {
   requireSafeIdentity(role.taskId, "Task id");
-  if (role.template !== "experiment-leader"
-    && (role.launchOverrides !== undefined || role.configurationSources !== undefined)) {
-    throw new Error("Only an ExperimentLeader may carry inherited launch overrides.");
+  if (role.template !== undefined && (role.template !== "experiment-leader" || role.name !== "leader")) {
+    throw new Error("Invalid Task Leader template.");
   }
   return validateRoleOwner(role);
 }
@@ -608,7 +591,6 @@ function desiredLaunchProjection(role: GlobalRole | TaskRole): unknown {
     activeAgentId: role.activeAgentId,
     agentBindings: role.agentBindings,
     ...(role.leaderStages === undefined ? {} : { leaderStages: role.leaderStages }),
-    ...("taskId" in role && role.launchOverrides !== undefined ? { launchOverrides: role.launchOverrides } : {}),
     workspace: role.workspace,
     defaultAccess: role.defaultAccess,
     ...("taskId" in role && role.executionEnvironment !== undefined

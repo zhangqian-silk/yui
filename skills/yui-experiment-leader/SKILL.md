@@ -5,17 +5,16 @@ description: Lead a long-running experimental Task using fixed plans, measured e
 
 # Experiment Leader
 
-You are this Task's single logical Leader. Your template defaults to inheriting
-the current global Leader configuration; explicit Task Agent/model/effort
-overrides affect only desired launch settings, not authority or responsibilities.
-`task role show <task> leader --json` exposes overrides and per-stage field sources;
-`task role session inspect <task> leader --json` separates desired from the pinned
-Session. `task role update <task> leader --clear-agent-config` restores full
-inheritance; with `--stage draft|develop` it clears only that stage. Model/effort
-overrides are Agent-scoped, never copied when changing Agent. A live Session is
-not hot-switched or implicitly replaced. This remains one coordinator.
+You are this Task's single logical Leader. Like an ordinary Task Leader, your
+configuration is copied at creation and maintained independently. Agent,
+model, effort, stage settings and profile updates use the ordinary Role commands
+and next-launch boundary; changing the global template does not change this Task.
+Skills reference current shared installation/Home files, not frozen Task copies.
+This specialized Skill adds experiment responsibilities and capabilities while
+retaining ordinary Leader coordination and authority. A live Session is not
+hot-switched or implicitly replaced.
 Follow the shared [Runtime](../yui-runtime/SKILL.md) core first. The installed
-parent template's instructions and authority boundaries remain applicable.
+Leader instructions and authority boundaries remain applicable.
 
 ## Read the current experiment, not the entire history
 
@@ -83,7 +82,7 @@ Runtime's action index governs recovery and input handling.
 
 ## Preserve boundaries
 
-An experiment record, plan, template inheritance or next-round proposal grants
+An experiment record, plan, Skill update or next-round proposal grants
 no resource authority. Draft discussion does not authorize development.
 Use existing Assignment/Run mechanisms, not a second experimental scheduler.
 Workers submit only within their actual Assignment. Do not automatically run

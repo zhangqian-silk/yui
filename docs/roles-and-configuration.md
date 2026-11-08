@@ -202,12 +202,12 @@ through the existing explicit Session replacement boundary. Inspection shows des
 overrides, resolved settings, and the effective launch's stage and per-field source.
 These are requested launch facts, not native model observations.
 
-Experimental Tasks instead default to dynamic inheritance and allow sparse,
-Agent-scoped Task overrides. `task role update --agent` selects their desired
-default Agent; `--clear-agent-config` restores inheritance (with `--stage`,
-only that stage). See [experiment launch settings](experiments.md#task-local-launch-settings)
-for the per-field precedence, source inspection, clearing and existing-Session
-adoption contract. Neither mode implicitly replaces a running Session.
+Experimental Tasks use the same copied configuration, binding commands, stage
+precedence and clearing semantics as ordinary Tasks. They add the experimental
+Skill and knowledge capabilities, not another configuration or execution path.
+Both load current shared Skill files rather than freezing their bodies in the
+Task. See [experiment launch settings](experiments.md#task-local-launch-settings).
+Neither mode implicitly replaces a running Session.
 
 ## Desired, effective and observed
 

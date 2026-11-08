@@ -59,7 +59,7 @@ test("1.29 continuation admission preserves history without inventing repair or 
   const before = db.prepare("SELECT payload FROM events").all();
   db.prepare("UPDATE storage_schema SET minor=29").run();
   assert.deepEqual(schema.storageMinorUpgradePlan("1.29").map(step => step.name),
-    ["workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "experiment-leader-launch-overrides"]);
+    ["workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "experiment-leader-copied-configuration"]);
   assert.throws(() => new SqliteTaskStore(home), /upgrade|storage/i);
   schema.applySqliteMinorUpgrades(db, home);
   assert.deepEqual(db.prepare("SELECT payload FROM events").all(), before);
@@ -82,7 +82,7 @@ test("1.28 upgrade preserves config bytes and admits independently stored Git bu
   const before = db.prepare("SELECT payload FROM config").get().payload;
   db.prepare("UPDATE storage_schema SET minor=28").run();
   assert.deepEqual(schema.storageMinorUpgradePlan("1.28").map(step => step.name),
-    ["git-command-budgets", "workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "experiment-leader-launch-overrides"]);
+    ["git-command-budgets", "workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "experiment-leader-copied-configuration"]);
   schema.applySqliteMinorUpgrades(db, home);
   assert.equal(db.prepare("SELECT payload FROM config").get().payload, before);
   db.close(); db = undefined;
@@ -290,7 +290,7 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.29", "1.30", "workitem-native-continuation"],
         ["1.30", "1.31", "leader-stage-launch-configuration"],
         ["1.31", "1.32", "experiment-knowledge-and-role-inheritance"],
-        ["1.32", "1.33", "experiment-leader-launch-overrides"]]);
+        ["1.32", "1.33", "experiment-leader-copied-configuration"]]);
   }
   finally { current.close(); }
 });

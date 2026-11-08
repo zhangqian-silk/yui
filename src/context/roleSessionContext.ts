@@ -62,9 +62,9 @@ export function compileRoleSessionContext(
   };
 }
 
-export function roleSkillIds(role: Pick<GlobalRole | TaskRole, "skills">, kind: RoleSessionKind): string[] {
+export function roleSkillIds(role: Pick<GlobalRole | TaskRole, "skills"> & Pick<TaskRole, "template">, kind: RoleSessionKind): string[] {
   const builtInSkillId = kind === "global" ? undefined
-    : kind === "leader" && role.skills?.includes("yui-experiment-leader")
+    : kind === "leader" && (role.template === "experiment-leader" || role.skills?.includes("yui-experiment-leader"))
       ? "yui-experiment-leader" : `yui-${kind}`;
   return unique([
     "yui-runtime",

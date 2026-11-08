@@ -498,10 +498,10 @@ try {
       const experimentTask = json("task", "create", "experimental knowledge fixture", "--mode", "experiment").task;
       const overridden = json("task", "role", "update", experimentTask.id, "leader",
         "--model", "smoke-model", "--effort", "medium").role;
-      assert.equal(overridden.leaderStages.develop.model, "smoke-model");
-      assert.equal(overridden.configurationSources.develop.model, "task-default");
+      assert.equal(overridden.agentBindings[overridden.activeAgentId].config.model, "smoke-model");
+      assert.equal(overridden.agentBindings[overridden.activeAgentId].config.effort, "medium");
       const cleared = json("task", "role", "update", experimentTask.id, "leader", "--clear-agent-config").role;
-      assert.equal(cleared.launchOverrides, undefined);
+      assert.equal(cleared.agentBindings[cleared.activeAgentId].config.model, undefined);
       const initialized = json("task", "iteration", "init", experimentTask.id);
       const direction = { schemaVersion: 1, kind: "direction", id: "latency", title: "Latency",
         problem: "slow", goal: "lower latency", metrics: ["p95"], constraints: ["offline fixture"],

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -27,7 +27,7 @@ import { readCurrentTaskLeader } from "../../dist/storage/currentTaskLeader.js";
 import { applySqliteMinorUpgrades } from "../../dist/storage/sqliteSchema.js";
 import Database from "../../dist/sqlite/driver.js";
 
-test("experimental Task model overrides persist without freezing inherited fields or other Tasks", t => {
+test("experimental Tasks copy global configuration once and maintain independent bindings", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-experiment-overrides-"));
   let store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
@@ -53,23 +53,23 @@ test("experimental Task model overrides persist without freezing inherited field
     })
   } }, now));
   assert.equal(launch(first).model, "task-model");
-  assert.equal(launch(first).effort, "high");
-  assert.equal(launch(second).model, "new-parent");
+  assert.equal(launch(first).effort, "low");
+  assert.equal(launch(second).model, "parent");
   const revision = store.getRole(first, "leader").launchRevision;
   update(["--effort", "high"]);
-  assert.ok(store.getRole(first, "leader").launchRevision > revision, "Pinning today's inherited value is a real intent change");
-  assert.equal(launch(first).leaderStage.sources.effort, "task-default");
+  assert.ok(store.getRole(first, "leader").launchRevision > revision);
+  assert.equal(launch(first).leaderStage.sources.effort, "binding");
   update(["--clear-model"]);
-  assert.equal(launch(first).model, "new-parent");
+  assert.equal(launch(first).model, undefined);
   assert.equal(store.getGlobalRole("leader").agentBindings[agent.id].config.model, "new-parent");
 });
 
-test("experiment stage/default overrides resolve per Agent, validate atomically and clear back to inheritance", t => {
-  const home = mkdtempSync(join(tmpdir(), "yui-experiment-stage-overrides-"));
+test("experiment and ordinary Leaders use identical configuration commands and validation", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-experiment-parity-"));
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
   const now = new Date();
-  for (const [id, adapter] of [["code", "codex"], ["plan", "claude"], ["extra", "codex"]]) {
+  for (const [id, adapter] of [["code", "codex"], ["plan", "claude"]]) {
     store.saveConfiguredAgent(createConfiguredAgent(id, adapter, "unused", [], [], now));
   }
   const parent = updateGlobalRole(createGlobalRole("leader", [
@@ -82,104 +82,113 @@ test("experiment stage/default overrides resolve per Agent, validate atomically 
   ], "code", home, now), { leaderStages: { draft: { agentId: "plan", model: "parent-draft" },
     develop: { model: "parent-develop", effort: "medium" } } }, now);
   store.saveGlobalRole(parent);
-  const task = runTaskCommand(["create", "Overrides", "--mode", "experiment"], store, { environment: {} }).data.task.id;
-  const launch = stage => resolveEffectiveLaunch({ role: store.getRole(task, "leader"),
-    purpose: stage === "draft" ? "planning" : "execution" });
-  const command = tail => {
-    const args = ["role", "update", task, "leader", ...tail];
-    const preview = previewTaskRoleAgentConfigurationMutation(args, store);
-    return runTaskCommand(args, store, { environment: {}, validateAgentConfiguration: candidate => {
-      assert.ok([preview, ...preview.related].some(p => p.agentId === candidate.agentId
-        && JSON.stringify(p.config) === JSON.stringify(candidate.config)));
-      if (candidate.config.model === "invalid") throw Error("illegal model");
-    } });
+  const ids = [[], ["--mode", "experiment"]].map(mode =>
+    runTaskCommand(["create", "Parity", ...mode], store, { environment: {}, now: () => now }).data.task.id);
+  const projection = id => {
+    const r = store.getRole(id, "leader");
+    return [r.activeAgentId, r.agentBindings, r.leaderStages, r.launchRevision, r.constraints, r.enabled];
   };
-  assert.equal(launch("draft").model, "parent-draft");
-  command(["--model", "task-code", "--effort", "low"]);
-  assert.equal(launch("develop").model, "task-code");
-  assert.equal(launch("draft").model, "parent-draft", "Base binding overrides never cross Agents");
-  assert.equal(launch("develop").leaderStage.sources.model, "task-default");
-  command(["--stage", "develop", "--model", "task-develop"]);
-  assert.equal(launch("develop").model, "task-develop");
-  assert.equal(launch("develop").leaderStage.sources.model, "task-stage");
-  command(["--stage", "develop", "--agent", "plan"]);
-  assert.equal(launch("develop").model, "plan-default");
-  assert.equal(launch("develop").effort, "low");
-  assert.equal(launch("develop").permission.strategy, "default");
-  command(["--stage", "develop", "--model", "task-plan", "--effort", "high"]);
-  command(["--stage", "develop", "--clear-agent"]);
-  assert.equal(launch("develop").model, "task-develop", "Stage fields are scoped to their selected Agent");
-  command(["--stage", "develop", "--clear-model"]);
-  assert.equal(launch("develop").model, "task-code");
-  command(["--stage", "develop", "--clear-agent-config"]);
-  command(["--clear-model"]);
-  assert.equal(launch("develop").model, "parent-develop");
-  assert.equal(launch("develop").effort, "low");
-  command(["--clear-effort"]);
-  assert.equal(launch("develop").effort, "medium");
-  command(["--agent", "extra"]);
-  assert.equal(launch("draft").agentId, "extra");
-  assert.equal(launch("draft").model, undefined);
-  assert.equal(launch("draft").effort, undefined);
-  assert.deepEqual(launch("draft").permission, createRoleAgentBinding(store.getConfiguredAgent("extra")).config.permission,
-    "A newly selected Agent uses its own standard binding, not another Agent's permissions");
-  command(["--model", "extra-model", "--effort", "medium"]);
-  assert.equal(launch("develop").model, "extra-model");
-  command(["--clear-agent"]);
-  assert.equal(launch("draft").agentId, "plan");
-  assert.equal(launch("draft").model, "parent-draft");
-  assert.deepEqual(readCurrentTaskLeader(home, task), store.getRole(task, "leader"));
-  const before = store.getRole(task, "leader"), events = store.listEvents(task);
-  assert.throws(() => command(["--model", "invalid"]), /illegal model/);
-  assert.deepEqual(store.getRole(task, "leader"), before);
-  assert.deepEqual(store.listEvents(task), events);
-  assert.throws(() => command(["--permission-strategy", "bypass"]), /only/);
-  assert.throws(() => command(["--agent", "missing"]), /Agent/);
-  assert.throws(() => command(["--model", "x", "--clear-model"]), /together/);
-  assert.throws(() => store.saveRole(task, { ...before,
-    launchOverrides: { permission: "bypass" } }), /unsupported/);
-  assert.throws(() => store.saveRole(task, { ...before,
-    launchOverrides: { stages: { draft: { bindings: { extra: { adapterId: "codex", component: "claude-code-cli" } } } } } }), /component|inconsistent/);
-  command(["--clear-agent-config"]);
-  assert.equal(store.getRole(task, "leader").launchOverrides, undefined);
-  assert.equal(launch("develop").model, "parent-develop");
+  const update = tail => {
+    for (const id of ids) {
+      const args = ["role", "update", id, "leader", ...tail];
+      const preview = previewTaskRoleAgentConfigurationMutation(args, store);
+      runTaskCommand(args, store, { environment: {}, yuiHome: home, now: () => now, validateAgentConfiguration: candidate => {
+        assert.ok([preview, ...(preview?.related ?? [])].some(p => p?.agentId === candidate.agentId
+          && JSON.stringify(p.config) === JSON.stringify(candidate.config)));
+        if (candidate.config.model === "invalid") throw Error("illegal model");
+      } });
+    }
+    assert.deepEqual(projection(ids[1]), projection(ids[0]));
+  };
+  update(["--model", "task-code", "--effort", "low"]);
+  update(["--stage", "develop", "--model", "task-develop"]);
+  update(["--stage", "develop", "--agent", "plan"]);
+  update(["--stage", "develop", "--clear-model", "--clear-effort"]);
+  update(["--stage", "develop", "--clear-agent"]);
+  update(["--stage", "draft", "--clear-agent-config"]);
+  update(["--permission-strategy", "default"]);
+  update(["--constraint", "task-local rule"]);
+  update(["--clear-skills"]);
+  assert.deepEqual(roleSkillIds(store.getRole(ids[1], "leader"), "leader"), ["yui-runtime", "yui-experiment-leader"]);
+  update(["--clear-model", "--clear-effort"]);
+  update(["--clear-agent-config"]);
+  for (const id of ids) {
+    const before = store.getRole(id, "leader"), events = store.listEvents(id);
+    assert.throws(() => runTaskCommand(["role", "update", id, "leader", "--model", "invalid"], store,
+      { environment: {}, validateAgentConfiguration: () => { throw Error("illegal model"); } }), /illegal model/);
+    assert.deepEqual(store.getRole(id, "leader"), before);
+    assert.deepEqual(store.listEvents(id), events);
+    assert.throws(() => runTaskCommand(["role", "update", id, "leader", "--agent", "plan"], store,
+      { environment: {} }), /update option/);
+    runTaskCommand(["role", "bind", id, "leader", "plan"], store, { environment: {}, now: () => now });
+    assert.equal(store.getRole(id, "leader").activeAgentId, "plan");
+    assert.deepEqual(readCurrentTaskLeader(home, id), store.getRole(id, "leader"));
+  }
+  assert.deepEqual(projection(ids[1]), projection(ids[0]));
   assert.deepEqual(store.getGlobalRole("leader"), parent);
-  runTaskCommand(["role", "bind", task, "leader", "extra"], store, { environment: {} });
-  assert.equal(launch("develop").agentId, "extra");
 });
 
-test("1.32 experiment bindings upgrade without inventing overrides or rewriting history", t => {
-  const home = mkdtempSync(join(tmpdir(), "yui-experiment-override-migration-"));
+test("1.32 inherited experiment Leaders migrate once without rewriting ordinary Roles or Sessions", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-experiment-copy-migration-"));
   let store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
   const now = new Date();
   const agent = createConfiguredAgent("code", "codex", "unused", [], [], now);
   store.saveConfiguredAgent(agent);
-  store.saveGlobalRole(createGlobalRole("leader", [createRoleAgentBinding(agent)], agent.id, home, now));
+  const parent = createGlobalRole("leader", [createRoleAgentBinding(agent)], agent.id, home, now);
+  store.saveGlobalRole(parent);
   const task = runTaskCommand(["create", "Existing", "--mode", "experiment"], store, { environment: {} }).data.task.id;
-  const before = store.databaseHandle().prepare("SELECT payload FROM task_roles").all();
-  store.databaseHandle().prepare("UPDATE storage_schema SET minor=32").run();
+  const ordinary = runTaskCommand(["create", "Ordinary"], store, { environment: {} }).data.task.id;
+  const copied = store.getRole(task, "leader");
+  const effective = resolveEffectiveLaunch({ role: copied, purpose: "planning" });
+  store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet({ scope: "task", taskId: task,
+    roleName: "leader" }, agent.id, now), { agentId: agent.id, adapterId: agent.adapterId,
+    nativeSessionId: "existing", status: "active", policy: "fixed", effective }, now));
+  const local = { schemaVersion: 1, taskId: task, name: "leader", template: "experiment-leader",
+    workspace: copied.workspace, launchRevision: 1, createdAt: copied.createdAt, updatedAt: copied.updatedAt };
+  const dbBefore = store.databaseHandle();
+  const ordinaryBytes = dbBefore.prepare("SELECT payload FROM task_roles WHERE task_id=?").get(ordinary).payload;
+  const sessionBytes = dbBefore.prepare("SELECT payload FROM role_session_sets").all();
+  dbBefore.prepare("UPDATE task_roles SET payload=? WHERE task_id=?").run(JSON.stringify(local), task);
+  dbBefore.prepare("UPDATE storage_schema SET minor=32").run();
   store.close();
   assert.throws(() => new SqliteTaskStore(home), /upgrade|storage/i);
   const db = new Database(join(home, "yui.db"));
   try {
+    db.prepare("DELETE FROM global_roles WHERE name='leader'").run();
+    assert.throws(() => applySqliteMinorUpgrades(db, home), /global Leader/);
+    assert.equal(db.prepare("SELECT minor FROM storage_schema").get().minor, 32);
+    assert.equal(db.prepare("SELECT payload FROM task_roles WHERE task_id=?").get(task).payload, JSON.stringify(local));
+    db.prepare("INSERT INTO global_roles(name,payload,updated_at) VALUES(?,?,?)").run("leader", JSON.stringify(parent), now.toISOString());
     applySqliteMinorUpgrades(db, home);
-    assert.deepEqual(db.prepare("SELECT payload FROM task_roles").all(), before);
+    assert.equal(db.prepare("SELECT payload FROM task_roles WHERE task_id=?").get(ordinary).payload, ordinaryBytes);
+    assert.deepEqual(db.prepare("SELECT payload FROM role_session_sets").all(), sessionBytes);
+    const once = db.prepare("SELECT payload FROM task_roles WHERE task_id=?").get(task).payload;
+    applySqliteMinorUpgrades(db, home);
+    assert.equal(db.prepare("SELECT payload FROM task_roles WHERE task_id=?").get(task).payload, once);
   } finally { db.close(); }
   store = new SqliteTaskStore(home);
-  assert.equal(store.getRole(task, "leader").launchOverrides, undefined);
-  assert.equal(store.getRole(task, "leader").activeAgentId, "code");
+  const migrated = store.getRole(task, "leader");
+  assert.deepEqual(migrated, { ...copied, launchRevision: parent.launchRevision + local.launchRevision });
+  store.saveGlobalRole(updateGlobalRole(parent, { leaderStages: { draft: { model: "new-parent" } } }, now));
+  assert.deepEqual(store.getRole(task, "leader"), migrated);
+  runTaskCommand(["role", "update", task, "leader", "--model", "local-model"], store, { environment: {} });
+  assert.equal(store.getRole(task, "leader").agentBindings.code.config.model, "local-model");
 });
 
-test("ExperimentLeader has one Leader identity and resolves the current parent without copied configuration", t => {
+test("ExperimentLeader keeps a copied profile while sharing current Skill files like ordinary Leaders", t => {
   const home = mkdtempSync(join(tmpdir(), "yui-experiment-role-"));
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
   const now = new Date();
   const agent = createConfiguredAgent("fixture", "codex", "unused", [], [], now);
   store.saveConfiguredAgent(agent);
+  const skill = join(home, "skills", "shared-policy");
+  mkdirSync(skill, { recursive: true });
+  writeFileSync(join(skill, "SKILL.md"), "Shared policy version one.\n");
+  writeFileSync(join(skill, "VERSION"), "1\n");
   const parent = createGlobalRole("leader", [createRoleAgentBinding(agent)], agent.id, home, now,
-    { constraints: ["original"], responsibilities: ["coordinate"] });
+    { constraints: ["original"], responsibilities: ["coordinate"], skills: ["shared-policy"] });
   store.saveGlobalRole(parent);
   const created = runTaskCommand(["create", "Research", "--mode", "experiment"], store, { environment: {} });
   assert.equal(created.data.leader.template, "experiment-leader");
@@ -187,7 +196,7 @@ test("ExperimentLeader has one Leader identity and resolves the current parent w
   const first = store.getRole(taskId, "leader");
   assert.equal(first.name, "leader");
   assert.equal(roleSessionKind(first, { scope: "task", taskId }, "planning"), "leader");
-  assert.deepEqual(roleSkillIds(first, "leader"), ["yui-runtime", "yui-experiment-leader"]);
+  assert.deepEqual(roleSkillIds(first, "leader"), ["yui-runtime", "yui-experiment-leader", "shared-policy"]);
   const bootstrap = materializeSessionBootstrap({ yuiHome: home, role: first,
     owner: { scope: "task", taskId }, roleKind: "leader",
     skills: compileRoleSessionContext(home, first, { scope: "task", taskId }).skills,
@@ -198,19 +207,25 @@ test("ExperimentLeader has one Leader identity and resolves the current parent w
   store.saveGlobalRole(updateGlobalRole(parent, { constraints: ["updated"], systemPrompt: "new parent rule",
     leaderStages: { draft: { model: "planning-fixture" }, develop: { model: "delivery-fixture" } } }, new Date()));
   const changed = store.getRole(taskId, "leader");
-  assert.deepEqual(changed.constraints, ["updated"]);
-  assert.equal(changed.systemPrompt, "new parent rule");
-  assert.equal(resolveEffectiveLaunch({ role: changed, purpose: "planning" }).model, "planning-fixture");
-  assert.equal(resolveEffectiveLaunch({ role: changed, purpose: "execution" }).model, "delivery-fixture");
-  assert.throws(() => store.saveRole(taskId, updateRole(changed, { leaderStages: {} }, new Date())), /inherits/);
-  assert.ok(changed.launchRevision > first.launchRevision);
+  assert.deepEqual(changed, first);
   const checked = checkSessionSkills(home, bootstrap.manifestPath);
-  assert.notEqual(checked.roleProfileRef.digest, bootstrap.manifest.roleProfileRef.digest);
-  assert.deepEqual(JSON.parse(readFileSync(checked.roleProfileRef.path, "utf8")).constraints, ["updated"]);
-  assert.match(notice.prepare("next", environment, "session").context, /exact Role profile/);
-  store.saveRole(taskId, updateRole(changed, { workspace: join(home, "delivery") }, new Date()));
-  assert.deepEqual(store.getRole(taskId, "leader").constraints, ["updated"]);
-  assert.throws(() => store.saveRole(taskId, updateRole(changed, { constraints: ["bypass"] }, new Date())), /inherits/);
+  assert.equal(checked.roleProfileRef.digest, bootstrap.manifest.roleProfileRef.digest);
+  assert.deepEqual(JSON.parse(readFileSync(checked.roleProfileRef.path, "utf8")).constraints, ["original"]);
+  assert.equal(notice.prepare("next", environment, "session").context, undefined);
+  writeFileSync(join(skill, "SKILL.md"), "Shared policy version two.\n");
+  writeFileSync(join(skill, "VERSION"), "2\n");
+  const skillCheck = checkSessionSkills(home, bootstrap.manifestPath).skills.find(s => s.id === "shared-policy");
+  assert.equal(skillCheck.path, skill);
+  assert.equal(skillCheck.version, "2");
+  assert.match(notice.prepare("skill changed", environment, "session").context, /shared-policy/);
+  assert.equal(compileRoleSessionContext(home, changed, { scope: "task", taskId }).skills
+    .find(s => s.id === "shared-policy").content, "Shared policy version two.");
+  store.saveRole(taskId, updateRole(changed, { constraints: ["task-local"], workspace: join(home, "delivery"),
+    leaderStages: { draft: { model: "task-planning" } } }, new Date()));
+  assert.deepEqual(store.getRole(taskId, "leader").constraints, ["task-local"]);
+  assert.equal(resolveEffectiveLaunch({ role: store.getRole(taskId, "leader"), purpose: "planning" }).model, "task-planning");
+  assert.equal(checkSessionSkills(home, bootstrap.manifestPath).roleProfileRef.digest, bootstrap.manifest.roleProfileRef.digest,
+    "Task profile updates use the same next-Session boundary as ordinary Leaders.");
   assert.equal(store.listRoles(taskId).length, 1);
   assert.ok(findCommandNode(["task", "iteration", "save"], discoveryCommandTree({}, "experiment-leader")));
   assert.ok(findCommandNode(["task", "work", "create"], discoveryCommandTree({}, "experiment-leader")));
