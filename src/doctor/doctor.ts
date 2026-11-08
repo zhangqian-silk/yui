@@ -228,6 +228,7 @@ function inspectStorageDetails(
 
 type StorageInspection = Readonly<{
   check: DoctorCheck;
+  recordCheck?: DoctorCheck;
   agents: readonly ConfiguredAgent[];
   activeCodexAgentIds: ReadonlySet<string>;
   review: ReviewSource;
@@ -311,6 +312,7 @@ async function inspectDoctor(
       schemaCheck,
       compatibility.check,
       storage.check,
+      ...(storage.recordCheck === undefined ? [] : [storage.recordCheck]),
       controller,
       ...(domain === undefined ? [] : [domain]),
       ...toolChecks,
@@ -583,21 +585,25 @@ function inspectState(
   let ownedStore: ReturnType<typeof openCurrentTaskStore> | undefined;
   try {
     const store = ownedStore = openCurrentTaskStore(home);
-    store.validateCurrentRecords();
+    store.validateHomeControlRecords();
     const config = store.getConfig();
     const agents = store.listConfiguredAgents();
-    const tasks = store.listTasks();
     const globalRoles = store.listGlobalRoles();
-    const roleCount = tasks.reduce(
-      (count, task) => count + store.listRoles(task.id).length,
-      0
-    );
+    // Diagnose history without making it an unrelated startup/update gate.
+    let recordCheck: DoctorCheck;
+    try {
+      store.validateCurrentRecords();
+      recordCheck = { name: "stored records", status: "ok", detail: "Stored record metadata is valid; historical files are checked on exact reads." };
+    } catch (error) {
+      recordCheck = { name: "stored records", status: "invalid", detail: errorMessage(error) };
+    }
     return {
       check: {
         name: "storage state",
         status: "ok",
-        detail: `yui.db readable agents=${agents.length} tasks=${tasks.length} roles=${roleCount} globalRoles=${globalRoles.length} defaultAgent=${config.defaultAgent ?? "none"}`
+        detail: `yui.db core readable agents=${agents.length} globalRoles=${globalRoles.length} defaultAgent=${config.defaultAgent ?? "none"}`
       },
+      recordCheck,
       agents,
       activeCodexAgentIds: new Set(codexAgentsInUse(store).map((agent) => agent.id)),
       review: {

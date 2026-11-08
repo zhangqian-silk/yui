@@ -22,7 +22,7 @@ export type TaskCatalogQuery = Readonly<{
 export type CatalogRow = CatalogPosition & Readonly<{
   status: TaskStatus;
   updatedAt: string;
-  title: string;
+  title: string | null;
   summary: string | null;
   summaryPresent: boolean;
   workItems: number;
@@ -148,7 +148,7 @@ export function queryTaskCatalog(db: Database.Database, query: TaskCatalogQuery)
       ORDER BY page.createdAt,page.id)
       FROM (SELECT * FROM matching ${after.length ? `WHERE ${after.join(" AND ")}` : ""}
         ORDER BY createdAt,id LIMIT @limit) page
-      JOIN task_records r ON r.task_id = page.id) AS rows`;
+      LEFT JOIN task_records r ON r.task_id = page.id) AS rows`;
   const result = db.prepare(cte).get(params) as Record<string, string | number | null>;
   const counts = { draft: 0, active: 0, completed: 0, cancelled: 0, archived: 0, total: 0 };
   for (const entry of JSON.parse(result.counts as string) as { status: TaskStatus; count: number }[]) {

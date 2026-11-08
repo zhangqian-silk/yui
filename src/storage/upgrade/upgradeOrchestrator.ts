@@ -11,16 +11,6 @@ import {
 } from "node:fs";
 
 import Database from "../../sqlite/driver.js";
-import {
-  RUNTIME_OBSERVATION_TASK_EVENT,
-  createRuntimeObservation,
-  type RuntimeObservation
-} from "../../runtime/runtimeObservation.js";
-import {
-  RUNTIME_PROCESS_EXIT_TASK_EVENT,
-  validateRuntimeProcessExitObservation,
-  type RuntimeProcessExitObservation
-} from "../../runtime/processExitObservation.js";
 import { SqliteTaskStore } from "../sqliteStore.js";
 import { storageBackupRoot } from "../homeLayout.js";
 import type { ContentMigrationEffects } from "../taskContent.js";
@@ -360,20 +350,7 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
 function validateCurrentStore(home: string): void {
   const store = new SqliteTaskStore(home, { readonly: true });
   try {
-    store.validateCurrentRecords();
-    for (const taskId of store.listTasks().map(({ id }) => id)) {
-      for (const event of store.listEvents(taskId)) {
-        if (event.type === RUNTIME_OBSERVATION_TASK_EVENT) {
-          createRuntimeObservation(
-            JSON.parse(event.payload.observation ?? "") as RuntimeObservation
-          );
-        } else if (event.type === RUNTIME_PROCESS_EXIT_TASK_EVENT) {
-          validateRuntimeProcessExitObservation(
-            JSON.parse(event.payload.observation ?? "") as RuntimeProcessExitObservation
-          );
-        }
-      }
-    }
+    store.validateHomeControlRecords();
     const quickCheck = store.databaseHandle().pragma("quick_check", { simple: true });
     if (quickCheck !== "ok") {
       throw new Error(`SQLite quick_check failed: ${String(quickCheck)}.`);

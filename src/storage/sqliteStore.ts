@@ -416,8 +416,14 @@ export class SqliteTaskStore implements TaskStore {
     return this.#json(value);
   }
 
-  /** Validate control records for admission. Historical file availability and
-   * content digests are checked by exact reads, never a whole-Home prerequisite. */
+  /** Home admission must not depend on unrelated historical Task records. */
+  validateHomeControlRecords(): void {
+    this.getConfig();
+    validateHomeIdentity(this.getHomeIdentity());
+  }
+
+  /** Explicit full record audit. Exact readers remain strict even though
+   * unreadable history is not a whole-Home admission prerequisite. */
   validateCurrentRecords(): void {
     this.getConfig();
     for (const table of STORED_RECORD_TABLES) {

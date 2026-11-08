@@ -67,7 +67,8 @@ test("rollback cannot publish a partial snapshot; retry verifies and reuses immu
   const row = store.databaseHandle().prepare("SELECT payload FROM context_snapshots WHERE task_id=?").get("task-1");
   store.databaseHandle().prepare("UPDATE context_snapshots SET payload=? WHERE task_id=?")
     .run(JSON.stringify({ ...JSON.parse(row.payload), sequence: 0 }), "task-1");
-  assert.throws(() => validateCurrentTaskStore(home), /sequence/i, "invalid control metadata remains an admission error");
+  assert.doesNotThrow(() => validateCurrentTaskStore(home), "invalid historical metadata is isolated from Home admission");
+  assert.throws(() => store.validateCurrentRecords(), /sequence/i, "explicit record audit remains strict");
 });
 
 test("snapshot scope lookup reads selected content only and rejects symlinked task storage", t => {

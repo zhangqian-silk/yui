@@ -10,12 +10,20 @@ authorized values and historical references do not change. Scope lookups use
 the existing SQLite index before loading selected content. Missing or corrupt
 content is an error, never reconstructed from current state.
 
-Home admission validates snapshot metadata without opening all historical
-files. Exact reads return missing-file/content errors for the Agent to assess;
+Home admission validates the current schema, Home identity and global config,
+not every historical Task record or file. Exact reads and explicit record audits
+remain strict. The compact Task catalog keeps missing/invalid Task bodies visible
+with `recordError` and a null `ref`; it does not fabricate valid Task references.
+Doctor reports historical record errors separately as `stored records`, outside
+the core storage health gate used for post-update verification.
+Exact reads return missing-file/content errors for the Agent to assess;
 missing history does not disable unrelated Tasks. Normal upgrades do not
 rewrite Task worktree contents or create automatic task-data/Artifact backups,
 and deleted history is not automatically restored. The existing database
 migration backup and rollback mechanism is unchanged.
+Upgrade admission uses the same boundary plus SQLite integrity checking;
+each migration still validates the data it transforms. This is not automatic
+repair or a guarantee that damaged core database/configuration can run.
 
 Upgrade runs under the existing maintenance fence, first backing up the old
 database (which still embeds all old values). It fsyncs objects before committing

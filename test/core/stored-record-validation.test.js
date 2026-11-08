@@ -9,11 +9,11 @@ import { createTask } from "../../dist/task/task.js";
 import { createTaskMessage } from "../../dist/message/message.js";
 import { validateCurrentTaskStore } from "../../dist/storage/currentTaskStore.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
-import { getDoctorChecks } from "../../dist/doctor/doctor.js";
+import { getDoctorChecks, summarizeStorageHealth } from "../../dist/doctor/doctor.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createRoleSessionSet } from "../../dist/executor/agentExecutor.js";
 
-test("current record validation rejects invalid writes, reads and current-Home health checks", async t => {
+test("invalid historical records fail exact reads and audit, not core Home admission", async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-record-validation-"));
   t.after(() => rmSync(home, { recursive: true, force: true }));
   const store = new SqliteTaskStore(home);
@@ -36,15 +36,16 @@ test("current record validation rejects invalid writes, reads and current-Home h
   try {
     assert.throws(() => invalid.listMessages("task-1"), /Message|messages/);
     assert.throws(() => invalid.queryContextRecords("task-1", { family: "task-message", limit: 1 }), /Message|messages/);
+    assert.throws(() => invalid.validateCurrentRecords(), /Message|messages/);
   }
   finally { invalid.close(); }
-  assert.throws(() => validateCurrentTaskStore(home), /Message|messages/);
+  assert.doesNotThrow(() => validateCurrentTaskStore(home));
   const check = await runStorageUpgrade({ home, mode: "dry-run" });
-  assert.equal(check.outcome, "blocked");
-  assert.equal(check.stage, "corruption");
-  assert.equal(check.sceneUnchanged, true);
+  assert.equal(check.outcome, "already-current");
   const doctor = await getDoctorChecks({ HOME: home, YUI_HOME: home, CODEX_HOME: home }, { run: () => "fixture" });
-  assert.equal(doctor.find(check => check.name === "storage state").status, "invalid");
+  assert.equal(doctor.find(check => check.name === "storage state").status, "ok");
+  assert.equal(doctor.find(check => check.name === "stored records").status, "invalid");
+  assert.equal(summarizeStorageHealth(doctor).healthy, true, "history diagnostics do not block update verification");
 });
 
 test("shared version-1 envelopes cannot cross Task and Global record authority", t=>{

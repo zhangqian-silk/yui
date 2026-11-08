@@ -51,11 +51,11 @@ export function readCurrentHomeIdentity(home: string): HomeIdentity {
   return readSqliteHomeIdentity(home, CURRENT_DATABASE_FILENAME);
 }
 
-/** Eagerly prove that the current database reaches the strict loader. */
+/** Validate Home prerequisites; each operation validates the records it uses. */
 export function validateCurrentTaskStore(home: string): void {
   const store = openCurrentTaskStore(home);
   try {
-    store.validateCurrentRecords();
+    store.validateHomeControlRecords();
   } finally {
     store.close();
   }
