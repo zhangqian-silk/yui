@@ -2,7 +2,7 @@
 
 Read this before changing persistent records, schema or the update handshake.
 
-Yui Home has one authoritative **major.minor** storage version, currently 1.33.
+Yui Home has one authoritative **major.minor** storage version, currently 1.34.
 It is independent of software releases, record schema tags and business
 revisions. `storage_schema` identifies the format and schema checksum. New
 Homes initialize the complete current schema directly.
@@ -35,7 +35,36 @@ Persistent changes after the published 1.0 baseline require an explicit
 same-major minor transition; never rewrite the baseline. Keep current bounded
 retry, lock waiting, transactions, replay protection and exact-identity caches:
 they are current runtime behavior.
+Storage 1.34 keeps frozen Context metadata in SQLite and its immutable resource
+values in `task-data/<task-id>/context-values/`. Preserve both when backing up a
+current Home; these are durable evidence, not a runtime cache or a worktree.
+The 1.32/1.33 upgrade backup is self-contained because its snapshots still embed
+their values. Migration publishes fsynced content before committing references,
+and tracks only its own new file/directory effects for rollback. Never refill
+missing frozen content from live records or garbage-collect it by age.
+Historical files are not a whole-Home admission prerequisite: validate control
+schema, Home identity and global config without loading all historical records
+or content, and return the original missing-file
+error on the exact requested read. Do not create file backups or restore deleted
+Task content automatically. Normal upgrades must preserve Task worktree contents,
+including uncommitted files. This does not remove the existing database
+migration backup/rollback mechanism.
+Explicit record audits and exact reads remain strict; migrations validate their
+own transformed data. Catalog diagnostics are not execution or cleanup authority.
+Explicit `repair` is a separate user/current-Operator maintenance operation,
+not an automatic reader fallback or migration. It patches named config fields
+only when the existing object is parseable, or restores identity metadata from
+a supplied backup matching the surviving Home ID. Preserve preview guards,
+maintenance/startup fences, exact scope and atomic revision updates; never
+generate a replacement identity or bootstrap missing control rows.
 Real Home operations and publication require explicit user authority;
 development uses isolated fixtures. See
 [the storage baseline](../../../../docs/storage-baseline.md) for current
 admission and recovery boundaries, and verify the runtime tarball.
+
+Cleanup capabilities ship through normal software upgrades; migrations may
+prepare required storage but must not invoke destructive cleanup. Process-data
+cleanup and full Task deletion require separate explicit operations. Verify
+that upgrading old Homes preserves existing process data. The current
+`task process-cleanup` removes only archived-Task telemetry details after
+preview confirmation; it is not full Task deletion or file cleanup.

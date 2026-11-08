@@ -211,6 +211,10 @@ export type TaskStore = {
   queryContextRecords(taskId: string, query: ContextRecordQuery): ContextRecordPage;
   latestEventSequence(taskId: string): number;
   listEventsByType(taskId: string, types: readonly string[]): TaskEvent[];
+  inspectTaskProcessData(taskId: string): import("../task/processCleanup.js").TaskProcessData;
+  clearTaskProcessData(
+    taskId: string, digest: string, requestId: string, actor: "user" | "operator" | "leader"
+  ): import("../task/processCleanup.js").TaskProcessCleanupReceipt;
   hasRuntimeObservation(taskId: string, identity: { semanticKey: string } | { eventId: string }): boolean;
   readTaskUsageFacts(taskId: string): import("../runtime/taskUsageQuery.js").TaskUsageFacts;
   listTaskRunWorkspaceBases(taskId: string): Pick<AgentRun, "id" | "createdAt" | "workspace">[];
@@ -401,6 +405,7 @@ export type TaskStore = {
   nextContextSnapshotId(taskId: string): string;
   getContextSnapshot(taskId: string, snapshotId: string): ContextSnapshot | null;
   listContextSnapshots(taskId: string): ContextSnapshot[];
+  queryContextSnapshots(taskId: string, query: import("./taskContent.js").ContextSnapshotQuery): ContextSnapshot[];
   saveContextSnapshot(snapshot: ContextSnapshot): void;
   nextRunId(taskId: string): string;
   peekNextRunId(taskId: string): string;

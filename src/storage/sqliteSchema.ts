@@ -12,6 +12,8 @@ import { migrateJobDefinitions } from "./upgrade/jobDefinitionMigration.js";
 import { migrateJobBusinessResults } from "./upgrade/jobBusinessResultMigration.js";
 import { migrateScheduleDispatch } from "./upgrade/scheduleDispatchMigration.js";
 import { migrateProjectSyncClock } from "./upgrade/projectSyncClockMigration.js";
+import { migrateTaskContent } from "./upgrade/taskContentMigration.js";
+import type { ContentMigrationEffects } from "./taskContent.js";
 import { migrateExperimentLeaders } from "./upgrade/experimentLeaderMigration.js";
 import {
   CURRENT_STORAGE_VERSION, MIN_SUPPORTED_STORAGE_VERSION, STORAGE_FORMAT,
@@ -49,7 +51,7 @@ export type StorageMinorUpgrade = Readonly<{
   sourceChecksum: string;
   targetChecksum: string;
   sql: string;
-  dataMigration?: "task-main-workspace" | "project-knowledge" | "job-definitions" | "job-business-results" | "schedule-dispatch" | "project-sync-clock" | "experiment-leader-copy";
+  dataMigration?: "task-main-workspace" | "project-knowledge" | "job-definitions" | "job-business-results" | "schedule-dispatch" | "project-sync-clock" | "experiment-leader-copy" | "task-content";
 }>;
 
 // Only explicit, contiguous minor changes in this baseline may be added here.
@@ -383,6 +385,15 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // historical execution snapshots are unchanged.
   sql: "",
   dataMigration: "experiment-leader-copy"
+}, {
+  fromVersion: "1.33",
+  toVersion: "1.34",
+  name: "task-owned-context-content",
+  introducedIn: "2.29.0",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  sql: "",
+  dataMigration: "task-content"
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
@@ -503,7 +514,8 @@ export function initializeSqliteSchema(db: Database.Database): SqliteSchemaState
 export function applySqliteMinorUpgrades(
   db: Database.Database,
   home: string,
-  createdRoots: string[] = []
+  createdRoots: string[] = [],
+  contentEffects: ContentMigrationEffects = { files: [], directories: [] }
 ): void {
   db.transaction(() => {
     const before = inspectSqliteSchema(db);
@@ -523,6 +535,7 @@ export function applySqliteMinorUpgrades(
       if (step.dataMigration === "job-business-results") migrateJobBusinessResults(db);
       if (step.dataMigration === "schedule-dispatch") migrateScheduleDispatch(db);
       if (step.dataMigration === "project-sync-clock") migrateProjectSyncClock(db);
+      if (step.dataMigration === "task-content") migrateTaskContent(db, home, contentEffects);
       if (step.dataMigration === "experiment-leader-copy") migrateExperimentLeaders(db);
       const { major, minor } = storageVersionParts(step.toVersion);
       db.prepare("UPDATE storage_schema SET major=?,minor=?,checksum=? WHERE id=1")

@@ -362,6 +362,14 @@ Force 不验证合并、不验收工作、不证明物理静止、不丢弃脏�
 `allResourcesReleased` 将当前轮次及剩余所有权与历史警告分开报告；不隐含后台重试或更广泛的删除
 权限。两条归档路径都保留 Task 历史与恢复信息。已归档的 Task 不能重开。
 
+显式删除保留的 telemetry 明细时，先运行
+`yui task process-cleanup <task> --preview`，再使用返回的摘要执行
+`yui task process-cleanup <task> --confirm <digest> --request-id <stable-id>`。
+当前仅清明细，保留汇总、业务事件、冻结证据、Artifact、日志和工作区；
+不是完整过程文件清理或 Task 删除。执行要求已归档、业务已结清、物理运行已释放，
+在 SQLite 写事务内复查预览并同时保存删除回执。响应未知时复用同一请求 ID 和摘要。
+已归档任务不再接收延迟到达的在线 telemetry。软件升级交付能力，但不会调用清理。
+
 runtime 清理中断可能留下相邻的 `.cleanup-*` 认领目录。重试同时检查这些目录和原路径，
 只有 Owner marker 精确匹配且没有存活进程引用时才删除。marker 缺失或不匹配时保留目录，
 并给出路径供显式诊断；原目录不存在本身不证明资源已释放。未解决的认领也阻止同一 runtime

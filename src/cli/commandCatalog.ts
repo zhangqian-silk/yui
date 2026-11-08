@@ -610,6 +610,15 @@ const taskChildren: readonly NodeInput[] = [
     usage: "yui task archive-cleanup <id>"
   },
   {
+    name: "process-cleanup", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+    summary: "Explicitly preview or clear archived Task telemetry details only; preserve aggregates, history and all files. Never runs during upgrade.",
+    usage: [
+      "yui task process-cleanup <id> --preview",
+      "yui task process-cleanup <id> --confirm <preview-digest> --request-id <id>"
+    ],
+    options: ["--preview", "--confirm", "--request-id"]
+  },
+  {
     name: "archive", discovery: { surface: "public", audiences: ["public","operator","leader"], optionAudiences: { "--force": ["public", "operator"] } },
     summary: "Archive settled, delivered, stopped work, then attempt exact-owner cleanup. Retained physical resources do not require --force; force separately bypasses business admission.",
     usage: "yui task archive <id> (--integrated|--abandon) [--force] [--source-message <id> --purpose <verbatim-authorization> --request-id <id>]",
@@ -1319,7 +1328,7 @@ export const ROOT_COMMAND = buildNode({
   examples: ["yui setup", "yui start", "yui operator enter", "yui task list"],
   sections: [
     { id: "general", title: "General", entries: [
-      "help", "version", "update", "upgrade", "setup", "start", "doctor"
+      "help", "version", "update", "upgrade", "setup", "start", "doctor", "repair"
     ] },
     { id: "workflow", title: "Workflow", entries: ["agent", "operator", "role", "inbox", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
@@ -1436,6 +1445,24 @@ export const ROOT_COMMAND = buildNode({
     },
     { name: "start", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Start the Controller and Codex shared runtime needed by active Roles." },
     { name: "doctor", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global","unbound"] }, summary: "Check Yui dependencies and file state." },
+    {
+      name: "repair", discovery: { surface: "public", audiences: ["public", "operator"] },
+      summary: "Inspect or explicitly repair damaged Home control fields without starting a Controller.",
+      sections: [{ id: "commands", title: "Commands", entries: ["inspect", "config", "identity"] }],
+      children: [
+        { name: "inspect", discovery: { surface: "public", audiences: ["public", "operator"] }, summary: "Diagnose Home identity and config without loading Task history." },
+        {
+          name: "config", discovery: { surface: "public", audiences: ["public", "operator"] }, summary: "Preview a named-field JSON patch; apply only with its exact preview digest.",
+          usage: "yui repair config --patch <JSON-file> [--apply --expect <digest>]",
+          options: ["--patch", "--apply", "--expect"], fileOptions: ["--patch"]
+        },
+        {
+          name: "identity", discovery: { surface: "public", audiences: ["public", "operator"] }, summary: "Restore invalid metadata from a backup matching the surviving Home ID.",
+          usage: "yui repair identity --from-backup <database> [--apply --expect <digest>]",
+          options: ["--from-backup", "--apply", "--expect"], fileOptions: ["--from-backup"]
+        }
+      ]
+    },
     {
       name: "web", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Serve the control room using the running Controller's capability Host.",
@@ -1818,7 +1845,7 @@ export const ROOT_COMMAND = buildNode({
       name: "task", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Manage Tasks, WorkItems, AgentRuns, and integration.",
       sections: [
-        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "replace", "reconcile", "upstream", "artifact", "iteration"] },
+        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "process-cleanup", "replace", "reconcile", "upstream", "artifact", "iteration"] },
         { id: "collaboration", title: "Collaboration", entries: ["message", "input", "grant", "workflow", "publication", "work", "run", "review", "integration", "role", "overlap", "change-set"] },
         { id: "knowledge", title: "Task Knowledge", entries: ["search", "brief", "decision", "milestone", "event", "continuation", "wake", "usage"] }
       ],

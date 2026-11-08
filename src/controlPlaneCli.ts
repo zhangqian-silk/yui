@@ -54,6 +54,7 @@ import type { SelectionPorts } from "./cli/selectionPorts.js";
 import { runUpdateCommand } from "./cli/updateCommand.js";
 import { createUpdatePorts } from "./cli/updatePorts.js";
 import { runUpgradeCommand } from "./cli/upgradeCommand.js";
+import { runRepairCommand } from "./cli/repairCommand.js";
 import {
   runAgentCommand,
   type AgentCommandStore
@@ -111,6 +112,7 @@ import {
   runSessionStopCommand
 } from "./commands/sessionCommands.js";
 import { assertTaskDeliveryAuthority, taskLocalActor, resolveJobCaller } from "./task/taskAuthority.js";
+import { parseProcessCleanupArguments, runTaskProcessCleanup } from "./task/processCleanup.js";
 import { runTaskBaseStatusCommand } from "./commands/taskBaseCommands.js";
 import { runTaskProjectUpdateCommand } from "./commands/taskProjectUpdateCommands.js";
 import { runTaskChangeSetCommand } from "./commands/taskChangeSetCommands.js";
@@ -598,6 +600,11 @@ export async function main(): Promise<void> {
     process.exitCode = result.exitCode;
     if (result.exitCode !== 0) emitFailureResult(result.output, result.data);
     else emit(result.output, false, result.data);
+    return;
+  }
+  if (args[0] === "repair") {
+    const result = await runRepairCommand(args.slice(1), home, process.env);
+    emit(result.output, false, result.data);
     return;
   }
   if (args[0] === "internal") {
@@ -1334,6 +1341,17 @@ export async function main(): Promise<void> {
       return;
     }
     if (resolved[0] === "task") {
+      if (resolved[1] === "process-cleanup") {
+        const request = parseProcessCleanupArguments(resolved.slice(2));
+        const result = await runTaskProcessCleanup(store, request, process.env, async taskId => {
+          if (runtime.assertTaskPhysicalResourcesReleased === undefined) {
+            throw usageError("Physical resource inspection is unavailable; process cleanup refused.");
+          }
+          await runtime.assertTaskPhysicalResourcesReleased(taskId);
+        });
+        emit(JSON.stringify(result, null, 2), false, result);
+        return;
+      }
       if (resolved[1] === "archive-preflight") {
         const request = parseTaskArchiveArguments(resolved.slice(2), "archive-preflight");
         if (process.env.YUI_SESSION_SCOPE === "task" && process.env.YUI_TASK_ID !== request.taskId) {
@@ -2522,7 +2540,7 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
   if (taskFinalReviewInvocation.error !== undefined) {
     throw new Error(taskFinalReviewInvocation.error);
   }
-  if (["doctor", "upgrade", "update"].includes(args[0] ?? "")) {
+  if (["doctor", "upgrade", "update", "repair"].includes(args[0] ?? "")) {
     const home = resolveYuiHome(process.env);
     Object.assign(process.env, maintenanceCallerEnvironment(home, process.env, args[0] !== "doctor"));
     if (!hasManagedIdentity(process.env)

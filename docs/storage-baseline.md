@@ -2,7 +2,76 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.33. The 1.32 → 1.33 transition materializes each inherited
+Current storage is 1.34. The 1.33 → 1.34 transition separates frozen Context
+metadata from immutable resource content. SQLite retains identity, scope,
+sequence and fixed references; `task-data/<task-id>/context-values/<digest>.json`
+holds the exact values, deduplicated only within that Task. Snapshot digests,
+authorized values and historical references do not change. Scope lookups use
+the existing SQLite index before loading selected content. Missing or corrupt
+content is an error, never reconstructed from current state.
+
+Home admission validates the current schema, Home identity and global config,
+not every historical Task record or file. Exact reads and explicit record audits
+remain strict. The compact Task catalog keeps missing/invalid Task bodies visible
+with `recordError` and a null `ref`; it does not fabricate valid Task references.
+Doctor reports historical record errors separately as `stored records`, outside
+the core storage health gate used for post-update verification.
+Exact reads return missing-file/content errors for the Agent to assess;
+missing history does not disable unrelated Tasks. Normal upgrades do not
+rewrite Task worktree contents or create automatic task-data/Artifact backups,
+and deleted history is not automatically restored. The existing database
+migration backup and rollback mechanism is unchanged.
+Upgrade admission uses the same boundary plus SQLite integrity checking;
+each migration still validates the data it transforms. This is not automatic
+repair or a guarantee that damaged core database/configuration can run.
+
+### Offline scoped repair
+
+The user/current Operator can run `yui repair inspect` without starting a
+Controller or loading Task history. Task Roles cannot use this Home maintenance
+entry. `yui repair config --patch /absolute/patch.json` previews a patch such as
+`{"set":{"telemetryEnabled":false},"remove":["unexpectedField"]}`. Use stored
+property names (listed by `repair inspect`), not CLI hyphenated keys.
+Only public configuration properties can be set; explicit removal can also
+remove an unknown corrupt field. `schemaVersion` cannot be patched. Unmentioned
+fields are preserved and the complete candidate must validate. Already-valid
+configuration uses ordinary `config set/clear`, not this repair entry.
+
+Apply the same request with `--apply --expect <returned-digest>`. The digest binds
+the Home, original control rows/revision and exact candidate; changed data or
+inputs require a fresh preview. The write and revision bump are one SQL
+transaction. Apply holds the existing maintenance and startup fences and refuses
+Controller discovery/process presence; it does not stop or start services.
+After an uncertain response, inspect and verify the intended values before any
+retry. Successful repair is not proof that all Home data or services are healthy.
+
+`yui repair identity --from-backup /absolute/original.db` previews restoration
+from a user-selected existing SQLite backup. Apply uses the same digest flags.
+The backup identity must validate and match the surviving valid `homeId`; valid
+surviving identity fields must also agree. This never generates a replacement
+identity or restores the entire database. Invalid JSON, missing singleton rows,
+lost/unverifiable Home IDs, revision corruption, unsupported schema and physical
+database corruption remain explicit blockers. No automatic backup or historical
+file restoration is introduced. Preview outputs field names, not full config
+values. A workspace directory selected in a config patch must already exist and
+remain outside Home; repair does not create directories on its behalf.
+
+Upgrade runs under the existing maintenance fence, first backing up the old
+database (which still embeds all old values). It fsyncs objects before committing
+metadata. On a handled failure the database is rolled back/restored and only
+this attempt's new files are removed; cleanup/restoration errors are reported.
+A process crash before commit may leave unreferenced immutable objects. They
+are not authoritative snapshots and a retry verifies and reuses them.
+If a user separately chooses a complete historical backup, it must include
+`task-data/` as well as `yui.db` and existing artifact repositories; such a file
+backup is not an upgrade prerequisite. Worktree cleanup must never remove these
+durable namespaces. These changes do not themselves implement Task deletion.
+
+New Task/Run Context includes portable Project policy and the effective
+Knowledge version, not registration paths, proposals or the entire Knowledge
+revision history. Explicit Project commands still expose those records.
+Already frozen Context retains its original values, including old projections.
+The 1.32 → 1.33 transition materializes each inherited
 experimental Leader from its effective global configuration at upgrade time.
 Its configuration is then maintained independently, like an ordinary Task Role.
 Ordinary Roles and historical Session/Run payloads remain byte-for-byte unchanged.

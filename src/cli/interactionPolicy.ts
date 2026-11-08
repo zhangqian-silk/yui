@@ -309,6 +309,10 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
     confirmation: { action: "Clean archived Task resources", targetArgumentIndex: 2 }
   },
   {
+    ...taskTarget("process-cleanup", 2, ["archived"]),
+    trailingOptions: { "--preview": "flag", "--confirm": "value", "--request-id": "value" }
+  },
+  {
     ...taskTarget("archive", 2, ["completed", "cancelled"]),
     trailingOptions: { "--integrated": "flag", "--abandon": "flag", "--force": "flag" },
     confirmation: { action: "Archive task", targetArgumentIndex: 2 }

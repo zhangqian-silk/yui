@@ -6,22 +6,14 @@ import {
   existsSync,
   mkdirSync,
   rmdirSync,
-  rmSync
+  rmSync,
+  unlinkSync
 } from "node:fs";
 
 import Database from "../../sqlite/driver.js";
-import {
-  RUNTIME_OBSERVATION_TASK_EVENT,
-  createRuntimeObservation,
-  type RuntimeObservation
-} from "../../runtime/runtimeObservation.js";
-import {
-  RUNTIME_PROCESS_EXIT_TASK_EVENT,
-  validateRuntimeProcessExitObservation,
-  type RuntimeProcessExitObservation
-} from "../../runtime/processExitObservation.js";
 import { SqliteTaskStore } from "../sqliteStore.js";
 import { storageBackupRoot } from "../homeLayout.js";
+import type { ContentMigrationEffects } from "../taskContent.js";
 import {
   applySqliteMinorUpgrades,
   storageMinorUpgradePlan,
@@ -262,6 +254,16 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
   }
   let migrationCommitted = false;
   const createdWorkspaceDirectories: string[] = [];
+  const contentEffects: ContentMigrationEffects = { files: [], directories: [] };
+  const discardCreatedContent = () => {
+    // Only files created by this exact maintenance attempt, never a subtree
+    // sweep. Existing objects are not rollback material.
+    for (const path of [...contentEffects.files].reverse()) {
+      try { unlinkSync(path); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    for (const path of [...contentEffects.directories].reverse()) rmdirSync(path);
+  };
   try {
     const database = new Database(join(options.home, CURRENT_DATABASE_FILENAME));
     try {
@@ -269,7 +271,7 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
       database.pragma("synchronous = FULL");
       database.pragma("foreign_keys = ON");
       database.pragma("busy_timeout = 5000");
-      applySqliteMinorUpgrades(database, options.home, createdWorkspaceDirectories);
+      applySqliteMinorUpgrades(database, options.home, createdWorkspaceDirectories, contentEffects);
       migrationCommitted = true;
     } finally {
       database.close();
@@ -281,7 +283,10 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
       : { restored: true as const };
     let directoryCleanupError: string | undefined;
     try {
-      for (const path of createdWorkspaceDirectories.reverse()) rmdirSync(path);
+      if (restoration.restored) {
+        discardCreatedContent();
+        for (const path of createdWorkspaceDirectories.reverse()) rmdirSync(path);
+      }
     } catch (cleanupError) {
       directoryCleanupError = messageOf(cleanupError);
     }
@@ -306,7 +311,10 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
     const restoration = tryRestoreDatabaseBackup(options.home, backupPath);
     let directoryCleanupError: string | undefined;
     try {
-      for (const path of createdWorkspaceDirectories.reverse()) rmdirSync(path);
+      if (restoration.restored) {
+        discardCreatedContent();
+        for (const path of createdWorkspaceDirectories.reverse()) rmdirSync(path);
+      }
     } catch (cleanupError) {
       directoryCleanupError = messageOf(cleanupError);
     }
@@ -342,20 +350,7 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
 function validateCurrentStore(home: string): void {
   const store = new SqliteTaskStore(home, { readonly: true });
   try {
-    store.validateCurrentRecords();
-    for (const taskId of store.listTasks().map(({ id }) => id)) {
-      for (const event of store.listEvents(taskId)) {
-        if (event.type === RUNTIME_OBSERVATION_TASK_EVENT) {
-          createRuntimeObservation(
-            JSON.parse(event.payload.observation ?? "") as RuntimeObservation
-          );
-        } else if (event.type === RUNTIME_PROCESS_EXIT_TASK_EVENT) {
-          validateRuntimeProcessExitObservation(
-            JSON.parse(event.payload.observation ?? "") as RuntimeProcessExitObservation
-          );
-        }
-      }
-    }
+    store.validateHomeControlRecords();
     const quickCheck = store.databaseHandle().pragma("quick_check", { simple: true });
     if (quickCheck !== "ok") {
       throw new Error(`SQLite quick_check failed: ${String(quickCheck)}.`);

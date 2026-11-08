@@ -59,6 +59,8 @@ export type ContextSnapshot = ContextSnapshotRef & Readonly<{
   frozenBy: "leader" | "controller";
 }>;
 
+export type ContextSnapshotMetadata = Omit<ContextSnapshot, "resources">;
+
 export type CreateContextSnapshotInput = Readonly<{
   id: string;
   taskId: string;
@@ -125,7 +127,9 @@ export function createContextSnapshot(input: CreateContextSnapshotInput): Contex
   });
 }
 
-export function validateContextSnapshot(snapshot: ContextSnapshot): ContextSnapshot {
+/** Control metadata is validated without opening historical content. Missing
+ * history is a read-time error, not a reason to reject the entire Home. */
+export function validateContextSnapshotMetadata(snapshot: ContextSnapshotMetadata): ContextSnapshotMetadata {
   if (snapshot.schemaVersion !== CONTEXT_SNAPSHOT_SCHEMA_VERSION) {
     throw new Error("Context Snapshot must use schemaVersion 1.");
   }
@@ -134,10 +138,6 @@ export function validateContextSnapshot(snapshot: ContextSnapshot): ContextSnaps
   if (JSON.stringify(refs) !== JSON.stringify(snapshot.refs)) {
     throw new Error("Context Snapshot refs must use canonical order.");
   }
-  const resources = normalizeSnapshotResources(snapshot.resources, refs);
-  if (JSON.stringify(resources) !== JSON.stringify(snapshot.resources)) {
-    throw new Error("Context Snapshot resources must use canonical ref order.");
-  }
   const acceptRefs = Object.freeze(
     [...normalizedUniqueText(snapshot.acceptRefs, "Context Snapshot acceptance reference")]
       .sort((left, right) => left.localeCompare(right))
@@ -145,7 +145,7 @@ export function validateContextSnapshot(snapshot: ContextSnapshot): ContextSnaps
   if (JSON.stringify(acceptRefs) !== JSON.stringify(snapshot.acceptRefs)) {
     throw new Error("Context Snapshot acceptance refs must use canonical order.");
   }
-  const repoCommit = optionalText(snapshot.repoCommit, "Context Snapshot repository commit");
+  optionalText(snapshot.repoCommit, "Context Snapshot repository commit");
   const parentRef = snapshot.parentRef === undefined
     ? undefined
     : validateContextSnapshotRef(snapshot.parentRef);
@@ -158,6 +158,19 @@ export function validateContextSnapshot(snapshot: ContextSnapshot): ContextSnaps
     throw new Error("Context Snapshot frozenBy is invalid.");
   }
   requireDigest(snapshot.digest, "Context Snapshot digest");
+  return snapshot;
+}
+
+export function validateContextSnapshot(snapshot: ContextSnapshot): ContextSnapshot {
+  validateContextSnapshotMetadata(snapshot);
+  const identity = snapshotIdentity(snapshot);
+  const refs = normalizeContextRefs(snapshot.refs);
+  const resources = normalizeSnapshotResources(snapshot.resources, refs);
+  if (JSON.stringify(resources) !== JSON.stringify(snapshot.resources)) {
+    throw new Error("Context Snapshot resources must use canonical ref order.");
+  }
+  const repoCommit = optionalText(snapshot.repoCommit, "Context Snapshot repository commit");
+  const parentRef = snapshot.parentRef === undefined ? undefined : validateContextSnapshotRef(snapshot.parentRef);
   const expected = contentDigest({
     taskId: identity.taskId,
     scope: identity.scope,
@@ -166,7 +179,7 @@ export function validateContextSnapshot(snapshot: ContextSnapshot): ContextSnaps
     refs,
     resources,
     ...(repoCommit === undefined ? {} : { repoCommit }),
-    acceptRefs,
+    acceptRefs: snapshot.acceptRefs,
     ...(parentRef === undefined ? {} : { parentRef }),
     frozenAt: snapshot.frozenAt,
     frozenBy: snapshot.frozenBy

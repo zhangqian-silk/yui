@@ -23,8 +23,10 @@ import { validateAgentJobRun, assertAgentJobRunTransition, type AgentJobRun, typ
  *   - Evidence retention .......... events/review_rounds/change_sets/
  *                                    integration_attempts are never pruned.
  *
- * Records are stored as full current JSON in `payload` columns, with typed
- * columns for the fields that are queried/filtered/used-for-CAS (§4). A
+ * Mutable records are stored as full current JSON in `payload` columns, with
+ * typed columns for fields queried/filtered/used-for-CAS (§4). Frozen Context
+ * stores only metadata here; its resource values use task-owned immutable
+ * content (storage 1.34). A
  * high-frequency runtime telemetry observation is a single-row upsert into
  * `telemetry` scoped by its primary key — it never rewrites global
  * state and never touches another Task's rows (§4.4).
@@ -34,6 +36,7 @@ import { validateAgentJobRun, assertAgentJobRunTransition, type AgentJobRun, typ
  * in-process contract or deferred validation phase.
  */
 import Database from "../sqlite/driver.js";
+import { loadSnapshotContent, storeSnapshotContent, validateStoredSnapshotMetadata, type ContextSnapshotQuery } from "./taskContent.js";
 import { ControllerWorkObserver, compactWorkObservation } from "../core/controllerTelemetry.js";
 import { findNativeSessionSets } from "./nativeSessionLookup.js";
 import { existsSync, mkdirSync } from "node:fs";
@@ -54,6 +57,8 @@ import {
 } from "../coordination/workMailbox.js";
 import type { Decision } from "../decision/decision.js";
 import { createTaskEvent, type TaskEvent } from "../event/taskEvent.js";
+import { createHash } from "node:crypto";
+import { assertTaskProcessCleanupReady, type TaskProcessData, type TaskProcessCleanupReceipt } from "../task/processCleanup.js";
 import { enqueueDurableOperatorFact } from "../scheduler/operatorEvent.js";
 import type { GlobalRoleSessionSet, RoleAgentSession, TaskRoleSessionSet } from "../executor/agentExecutor.js";
 import type { CapabilityGrant } from "../grant/capabilityGrant.js";
@@ -410,10 +415,27 @@ export class SqliteTaskStore implements TaskStore {
     return this.#json(value);
   }
 
-  /** Explicit full-Home diagnosis; ordinary reads validate only their records. */
+  /** Home admission must not depend on unrelated historical Task records. */
+  validateHomeControlRecords(): void {
+    this.getConfig();
+    validateHomeIdentity(this.getHomeIdentity());
+  }
+
+  /** Explicit full record audit. Exact readers remain strict even though
+   * unreadable history is not a whole-Home admission prerequisite. */
   validateCurrentRecords(): void {
     this.getConfig();
     for (const table of STORED_RECORD_TABLES) {
+      if (table === "context_snapshots") {
+        for (const row of this.#db.prepare("SELECT task_id,snapshot_id,payload FROM context_snapshots").iterate() as
+          Iterable<{ task_id: string; snapshot_id: string; payload: string }>) {
+          const metadata = validateStoredSnapshotMetadata(JSON.parse(row.payload));
+          if (metadata.taskId !== row.task_id || metadata.id !== row.snapshot_id) {
+            throw new StorageRecordError("Context Snapshot ownership differs from its database key.");
+          }
+        }
+        continue;
+      }
       for (const row of this.#db.prepare(`SELECT payload FROM ${table}`).iterate() as Iterable<{ payload: string }>) {
         this.#validateTaskPayload(table, row.payload);
       }
@@ -2756,18 +2778,32 @@ export class SqliteTaskStore implements TaskStore {
   }
 
   getContextSnapshot(taskId: string, snapshotId: string): ContextSnapshot | null {
-    return this.#getPayload<ContextSnapshot>(
-      "context_snapshots",
-      "task_id = ? AND snapshot_id = ?",
-      [taskId, snapshotId]
-    );
+    const row = this.#db.prepare("SELECT payload FROM context_snapshots WHERE task_id=? AND snapshot_id=?")
+      .get(taskId, snapshotId) as { payload: string } | undefined;
+    if (!row) return null;
+    const value = JSON.parse(row.payload);
+    if (value?.taskId !== taskId || value?.id !== snapshotId) {
+      throw new StorageRecordError("Context Snapshot ownership differs from its database key.");
+    }
+    return loadSnapshotContent(this.#rootDir, value);
   }
 
   listContextSnapshots(taskId: string): ContextSnapshot[] {
-    return this.#sortById(
-      this.#listPayload<ContextSnapshot>("context_snapshots", "task_id = ?", [taskId]),
-      (snapshot) => snapshot.id
-    );
+    const rows = this.#db.prepare("SELECT snapshot_id FROM context_snapshots WHERE task_id=?")
+      .all(taskId) as { snapshot_id: string }[];
+    return this.#sortById(rows.map(row => this.getContextSnapshot(taskId, row.snapshot_id)!), snapshot => snapshot.id);
+  }
+
+  queryContextSnapshots(taskId: string, query: ContextSnapshotQuery): ContextSnapshot[] {
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 256) {
+      throw new StorageRecordError("Context Snapshot query requires a limit from 1 to 256.");
+    }
+    const rows = this.#db.prepare(`SELECT snapshot_id FROM context_snapshots
+      WHERE task_id=? AND scope=? AND COALESCE(scope_ref, '')=?
+      ${query.rootOnly ? "AND json_extract(payload, '$.parentRef') IS NULL" : ""}
+      ORDER BY sequence ${query.descending ? "DESC" : "ASC"} LIMIT ?`
+    ).all(taskId, query.scope, query.scopeRef ?? "", query.limit) as { snapshot_id: string }[];
+    return rows.map(row => this.getContextSnapshot(taskId, row.snapshot_id)!);
   }
 
   saveContextSnapshot(snapshot: ContextSnapshot): void {
@@ -2801,7 +2837,7 @@ export class SqliteTaskStore implements TaskStore {
         stored.scopeRef ?? null,
         stored.sequence,
         stored.digest,
-        this.#recordJson("context_snapshots", stored),
+        JSON.stringify(storeSnapshotContent(this.#rootDir, stored)),
         stored.frozenAt
       );
     });
@@ -3538,6 +3574,57 @@ export class SqliteTaskStore implements TaskStore {
 
   // -- telemetry (§4.4) -----------------------------------------------------------
 
+  inspectTaskProcessData(taskId: string): TaskProcessData {
+    return this.readTransaction(() => {
+      const task = this.getTask(taskId);
+      if (task === null) throw new Error(`Task not found: ${taskId}.`);
+      const hash = createHash("sha256").update(JSON.stringify({
+        contract: "telemetry-details-v1", home: this.getHomeIdentity(), task
+      }));
+      let telemetryRows = 0;
+      let payloadBytes = 0;
+      // Stream rows in stable primary-key order: the preview remains bounded
+      // in memory and pins content, not just a count or latest timestamp.
+      for (const row of this.#db.prepare(
+        `SELECT role_name, turn_id, progress_id, sequence, payload, received_at
+         FROM telemetry WHERE task_id=? ORDER BY role_name, turn_id, progress_id`
+      ).iterate(taskId) as Iterable<{ payload: string }>) {
+        hash.update("\n").update(JSON.stringify(row));
+        telemetryRows++;
+        payloadBytes += Buffer.byteLength(row.payload);
+      }
+      return { taskId, scope: "telemetry-details", digest: hash.digest("hex"), telemetryRows, payloadBytes,
+        preserved: ["telemetry aggregates", "events and receipts", "task history", "frozen context",
+          "artifacts", "logs and files", "workspaces", "other tasks and global data"] };
+    });
+  }
+
+  clearTaskProcessData(
+    taskId: string, digest: string, requestId: string, actor: "user" | "operator" | "leader"
+  ): TaskProcessCleanupReceipt {
+    if (!/^[a-f0-9]{64}$/.test(digest) || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(requestId)
+      || !["user", "operator", "leader"].includes(actor)) throw new Error("Invalid process cleanup request.");
+    return this.transaction(() => {
+      const previous = this.listEventsByType(taskId, ["task.process-cleanup"])
+        .find(event => event.payload.requestId === requestId);
+      if (previous !== undefined) {
+        if (previous.payload.digest !== digest) throw new Error("Cleanup request ID already used for a different preview.");
+        return { taskId, requestId, digest, removedTelemetryRows: Number(previous.payload.removedTelemetryRows),
+          eventId: previous.id };
+      }
+      assertTaskProcessCleanupReady(this, taskId);
+      const preview = this.inspectTaskProcessData(taskId);
+      if (preview.digest !== digest) throw new Error("Process cleanup preview changed; inspect again before confirming.");
+      const removedTelemetryRows = this.#mutate(() =>
+        this.#db.prepare("DELETE FROM telemetry WHERE task_id=?").run(taskId).changes);
+      const eventId = this.nextEventId(taskId);
+      this.saveEvent(taskId, createTaskEvent(eventId, taskId, "task.process-cleanup", {
+        scope: "telemetry-details", requestId, digest, actor, removedTelemetryRows: String(removedTelemetryRows)
+      }, new Date()));
+      return { taskId, requestId, digest, removedTelemetryRows, eventId };
+    });
+  }
+
   /**
    * Upsert one progress row. The PK is (task_id, role_name, turn_id,
    * progress_id): a repeated progress id updates in place, so a high-frequency
@@ -3546,6 +3633,7 @@ export class SqliteTaskStore implements TaskStore {
    */
   upsertTelemetryProgress(entry: TelemetryProgress): void {
     this.#mutate(() => {
+      if (this.getTask(entry.taskId)?.status === "archived") return;
       this.#db.prepare(
         `INSERT INTO telemetry (task_id, role_name, turn_id, progress_id, sequence, payload, received_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)

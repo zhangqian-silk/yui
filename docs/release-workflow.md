@@ -51,6 +51,43 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.29.0 compatibility and migration notes
+
+Storage advances **1.32 → 1.33 → 1.34** through the centralized upgrade path.
+The first transition copies experimental Leader configuration into ordinary
+Task-owned configuration; later global edits no longer dynamically change it.
+The second keeps frozen Context identities, digests and references in SQLite
+and moves exact resource values into immutable, Task-owned `task-data` files.
+Existing frozen values and their digests are preserved.
+
+Upgrades preserve Task workspaces, including uncommitted files, and do not run
+history cleanup. Missing historical workspaces, artifacts or Context value files
+are not reconstructed or backed up automatically: the consuming read returns
+its actual missing-file or integrity error for the Agent to handle. Unrelated
+Task creation and Home admission no longer require all historical records to be
+readable. Task catalog entries may expose `recordError` with a null read reference;
+explicit full-record audits still report damaged history.
+
+`task process-cleanup` explicitly removes archived Task telemetry details using
+a preview digest and a durable receipt. It is not complete Task deletion, artifact
+deletion or workspace cleanup. Portable Project context omits machine-local
+registration paths and full Knowledge history; explicit Project reads remain
+available and already-frozen Context is unchanged.
+
+Offline `repair inspect`, `repair config` and `repair identity` expose bounded
+recovery for an authorized user or Operator. Applying requires a fresh preview
+digest and no active runtime. Configuration repair changes named fields only;
+identity restoration requires an existing valid backup matching the surviving
+Home identity. It never guesses credentials, silently creates a new identity,
+starts a Controller or creates an automatic backup.
+
+Use the normal upgrade/migration path. The migration retains its database backup;
+there is no additional automatic backup or restore of historical files. After
+1.34, a manually chosen complete backup must include the database, Task data and
+artifacts. Do not open an upgraded Home with an older binary. Controller/Host
+protocols remain v1, and supported platforms are unchanged. Publication does not
+upgrade the global CLI, migrate production data or restart shared services.
+
 ### 2.28.0 compatibility and migration notes
 
 Tasks can explicitly select `--mode experiment`, independently of their project

@@ -1,4 +1,5 @@
 import type { AgentRun } from "../agentRun/agentRun.js";
+import { projectKnowledgeContext, projectPolicyContext } from "./projectContext.js";
 import { providerRetrySummary } from "../runtime/providerRetry.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { operationalTaskRecords } from "../task/taskRecordRetirement.js";
@@ -151,8 +152,9 @@ function candidateReviewContext(
     return [materialize("L3", "candidate", identity, candidate)];
   }
   const sourceRunId = candidate.source.runId;
-  const snapshots = store.listContextSnapshots(candidate.taskId).filter(snapshot =>
-    snapshot.scope === "workitem" && snapshot.scopeRef === `candidate:${identity}`);
+  const snapshots = store.queryContextSnapshots(candidate.taskId, {
+    scope: "workitem", scopeRef: `candidate:${identity}`, limit: 2
+  });
   if (snapshots.length !== 1) {
     throw new Error(`Frozen candidate report is unavailable: ${identity}. Inspect source Run ${candidate.taskId}/${sourceRunId}; for a new Review use newly authorized delivery with a newly captured Candidate. Historical Snapshots are not rewritten.`);
   }
@@ -255,11 +257,9 @@ export function freezeRunContextSnapshot(
     ])).values()].sort((left, right) => (
       contextRefIdentity(left.ref).localeCompare(contextRefIdentity(right.ref))
     ));
-    const previous = store.listContextSnapshots(run.taskId)
-      .filter((candidate) => candidate.scope === baseline.scope
-        && candidate.scopeRef === baseline.scopeRef)
-      .sort((left, right) => left.sequence - right.sequence)
-      .at(-1);
+    const previous = store.queryContextSnapshots(run.taskId, {
+      scope: baseline.scope, scopeRef: baseline.scopeRef, limit: 1, descending: true
+    })[0];
     const snapshot = createContextSnapshot({
       id: store.nextContextSnapshotId(run.taskId),
       taskId: run.taskId,
@@ -284,10 +284,9 @@ export function freezeRunContextSnapshot(
       : "task";
   const scopeRef = run.reviewRoundId ?? run.workItemId;
   const materialized = mergeRequiredContext(collectAuthorizedContext(store, run), requiredResources, requiredPolicy);
-  const previous = store.listContextSnapshots(run.taskId)
-    .filter((candidate) => candidate.scope === scope && candidate.scopeRef === scopeRef)
-    .sort((left, right) => left.sequence - right.sequence)
-    .at(-1);
+  const previous = store.queryContextSnapshots(run.taskId, {
+    scope, scopeRef, limit: 1, descending: true
+  })[0];
   const snapshot = createContextSnapshot({
     id: store.nextContextSnapshotId(run.taskId),
     taskId: run.taskId,
@@ -340,14 +339,13 @@ export function freezeWorkItemExecutionAssignmentContextSnapshot(
   for (const binding of task.projectBindings) {
     const project = store.getProject(binding.projectId);
     if (project === null) throw new Error(`AgentRun Project not found: ${binding.projectId}.`);
-    const { knowledge, ...projectPolicy } = project;
-    materialized.push(materialize("L1", "project-policy", project.id, projectPolicy));
-    for (const entry of knowledge.filter(({ status }) => status === "active")) {
+    materialized.push(materialize("L1", "project-policy", project.id, projectPolicyContext(project)));
+    for (const entry of project.knowledge.filter(({ status }) => status === "active")) {
       materialized.push(materialize(
         "L1",
         "project-knowledge",
         `${project.id}:${entry.id}`,
-        { projectId: project.id, ...entry }
+        projectKnowledgeContext(project.id, entry)
       ));
     }
   }
@@ -387,12 +385,9 @@ export function freezeReviewStageContextSnapshot(
   }>,
   now: Date
 ): ContextSnapshot {
-  const existing = store.listContextSnapshots(input.taskId)
-    .filter((candidate) => candidate.scope === "stage"
-      && candidate.scopeRef === input.executionGroupId
-      && candidate.parentRef === undefined)
-    .sort((left, right) => left.sequence - right.sequence)
-    .at(0);
+  const existing = store.queryContextSnapshots(input.taskId, {
+    scope: "stage", scopeRef: input.executionGroupId, rootOnly: true, limit: 1
+  })[0];
   if (existing !== undefined) return validateContextSnapshot(existing);
 
   const round = store.getReviewRound(input.taskId, input.reviewRoundId);
@@ -825,14 +820,13 @@ function collectAuthorizedContext(
   for (const binding of task.projectBindings) {
     const project = store.getProject(binding.projectId);
     if (project === null) throw new Error(`AgentRun Project not found: ${binding.projectId}.`);
-    const { knowledge, ...projectPolicy } = project;
-    result.push(materialize("L1", "project-policy", project.id, projectPolicy));
-    for (const entry of knowledge.filter(({ status }) => status === "active")) {
+    result.push(materialize("L1", "project-policy", project.id, projectPolicyContext(project)));
+    for (const entry of project.knowledge.filter(({ status }) => status === "active")) {
       result.push(materialize(
         "L1",
         "project-knowledge",
         `${project.id}:${entry.id}`,
-        { projectId: project.id, ...entry }
+        projectKnowledgeContext(project.id, entry)
       ));
     }
   }

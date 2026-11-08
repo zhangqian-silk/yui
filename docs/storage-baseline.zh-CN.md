@@ -2,7 +2,44 @@
 
 # 存储基线 1.0
 
-当前存储为 1.33。1.32 → 1.33 将已有实验 Leader 按升级时的全局有效配置保存为任务独立副本，之后与普通 Task Role 一样独立维护。普通 Role 和历史 Session/Run 保持逐字节不变；Skill 引用仍加载当前共享文件，不重放历史输入。
+当前存储为 1.34。1.33 → 1.34 将冻结 Context 的元数据与正文分离：SQLite 保留身份、scope、序号和固定引用；`task-data/<task-id>/context-values/<digest>.json` 保存精确值，仅在同一 Task 内去重。快照 digest、授权值和历史引用保持不变。按 scope 查询先用既有 SQLite 索引选择记录，再加载正文。文件缺失或损坏直接报错，不从当前事实重建历史。
+
+Home 准入验证当前 schema、Home 身份和全局配置，不全量加载历史 Task 记录或文件。
+精确读取和显式完整记录审计仍严格校验。紧凑任务列表保留正文缺失/非法的条目，
+返回 `recordError` 和空 `ref`，不伪造可用任务引用。精确读取时返回缺失/损坏错误，
+由 Agent 判断；历史缺失不影响无关任务。正常升级不重写 task worktree 内容，
+不新增 task-data/Artifact 自动备份，也不自动恢复被删除的历史。既有数据库迁移备份和回滚不变。
+
+Doctor 用独立的 `stored records` 项报告历史错误，不将其混入升级后验证的核心存储健康门槛。
+升级准入采用同样边界，另保留 SQLite 完整性检查；各迁移仍校验自身转换的数据。
+这不代表自动修复历史，也不保证核心数据库或配置损坏后可以运行。
+
+### 离线定点修复
+
+用户或当前 Operator 可以运行 `yui repair inspect`，无需启动 Controller 或读取 Task
+历史；Task Role 不能借此修改 Home 配置。`yui repair config --patch /absolute/patch.json`
+先预览，例如补丁正文为 `{"set":{"telemetryEnabled":false},"remove":["unexpectedField"]}`。
+使用存储属性名而非连字符 CLI key，可通过 `repair inspect` 查询。只允许设置公共配置
+属性；显式删除也可移除非法的未知字段。禁止修改 `schemaVersion`，未指定字段保留，
+完整候选配置必须通过校验。原配置已合法时仍用普通 `config set/clear`。
+
+在相同命令后增加 `--apply --expect <预览返回的digest>` 才会写入。摘要绑定 Home、
+原始控制记录/修订号和候选值；内容变化必须重新预览。修改和修订号递增处于同一 SQL
+事务，执行时持有现有维护锁和启动锁；发现 Controller 记录或进程就拒绝，不自动停启
+服务。响应不确定时先检查目标值，不盲目重试。修复成功不等于整个 Home/服务健康。
+
+`yui repair identity --from-backup /absolute/original.db` 从用户指定的既有 SQLite 副本
+预览恢复身份元数据，应用时同样携带摘要。副本身份必须合法，与残存且合法的 `homeId`
+一致；其他残存合法身份字段也必须一致。不生成新身份、不整库覆盖、不自动创建备份。
+JSON 无法解析、单例行丢失、原 Home ID 无法确认、修订号损坏、不支持的 schema 和物理
+数据库损坏均明确阻断，不猜测重建。预览只输出字段名，不输出完整配置值。
+补丁指定的默认工作目录必须已存在且位于 Home 之外，修复不代为创建目录。
+
+升级沿用维护栅栏，先备份仍内嵌全部旧正文的数据库，再持久化对象文件，最后提交元数据。已捕获的失败会回滚或恢复数据库，只清理本次新建文件；恢复和清理失败必须报告。提交前进程崩溃可能留下未引用的不可变对象，它们不是权威快照，重试校验后复用。若用户另行选择完整历史备份，需要同时保留 `yui.db`、`task-data/` 和既有 Artifact 仓库；文件备份不是升级前置条件。执行 worktree 回收不得删除这些持久命名空间。这项迁移本身不等于实现 Task 删除。
+
+新 Task/Run Context 只包含可移植 Project policy 和当前生效的 Knowledge 版本，不再混入本机注册路径、待审批提案或全部知识历史。显式 Project 命令仍可读取完整记录；已经冻结的 Context 保留原来的值。
+
+1.32 → 1.33 将已有实验 Leader 按升级时的全局有效配置保存为任务独立副本，之后与普通 Task Role 一样独立维护。普通 Role 和历史 Session/Run 保持逐字节不变；Skill 引用仍加载当前共享文件，不重放历史输入。
 
 1.31 → 1.32 声明显式 ExperimentLeader 模板引用和 Task artifacts 内的 schema-1 实验知识，不新增表，不转换既有 Task、Role、文件或运行。1.32 的继承配置按当时父模板读取，历史执行快照不变。既有 Home 使用集中升级路径；软件回退需要匹配版本的 Home 备份。
 
