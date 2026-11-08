@@ -2,7 +2,9 @@
 
 # 存储基线 1.0
 
-当前存储为 1.32。1.31 → 1.32 声明显式 ExperimentLeader 模板引用和 Task artifacts 内的 schema-1 实验知识，不新增表，不转换既有 Task、Role、文件或运行。继承配置按当前父模板读取，历史执行快照不变。既有 Home 使用集中升级路径；软件回退需要匹配版本的 Home 备份。
+当前存储为 1.33。1.32 → 1.33 声明可选的稀疏、按 Agent 区分的实验 Leader 启动覆盖及启动快照逐字段来源。既有 Role/Session/Run 保持逐字节不变；没有覆盖的记录继续动态继承，不伪造历史覆盖。
+
+1.31 → 1.32 声明显式 ExperimentLeader 模板引用和 Task artifacts 内的 schema-1 实验知识，不新增表，不转换既有 Task、Role、文件或运行。继承配置按当前父模板读取，历史执行快照不变。既有 Home 使用集中升级路径；软件回退需要匹配版本的 Home 备份。
 
 1.30 → 1.31 声明可选 Leader draft/develop 覆盖项及启动阶段/来源记录。既有 Role、Task、Session、Run payload 逐字节保留，不补写阶段配置、不重新配置或重启已有 Session。
 

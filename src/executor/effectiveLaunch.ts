@@ -5,7 +5,7 @@ import {
 } from "../resources/projectResource.js";
 
 import type { WorkerAccess } from "../profile/agentProfile.js";
-import { resolveLeaderStageBinding, type LeaderStage } from "../role/role.js";
+import { resolveLeaderStageBinding, type LeaderStage, type LeaderConfigurationSource } from "../role/role.js";
 import type {
   GlobalRole,
   RoleAgentBinding,
@@ -55,7 +55,7 @@ type EffectiveLaunchBase = Readonly<{
   sourceDesiredRevision: number;
   leaderStage?: Readonly<{
     stage: LeaderStage;
-    sources: Readonly<{ agentId: "stage" | "default"; model: "stage" | "binding" | "native-default"; effort: "stage" | "binding" | "native-default" }>;
+    sources: Readonly<{ agentId: "stage" | "default" | LeaderConfigurationSource; model: "stage" | "binding" | LeaderConfigurationSource; effort: "stage" | "binding" | LeaderConfigurationSource }>;
   }>;
   agentId: string;
   /**
@@ -169,7 +169,7 @@ export function resolveEffectiveLaunch(
     executionAuthority,
     ...(stage === undefined ? {} : { leaderStage: {
       stage,
-      sources: {
+      sources: ("taskId" in input.role ? input.role.configurationSources?.[stage] : undefined) ?? {
         agentId: override?.agentId === undefined ? "default" as const : "stage" as const,
         model: override?.model !== undefined ? "stage" as const
           : binding.config.model === undefined ? "native-default" as const : "binding" as const,
@@ -405,9 +405,9 @@ export function validateEffectiveLaunchSnapshot<T extends EffectiveLaunchSnapsho
   if (snapshot.leaderStage !== undefined) {
     const expected = snapshot.executionAuthority === "planning" ? "draft" : "develop";
     if (snapshot.leaderStage.stage !== expected
-      || !["stage", "default"].includes(snapshot.leaderStage.sources.agentId)
-      || !["stage", "binding", "native-default"].includes(snapshot.leaderStage.sources.model)
-      || !["stage", "binding", "native-default"].includes(snapshot.leaderStage.sources.effort)) {
+      || !["stage", "default", "task-default", "task-stage", "global-default", "global-stage"].includes(snapshot.leaderStage.sources.agentId)
+      || !["stage", "binding", "native-default", "task-default", "task-stage", "global-stage", "global-binding"].includes(snapshot.leaderStage.sources.model)
+      || !["stage", "binding", "native-default", "task-default", "task-stage", "global-stage", "global-binding"].includes(snapshot.leaderStage.sources.effort)) {
       throw new Error("Effective Leader stage provenance is invalid.");
     }
   }

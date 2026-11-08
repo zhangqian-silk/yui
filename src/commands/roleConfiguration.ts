@@ -7,7 +7,8 @@ import {
   type PermissionStrategy,
   type RoleAgentConfig
 } from "../executor/agentAdapter.js";
-import { createRoleAgentBinding, resolveLeaderStageBinding, type GlobalRole, type LeaderStage, type RoleAgentBinding, type RoleProfile } from "../role/role.js";
+import { createRoleAgentBinding, resolveLeaderStageBinding, type GlobalRole, type LeaderStage, type RoleAgentBinding, type RoleProfile, type TaskRole, type LeaderSelectionOverride } from "../role/role.js";
+import { updateExperimentLeaderOverrides } from "../role/roleTemplate.js";
 
 export type RoleOptionKind = "flag" | "value" | "repeatable";
 
@@ -208,6 +209,69 @@ function roleDisplayPatch(parsed: ParsedRoleOptions): RoleDisplaySettings {
 
 export function hasAgentConfigOptions(parsed: ParsedRoleOptions): boolean {
   return [...parsed.seen].some((option) => AGENT_CONFIG_OPTIONS.has(option));
+}
+
+/** Same parser/validation boundary for CLI preview and transactional mutation. */
+export function experimentLeaderConfigurationUpdate(
+  role: TaskRole, parent: GlobalRole | null, parsed: ParsedRoleOptions,
+  getAgent: (id: string) => { id: string; adapterId: string; component: string }, now: Date
+): TaskRole | undefined {
+  if (role.template !== "experiment-leader") return undefined;
+  const flags = ["--agent", "--clear-agent", "--model", "--clear-model", "--effort", "--clear-effort",
+    "--stage", "--clear-agent-config"];
+  if (!flags.some(flag => parsed.has(flag)) && !hasAgentConfigOptions(parsed)) return undefined;
+  if (!parent) throw usageError("ExperimentLeader requires the global Leader template.");
+  if ([...parsed.seen].some(flag => ![...flags, "--yes"].includes(flag))) {
+    throw usageError("Experiment Leader overrides support only Agent, model, effort and their clear options.");
+  }
+  assertPairs(parsed, [["--agent", "--clear-agent"], ["--model", "--clear-model"], ["--effort", "--clear-effort"]]);
+  if (parsed.has("--clear-agent-config") && [...parsed.seen].some(flag =>
+    !["--stage", "--clear-agent-config", "--yes"].includes(flag))) {
+    throw usageError("--clear-agent-config cannot be combined with overrides.");
+  }
+  const stage = parsed.one("--stage") as LeaderStage | undefined;
+  if (stage !== undefined && stage !== "draft" && stage !== "develop") throw usageError("--stage requires draft or develop.");
+  if (![...parsed.seen].some(flag => flag !== "--stage" && flag !== "--yes")) throw usageError("An override or clear option is required.");
+  const overrides = structuredClone(role.launchOverrides ?? {});
+  if (parsed.has("--clear-agent-config")) {
+    if (stage === undefined) return updateExperimentLeaderOverrides(role, parent, {}, now);
+    delete overrides.stages?.[stage];
+  } else {
+    const selection: LeaderSelectionOverride = stage === undefined ? overrides : { ...overrides.stages?.[stage] };
+    if (parsed.has("--clear-agent")) delete selection.agentId;
+    if (parsed.has("--agent")) selection.agentId = requiredText(parsed.one("--agent"));
+    // Resolve the selection first; clear/set fields target that exact Agent.
+    const agentId = selection.agentId ?? (stage === undefined ? parent.activeAgentId
+      : overrides.agentId ?? parent.leaderStages?.[stage]?.agentId ?? parent.activeAgentId);
+    const agent = getAgent(agentId);
+    const binding = createRoleAgentBinding(agent);
+    const fields = { ...selection.bindings?.[agentId],
+      adapterId: binding.adapterId, component: binding.component };
+    patchText(fields, parsed, "--model", "--clear-model", "model");
+    patchText(fields, parsed, "--effort", "--clear-effort", "effort");
+    selection.bindings = { ...selection.bindings };
+    if (fields.model !== undefined || fields.effort !== undefined || selection.agentId === agentId) {
+      selection.bindings[agentId] = fields;
+    } else delete selection.bindings[agentId];
+    for (const [id, value] of Object.entries(selection.bindings)) {
+      if (id !== selection.agentId && value.model === undefined && value.effort === undefined) delete selection.bindings[id];
+    }
+    if (!Object.keys(selection.bindings).length) delete selection.bindings;
+    if (stage !== undefined) {
+      overrides.stages = { ...overrides.stages };
+      if (Object.keys(selection).length) overrides.stages[stage] = selection;
+      else delete overrides.stages[stage];
+    }
+  }
+  if (overrides.stages && !Object.keys(overrides.stages).length) delete overrides.stages;
+  return updateExperimentLeaderOverrides(role, parent, overrides, now);
+}
+
+export function experimentLeaderConfigurationCandidates(role: TaskRole) {
+  return [undefined, "draft", "develop"].map(stage => {
+    const binding = resolveLeaderStageBinding(role, stage as LeaderStage | undefined);
+    return { agentId: binding.agentId, config: binding.config, cwd: role.workspace };
+  });
 }
 
 /** Stage updates are deliberately separate from binding updates: clear means

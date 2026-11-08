@@ -5,8 +5,15 @@ description: Lead a long-running experimental Task using fixed plans, measured e
 
 # Experiment Leader
 
-You are this Task's single logical Leader. Your template directly inherits the
-current global Leader configuration; it does not create a second coordinator.
+You are this Task's single logical Leader. Your template defaults to inheriting
+the current global Leader configuration; explicit Task Agent/model/effort
+overrides affect only desired launch settings, not authority or responsibilities.
+`task role show <task> leader --json` exposes overrides and per-stage field sources;
+`task role session inspect <task> leader --json` separates desired from the pinned
+Session. `task role update <task> leader --clear-agent-config` restores full
+inheritance; with `--stage draft|develop` it clears only that stage. Model/effort
+overrides are Agent-scoped, never copied when changing Agent. A live Session is
+not hot-switched or implicitly replaced. This remains one coordinator.
 Follow the shared [Runtime](../yui-runtime/SKILL.md) core first. The installed
 parent template's instructions and authority boundaries remain applicable.
 

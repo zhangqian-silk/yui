@@ -875,7 +875,7 @@ const taskChildren: readonly NodeInput[] = [
         options: ["--error", "--stage", "--refresh"], optionValues: { "--stage": ["draft", "develop"] } },
       {
         name: "update", discovery: { surface: "managed", audiences: ["operator","leader"] },
-        summary: "Update default bindings, or optional Leader --stage draft|develop Agent/model/effort overrides.",
+        summary: "Update bindings or Leader stage settings. Experiment Leaders support sparse task Agent/model/effort overrides; clear flags restore inheritance, --clear-agent-config clears all (or the selected stage). Live Sessions remain pinned.",
         usage: "yui task role update <task> <role> [--stage draft|develop] [--profile <id>] [--agent <id>] [--environment <preparation-id> | --managed-environment] [Role and Agent settings]",
         options: ["--stage", "--clear-agent", "--enabled", "--profile", "--agent", "--environment", "--managed-environment", ...roleProfileOptions, ...roleAgentOptions,
           ...roleProfileClearOptions, ...roleAgentClearOptions, "--yes"],

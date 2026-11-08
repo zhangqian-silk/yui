@@ -2,7 +2,12 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.32. The 1.31 → 1.32 transition admits explicit
+Current storage is 1.33. The 1.32 → 1.33 transition admits optional sparse,
+Agent-scoped experimental Leader launch overrides and per-field source labels
+in launch snapshots. Existing Role/Session/Run payloads remain byte-for-byte
+unchanged; absence keeps dynamic inheritance and does not invent overrides.
+
+The 1.31 → 1.32 transition admits explicit
 ExperimentLeader template references and schema-1 experimental knowledge in
 Task artifact repositories. No tables are added and no existing Task/Role,
 artifact or runtime is converted. Inherited configuration is resolved on read;

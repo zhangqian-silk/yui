@@ -120,7 +120,7 @@ test("public stage updates validate resolved settings atomically, clear to defau
   assert.equal(launch(store.getRole(task.id, "leader"), true).model, "opus");
 });
 
-test("stage Agent survives planning follow-ups and Host restoration, then activation selects develop without replay", async t => {
+for (const experiment of [false, true]) test(`stage Agent survives planning follow-ups and Host restoration, then activation selects develop without replay (experiment=${experiment})`, async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-stage-lifecycle-"));
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
@@ -132,7 +132,8 @@ test("stage Agent survives planning follow-ups and Host restoration, then activa
     develop: { agentId: "delivery-code", model: "delivery-model", effort: "high" }
   } }, now));
   store.saveConfig({ ...store.getConfig(), defaultAgent: "code", defaultWorkspace: home });
-  submitOperatorMessage("Discuss first", undefined, store, { now: () => now });
+  if (experiment) runTaskCommand(["create", "Experiment", "--mode", "experiment"], store, { environment: {}, now: () => now });
+  submitOperatorMessage("Discuss first", experiment ? "task-1" : undefined, store, { now: () => now });
   const scheduler = new FileSchedulerStoreAdapter(store);
   assert.equal(scheduler.prepareDraftPlanning("task-1", now), true);
   const run = store.getActiveRun("task-1", "leader");
@@ -172,6 +173,8 @@ test("stage Agent survives planning follow-ups and Host restoration, then activa
   assert.equal(scheduler.getRole("task-1", "leader").effective.agentId, "draft-code");
   runTaskCommand(["role", "session", "new", "task-1", "leader", "--reason", "Adopt planning Agent"],
     store, { environment: {}, now: () => later });
+  assert.throws(() => runTaskCommand(["role", "update", "task-1", "leader", "--model", "blocked"],
+    store, { environment: {}, now: () => later }), /lifecycle transition/);
   scheduler.completeRuntimeCleanup({ kind: "role-runtime", taskId: "task-1", roleName: "leader" }, later);
   const replacementResults = await processLeaderWakeups(scheduler, {
     ...delivery, prepareRoleSession: async replacement => {
@@ -215,6 +218,14 @@ test("stage Agent survives planning follow-ups and Host restoration, then activa
   assert.throws(() => resolveManagedTaskCaller(store, { ...planned.launch.env, CODEX_THREAD_ID: "stage-planning" }), /no longer/);
   runTaskCommand(["role", "update", "task-1", "leader", "--stage", "develop", "--model", "next-model"],
     store, { environment: {}, now: () => later });
+  if (experiment) {
+    const inspected = runTaskCommand(["role", "session", "inspect", "task-1", "leader"], store, { environment: {} }).data;
+    assert.equal(inspected.desired.stages.develop.model, "next-model");
+    assert.equal(inspected.desired.configurationSources.develop.model, "task-stage");
+    assert.equal(inspected.session.effective.model, "delivery-model");
+    assert.equal(inspected.session.effective.leaderStage.sources.model, "global-stage");
+    assert.ok(inspected.desired.launchRevision > inspected.session.effective.sourceDesiredRevision);
+  }
   const resumed = planner.plan({ taskId: "task-1", roleName: "leader", agentId: "delivery-code", adapterId: "codex",
     mode: "resume", effective: selected.effective, nativeSessionId: "stage-develop" });
   assert.equal(resumed.launch.env.YUI_AGENT_ID, "delivery-code");
@@ -230,6 +241,7 @@ test("stage Agent survives planning follow-ups and Host restoration, then activa
   const replacement = scheduler.getRole("task-1", "leader").effective;
   assert.equal(replacement.agentId, "draft-code");
   assert.equal(store.getTaskRoleSessionSet("task-1", "leader").activeAgentId, "draft-code");
-  assert.equal(replacement.model, "next-model");
+  assert.equal(replacement.model, experiment ? undefined : "next-model",
+    "Experiment model overrides are scoped to the selected Agent; copied ordinary stage behavior is unchanged.");
   assert.equal(replacement.leaderStage.stage, "develop");
 });

@@ -16,13 +16,71 @@ automatically converted.
 ## One Leader, current inherited rules
 
 The Task's logical Role remains `leader`; `template: experiment-leader` selects
-its specialized role template and Skill. Configuration is inherited directly
-from the global Leader on every read, not copied into the Task. Parent updates
-refresh the next input's profile/Skill pointers; already-read model history is
-not erased. Agent/model selection applies through the existing launch rules,
-not by changing the identity or permissions of an already running execution.
-Change inherited settings at the parent; use the Task execution gate to stop
-one Task. Ordinary Task Roles retain their existing copied-configuration behavior.
+its specialized role template and Skill. Configuration defaults to dynamic
+inheritance from the global Leader; optional Task launch overrides contain only
+explicit Agent/model/effort choices. Parent updates still refresh inherited
+fields and the next input's profile/Skill pointers; already-read model history
+is not erased. Responsibilities, permissions, constraints and Skills cannot be
+overridden through this facility. Ordinary Task Roles retain their existing
+copied-configuration behavior.
+
+### Task-local launch settings
+
+```sh
+# Does not change the global Leader or another experimental Task.
+yui task role update <task> leader --agent codex --model gpt-6.1-sol --effort medium
+yui task role update <task> leader --stage draft --model <planning-model>
+yui task role show <task> leader --json
+yui task role session inspect <task> leader --json
+
+# Clear a field for the currently selected default/stage Agent.
+yui task role update <task> leader --clear-model
+yui task role update <task> leader --stage draft --clear-effort
+yui task role update <task> leader --clear-agent
+# Clear only one stage, or all Task launch overrides (including stages).
+yui task role update <task> leader --stage draft --clear-agent-config
+yui task role update <task> leader --clear-agent-config
+```
+
+`codex` above is an example registered Agent id, not a provider/model alias.
+`--agent` selects the default Agent for this experimental Task; `task role bind`
+uses the same desired-setting path. It does not change global configuration.
+Outside experiment mode, `role update --agent` retains its existing binding
+target semantics. Stage flags apply only to that stage.
+
+Agent priority is **Task stage → Task default → global stage → global default**.
+For that selected Agent, model/effort priority is **Task stage field → Task
+default field → matching global stage field → that Agent's global binding →
+that Agent's standard binding default**. A global stage's model/effort is used
+only when its selected Agent matches. No model, effort or permission is copied
+from a different Agent. Agents absent from the parent's bindings get their own
+standard binding; only identity/component and explicit fields are stored locally.
+Provider capability validation still applies before saving.
+
+Model/effort overrides are keyed by Agent, including within stages. Selecting a
+different Agent leaves the old Agent's overrides dormant; selecting it again
+restores them. Thus changing the inherited Agent cannot silently apply a model
+from the previous Agent. Clear flags remove the selected Agent's explicit field;
+they do not force an empty value or suppress the parent's value. Use
+`--agent <id> --clear-model` to select and clear another Agent, or clear the
+whole stage/all overrides to discard dormant settings too. An explicit value
+equal to today's inherited value remains a pin, not an absent override.
+
+`role show` exposes `launchOverrides`, resolved `leaderStages` and
+`configurationSources` for default/draft/develop (`task-default`, `task-stage`,
+`global-default`, `global-stage`, `global-binding`, `native-default`).
+Session inspection shows desired settings separately from the immutable Session
+snapshot and its captured sources. Changes advance the desired revision and
+apply on the next launch. A live Session keeps its existing Agent/model/effort;
+no implicit stop, replacement or input replay occurs. Pending lifecycle
+transitions still block updates. To adopt settings for an existing conversation,
+use the existing authorized `yui task role session new <task> leader --reason
+"Adopt launch configuration"` path after settling its active work; this request
+is not an automatic side effect of updating settings.
+
+Storage **1.32 → 1.33** admits these optional overrides and launch sources.
+Existing experiment bindings remain unchanged and continue inheriting. Use the
+normal Home upgrade path with a backup; do not edit stored Role records manually.
 
 Help, completion and discovery share the specialized view. Knowing a command
 does not authorize it: execution checks the current Session and Task binding.

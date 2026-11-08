@@ -88,8 +88,14 @@ export function renderRoleDetails(
     `  Active Agent     ${role.activeAgentId}`,
     ...(role.name !== "leader" ? [] : (["draft", "develop"] as const).map(stage => {
       const binding = resolveLeaderStageBinding(role, stage);
-      return `  ${stage.padEnd(16)} ${JSON.stringify(role.leaderStages?.[stage] ?? {})}; resolved=${binding.agentId}, model=${binding.config.model ?? "Agent default"}, effort=${binding.config.effort ?? "Agent default"}`;
+      const sources = "taskId" in role ? role.configurationSources?.[stage] : undefined;
+      return `  ${stage.padEnd(16)} ${JSON.stringify(role.leaderStages?.[stage] ?? {})}; resolved=${binding.agentId}, model=${binding.config.model ?? "Agent default"}, effort=${binding.config.effort ?? "Agent default"}`
+        + (sources === undefined ? "" : `; sources=${JSON.stringify(sources)}`);
     })),
+    ...("taskId" in role && role.template === "experiment-leader" ? [
+      `  Task overrides   ${JSON.stringify(role.launchOverrides ?? {})}`,
+      `  Default sources  ${JSON.stringify(role.configurationSources?.default)}`
+    ] : []),
     `  Workspace        ${role.workspace}`,
     `  Instance code    ${role.instanceCode ?? "-"} (display only; next Session launch)`,
     ...("taskId" in role ? [
