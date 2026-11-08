@@ -92,6 +92,10 @@ try {
     `#!${process.execPath}\nprocess.env.YUI_FAKE_UNIQUE_THREADS = "1";\n`
     + `process.env.YUI_FAKE_DIRECT_PORT_FILE = ${JSON.stringify(join(sandbox, "work-direct-"))} + (process.env.YUI_ROLE ?? "reader") + ".port";\n`
     + `process.env.YUI_FAKE_INPUT_LOG = ${JSON.stringify(join(sandbox, "skill-inputs.jsonl"))};\n`
+    + `process.env.YUI_FAKE_MODELS = ${JSON.stringify(JSON.stringify([{ id: "smoke-model", model: "smoke-model",
+      displayName: "Smoke fixture", isDefault: true, supportedReasoningEfforts: [
+        { reasoningEffort: "medium", description: "Fixture only" }
+      ], defaultReasoningEffort: "medium" }]))};\n`
     + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/scope-refresh-smoke-handler.mjs", import.meta.url).href)};\n`
     + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
@@ -492,6 +496,12 @@ try {
     assert.equal(task.status, "draft");
     if (profile === "full") {
       const experimentTask = json("task", "create", "experimental knowledge fixture", "--mode", "experiment").task;
+      const overridden = json("task", "role", "update", experimentTask.id, "leader",
+        "--model", "smoke-model", "--effort", "medium").role;
+      assert.equal(overridden.agentBindings[overridden.activeAgentId].config.model, "smoke-model");
+      assert.equal(overridden.agentBindings[overridden.activeAgentId].config.effort, "medium");
+      const cleared = json("task", "role", "update", experimentTask.id, "leader", "--clear-agent-config").role;
+      assert.equal(cleared.agentBindings[cleared.activeAgentId].config.model, undefined);
       const initialized = json("task", "iteration", "init", experimentTask.id);
       const direction = { schemaVersion: 1, kind: "direction", id: "latency", title: "Latency",
         problem: "slow", goal: "lower latency", metrics: ["p95"], constraints: ["offline fixture"],

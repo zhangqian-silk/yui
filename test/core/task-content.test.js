@@ -89,7 +89,7 @@ test("snapshot scope lookup reads selected content only and rejects symlinked ta
   assert.equal(store.getContextSnapshot("task-2", "snapshot-1"), null);
 });
 
-test("1.32 migration is backed up, preserves frozen values and rolls back its own file effects on failure", async t => {
+for (const minor of [32, 33]) test(`1.${minor} migration is backed up, preserves frozen values and rolls back its own file effects on failure`, async t => {
   const home = mkdtempSync(join(tmpdir(), "yui-task-content-migration-"));
   let store = new SqliteTaskStore(home);
   let db;
@@ -110,7 +110,7 @@ test("1.32 migration is backed up, preserves frozen values and rolls back its ow
   insert.run("task-1", first.id, first.sequence, first.digest, JSON.stringify(first), first.frozenAt);
   insert.run("task-1", second.id, second.sequence, second.digest,
     JSON.stringify({ ...second, digest: "0".repeat(64) }), second.frozenAt);
-  db.exec("UPDATE storage_schema SET minor=32");
+  db.prepare("UPDATE storage_schema SET minor=?").run(minor);
   const before = db.prepare("SELECT * FROM context_snapshots").all();
   db.close(); db = undefined;
   const failed = await runStorageUpgrade({ home, mode: "execute" });

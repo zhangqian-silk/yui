@@ -3,7 +3,7 @@ import { TASK_READ_REVISION_SOURCES } from "../../dist/storage/taskReadRevisionS
 import { loadSnapshotContent } from "../../dist/storage/taskContent.js";
 import { dirname } from "node:path";
 
-/** Valid pre-1.33 snapshots contain their complete frozen values. */
+/** Valid pre-1.34 snapshots contain their complete frozen values. */
 export function usePre133Content(db) {
   const update = db.prepare("UPDATE context_snapshots SET payload=? WHERE task_id=? AND snapshot_id=?");
   for (const row of db.prepare("SELECT task_id,snapshot_id,payload FROM context_snapshots").all()) {

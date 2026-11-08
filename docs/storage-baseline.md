@@ -2,7 +2,7 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.33. The 1.32 → 1.33 transition separates frozen Context
+Current storage is 1.34. The 1.33 → 1.34 transition separates frozen Context
 metadata from immutable resource content. SQLite retains identity, scope,
 sequence and fixed references; `task-data/<task-id>/context-values/<digest>.json`
 holds the exact values, deduplicated only within that Task. Snapshot digests,
@@ -71,11 +71,16 @@ New Task/Run Context includes portable Project policy and the effective
 Knowledge version, not registration paths, proposals or the entire Knowledge
 revision history. Explicit Project commands still expose those records.
 Already frozen Context retains its original values, including old projections.
+The 1.32 → 1.33 transition materializes each inherited
+experimental Leader from its effective global configuration at upgrade time.
+Its configuration is then maintained independently, like an ordinary Task Role.
+Ordinary Roles and historical Session/Run payloads remain byte-for-byte unchanged.
+Skill references still load current shared files; no historical input is replayed.
 
 The 1.31 → 1.32 transition admits explicit
 ExperimentLeader template references and schema-1 experimental knowledge in
 Task artifact repositories. No tables are added and no existing Task/Role,
-artifact or runtime is converted. Inherited configuration is resolved on read;
+artifact or runtime is converted. In 1.32, inherited configuration was resolved on read;
 historical execution snapshots remain fixed. Use the centralized upgrade path
 for an existing Home; rolling software back requires its matching Home backup.
 

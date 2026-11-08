@@ -10,7 +10,7 @@ import {
 } from "../context/contextSnapshot.js";
 import { writeTextFileAtomically } from "./durableFile.js";
 
-/** Storage 1.33: the database owns snapshot membership and identity; immutable
+/** Storage 1.34: the database owns snapshot membership and identity; immutable
  * resource bytes belong to the Task, independently of its execution worktrees.
  * No shared blob pool: deleting A's content cannot remove B's frozen evidence.
  */

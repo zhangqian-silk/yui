@@ -14,7 +14,7 @@ Agent 的正常入口仍是有界 CLI Context，而不是扫描 Home 文件树�
 
 已实施并通过本地完整回归的第一部分：
 
-- Storage 1.33：冻结 Context 元数据留在 SQLite，resource 的精确 JSON 值进入
+- Storage 1.34：冻结 Context 元数据留在 SQLite，resource 的精确 JSON 值进入
   `task-data/<task-id>/context-values/<sha256>.json`，任务内去重，不跨任务共享。
 - 既有 scope/sequence 索引用于选取候选/最近快照，不再为了选择一个快照而加载全部历史正文。
 - 当前 Project policy 与本机注册/审批状态分开投影；当前 Knowledge 不重复携带 history。
@@ -128,7 +128,7 @@ Project 内部必须区分三种字段责任：可移植声明（name、aliases�
 | task_roles | task/role、配置/继承/归属 | Role 管理 → launch/caller | 运行权威；彻底删除必须阻止任何晚到写恢复 Role |
 | work_items | task/id/status、依赖/assignment/candidates/acceptance | Leader/执行/验收 → Context、依赖门 | candidate 是内嵌聚合，查询用 json_each；冻结承诺保留 |
 | turns | task/run/role/status、input/effective/workspace/result | Run 派发与精确终态 → Context、search、usage | 大；result 和配置证据不是可随意清理的日志 |
-| context_snapshots | task/id/scope/scope_ref/sequence/digest、固定 refs | freeze → Run/Review 精确历史读取 | scope/sequence 唯一索引；1.33 拆正文到任务内对象，digest 不变 |
+| context_snapshots | task/id/scope/scope_ref/sequence/digest、固定 refs | freeze → Run/Review 精确历史读取 | scope/sequence 唯一索引；1.34 拆正文到任务内对象，digest 不变 |
 | review_rounds | task/id/status、candidate/contract/executions/result | Review 路径 → 验收/Context | 冻结候选和结论保留；pending/running 阻挡清理 |
 | change_sets | task/id/project/head、变更证据 | 工作区采集 → review/integration | project 是被修改目标，不改变 Task 所有权 |
 | integration_attempts | task/id/status、输入/结果/冲突 | Integration → completion/recovery | 未决冲突/验证阻挡；终态历史保留 |
@@ -168,7 +168,7 @@ Project 内部必须区分三种字段责任：可移植声明（name、aliases�
 | 命名空间/来源 | 权威与写入/消费 | 归属及清理判断 |
 | --- | --- | --- |
 | task-artifacts/Task | 本地 Git，artifact.save/list/read；iteration 结构化 JSON 与 Markdown | 持久 Task 资料；普通归档/过程清理保留全部固定历史；彻底删除须扫描跨任务硬引用并检查未提交更改 |
-| task-data/Task/context-values | 1.33 Store/迁移写；Snapshot fixed-ref 读取 | 持久 Task 冻结证据；不是 worktree/cache；任务内去重，不跨任务借文件 |
+| task-data/Task/context-values | 1.34 Store/迁移写；Snapshot fixed-ref 读取 | 持久 Task 冻结证据；不是 worktree/cache；任务内去重，不跨任务借文件 |
 | job-artifacts/global 或 task/Task/Job/Run | Job Artifact Git；owner/sourceRun/version/digest | 持久运行产物；以 scope/owner 判属，外部 Task Artifact 引用不转移所有权 |
 | artifacts/jobs/Task/Job | runner spec/log/heartbeat/checkpoint/exit/ready/cancel fence | 过程文件与执行效果证据混合；仍用于不确定性恢复的部分必须保留 |
 | workspaces/tasks/Task/main 等 | managed_workspaces + Git worktree inventory | 可回收执行区，不是 Task 资料容器；精确 owner、clean、delivery、进程引用检查 |

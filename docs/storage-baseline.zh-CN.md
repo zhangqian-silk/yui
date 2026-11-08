@@ -2,7 +2,7 @@
 
 # 存储基线 1.0
 
-当前存储为 1.33。1.32 → 1.33 将冻结 Context 的元数据与正文分离：SQLite 保留身份、scope、序号和固定引用；`task-data/<task-id>/context-values/<digest>.json` 保存精确值，仅在同一 Task 内去重。快照 digest、授权值和历史引用保持不变。按 scope 查询先用既有 SQLite 索引选择记录，再加载正文。文件缺失或损坏直接报错，不从当前事实重建历史。
+当前存储为 1.34。1.33 → 1.34 将冻结 Context 的元数据与正文分离：SQLite 保留身份、scope、序号和固定引用；`task-data/<task-id>/context-values/<digest>.json` 保存精确值，仅在同一 Task 内去重。快照 digest、授权值和历史引用保持不变。按 scope 查询先用既有 SQLite 索引选择记录，再加载正文。文件缺失或损坏直接报错，不从当前事实重建历史。
 
 Home 准入验证当前 schema、Home 身份和全局配置，不全量加载历史 Task 记录或文件。
 精确读取和显式完整记录审计仍严格校验。紧凑任务列表保留正文缺失/非法的条目，
@@ -39,7 +39,9 @@ JSON 无法解析、单例行丢失、原 Home ID 无法确认、修订号损坏
 
 新 Task/Run Context 只包含可移植 Project policy 和当前生效的 Knowledge 版本，不再混入本机注册路径、待审批提案或全部知识历史。显式 Project 命令仍可读取完整记录；已经冻结的 Context 保留原来的值。
 
-1.31 → 1.32 声明显式 ExperimentLeader 模板引用和 Task artifacts 内的 schema-1 实验知识，不新增表，不转换既有 Task、Role、文件或运行。继承配置按当前父模板读取，历史执行快照不变。既有 Home 使用集中升级路径；软件回退需要匹配版本的 Home 备份。
+1.32 → 1.33 将已有实验 Leader 按升级时的全局有效配置保存为任务独立副本，之后与普通 Task Role 一样独立维护。普通 Role 和历史 Session/Run 保持逐字节不变；Skill 引用仍加载当前共享文件，不重放历史输入。
+
+1.31 → 1.32 声明显式 ExperimentLeader 模板引用和 Task artifacts 内的 schema-1 实验知识，不新增表，不转换既有 Task、Role、文件或运行。1.32 的继承配置按当时父模板读取，历史执行快照不变。既有 Home 使用集中升级路径；软件回退需要匹配版本的 Home 备份。
 
 1.30 → 1.31 声明可选 Leader draft/develop 覆盖项及启动阶段/来源记录。既有 Role、Task、Session、Run payload 逐字节保留，不补写阶段配置、不重新配置或重启已有 Session。
 

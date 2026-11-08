@@ -24,12 +24,12 @@ import { contextContentDigest, createContextSnapshot } from "../../dist/context/
 import { usePre19Layout, usePre114Layout, usePre124Layout } from "../helpers/pre19Storage.mjs";
 import { loadSnapshotContent } from "../../dist/storage/taskContent.js";
 
-test("fresh storage creates only the current 1.33 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.33");
+test("fresh storage creates only the current 1.34 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.34");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.33");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.34");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -60,11 +60,11 @@ test("1.29 continuation admission preserves history without inventing repair or 
   const before = db.prepare("SELECT payload FROM events").all();
   db.prepare("UPDATE storage_schema SET minor=29").run();
   assert.deepEqual(schema.storageMinorUpgradePlan("1.29").map(step => step.name),
-    ["workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "task-owned-context-content"]);
+    ["workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "experiment-leader-copied-configuration", "task-owned-context-content"]);
   assert.throws(() => new SqliteTaskStore(home), /upgrade|storage/i);
   schema.applySqliteMinorUpgrades(db, home);
   assert.deepEqual(db.prepare("SELECT payload FROM events").all(), before);
-  assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.33");
+  assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.34");
   db.close(); db = undefined;
   store = new SqliteTaskStore(home);
   assert.equal(store.listRuns("task-1").length, 0);
@@ -83,7 +83,7 @@ test("1.28 upgrade preserves config bytes and admits independently stored Git bu
   const before = db.prepare("SELECT payload FROM config").get().payload;
   db.prepare("UPDATE storage_schema SET minor=28").run();
   assert.deepEqual(schema.storageMinorUpgradePlan("1.28").map(step => step.name),
-    ["git-command-budgets", "workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "task-owned-context-content"]);
+    ["git-command-budgets", "workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "experiment-leader-copied-configuration", "task-owned-context-content"]);
   schema.applySqliteMinorUpgrades(db, home);
   assert.equal(db.prepare("SELECT payload FROM config").get().payload, before);
   db.close(); db = undefined;
@@ -180,7 +180,7 @@ test("1.25 upgrade preserves permission bytes and admits optional workspace temp
   store.close();
   assert.throws(() => new SqliteTaskStore(home), /not current/);
   const plan = schema.storageMinorUpgradePlan("1.25");
-  assert.equal(plan.length, 8);
+  assert.equal(plan.length, 9);
   assert.equal(plan[0].sourceChecksum, plan[0].targetChecksum);
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
   const current = new SqliteTaskStore(home);
@@ -291,7 +291,8 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.29", "1.30", "workitem-native-continuation"],
         ["1.30", "1.31", "leader-stage-launch-configuration"],
         ["1.31", "1.32", "experiment-knowledge-and-role-inheritance"],
-        ["1.32", "1.33", "task-owned-context-content"]]);
+        ["1.32", "1.33", "experiment-leader-copied-configuration"],
+        ["1.33", "1.34", "task-owned-context-content"]]);
   }
   finally { current.close(); }
 });

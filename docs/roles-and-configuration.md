@@ -176,7 +176,7 @@ yui task role show <task> leader
 yui task role capabilities <task> leader --stage draft
 ```
 
-Without `--stage`, existing binding configuration and `role bind` semantics remain
+For ordinary Tasks, without `--stage`, binding configuration and `role bind` semantics remain
 unchanged. Within a stage, `--agent` selects that stage's Agent without changing
 the default active Agent. Omitted Agent uses the default active Agent; omitted
 model/effort use the **selected Agent's own frozen Role binding**, then its native
@@ -190,7 +190,7 @@ override; `--clear-agent-config` removes the whole stage. Clearing means inherit
 not “force native default.” Stage updates cannot mix Profile, environment, or
 permission changes. Both stages may be entirely absent.
 
-New Tasks freeze the global Leader bindings and stage overrides. Global template
+New ordinary Tasks freeze the global Leader bindings and stage overrides. Global template
 edits never silently rewrite existing Tasks; use the Task-level update explicitly.
 The actual planning/delivery launch authority determines the stage, not the title,
 prompt, or a guessed purpose. Draft activation automatically selects develop at
@@ -201,6 +201,13 @@ restoration uses its recorded effective snapshot; apply new desired settings
 through the existing explicit Session replacement boundary. Inspection shows desired
 overrides, resolved settings, and the effective launch's stage and per-field source.
 These are requested launch facts, not native model observations.
+
+Experimental Tasks use the same copied configuration, binding commands, stage
+precedence and clearing semantics as ordinary Tasks. They add the experimental
+Skill and knowledge capabilities, not another configuration or execution path.
+Both load current shared Skill files rather than freezing their bodies in the
+Task. See [experiment launch settings](experiments.md#task-local-launch-settings).
+Neither mode implicitly replaces a running Session.
 
 ## Desired, effective and observed
 
