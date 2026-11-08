@@ -1328,7 +1328,7 @@ export const ROOT_COMMAND = buildNode({
   examples: ["yui setup", "yui start", "yui operator enter", "yui task list"],
   sections: [
     { id: "general", title: "General", entries: [
-      "help", "version", "update", "upgrade", "setup", "start", "doctor"
+      "help", "version", "update", "upgrade", "setup", "start", "doctor", "repair"
     ] },
     { id: "workflow", title: "Workflow", entries: ["agent", "operator", "role", "inbox", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
@@ -1445,6 +1445,24 @@ export const ROOT_COMMAND = buildNode({
     },
     { name: "start", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Start the Controller and Codex shared runtime needed by active Roles." },
     { name: "doctor", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global","unbound"] }, summary: "Check Yui dependencies and file state." },
+    {
+      name: "repair", discovery: { surface: "public", audiences: ["public", "operator"] },
+      summary: "Inspect or explicitly repair damaged Home control fields without starting a Controller.",
+      sections: [{ id: "commands", title: "Commands", entries: ["inspect", "config", "identity"] }],
+      children: [
+        { name: "inspect", discovery: { surface: "public", audiences: ["public", "operator"] }, summary: "Diagnose Home identity and config without loading Task history." },
+        {
+          name: "config", discovery: { surface: "public", audiences: ["public", "operator"] }, summary: "Preview a named-field JSON patch; apply only with its exact preview digest.",
+          usage: "yui repair config --patch <JSON-file> [--apply --expect <digest>]",
+          options: ["--patch", "--apply", "--expect"], fileOptions: ["--patch"]
+        },
+        {
+          name: "identity", discovery: { surface: "public", audiences: ["public", "operator"] }, summary: "Restore invalid metadata from a backup matching the surviving Home ID.",
+          usage: "yui repair identity --from-backup <database> [--apply --expect <digest>]",
+          options: ["--from-backup", "--apply", "--expect"], fileOptions: ["--from-backup"]
+        }
+      ]
+    },
     {
       name: "web", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Serve the control room using the running Controller's capability Host.",

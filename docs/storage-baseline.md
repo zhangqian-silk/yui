@@ -25,6 +25,37 @@ Upgrade admission uses the same boundary plus SQLite integrity checking;
 each migration still validates the data it transforms. This is not automatic
 repair or a guarantee that damaged core database/configuration can run.
 
+### Offline scoped repair
+
+The user/current Operator can run `yui repair inspect` without starting a
+Controller or loading Task history. Task Roles cannot use this Home maintenance
+entry. `yui repair config --patch /absolute/patch.json` previews a patch such as
+`{"set":{"telemetryEnabled":false},"remove":["unexpectedField"]}`. Use stored
+property names (listed by `repair inspect`), not CLI hyphenated keys.
+Only public configuration properties can be set; explicit removal can also
+remove an unknown corrupt field. `schemaVersion` cannot be patched. Unmentioned
+fields are preserved and the complete candidate must validate. Already-valid
+configuration uses ordinary `config set/clear`, not this repair entry.
+
+Apply the same request with `--apply --expect <returned-digest>`. The digest binds
+the Home, original control rows/revision and exact candidate; changed data or
+inputs require a fresh preview. The write and revision bump are one SQL
+transaction. Apply holds the existing maintenance and startup fences and refuses
+Controller discovery/process presence; it does not stop or start services.
+After an uncertain response, inspect and verify the intended values before any
+retry. Successful repair is not proof that all Home data or services are healthy.
+
+`yui repair identity --from-backup /absolute/original.db` previews restoration
+from a user-selected existing SQLite backup. Apply uses the same digest flags.
+The backup identity must validate and match the surviving valid `homeId`; valid
+surviving identity fields must also agree. This never generates a replacement
+identity or restores the entire database. Invalid JSON, missing singleton rows,
+lost/unverifiable Home IDs, revision corruption, unsupported schema and physical
+database corruption remain explicit blockers. No automatic backup or historical
+file restoration is introduced. Preview outputs field names, not full config
+values. A workspace directory selected in a config patch must already exist and
+remain outside Home; repair does not create directories on its behalf.
+
 Upgrade runs under the existing maintenance fence, first backing up the old
 database (which still embeds all old values). It fsyncs objects before committing
 metadata. On a handled failure the database is rolled back/restored and only

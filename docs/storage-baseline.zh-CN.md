@@ -14,6 +14,27 @@ Doctor 用独立的 `stored records` 项报告历史错误，不将其混入升�
 升级准入采用同样边界，另保留 SQLite 完整性检查；各迁移仍校验自身转换的数据。
 这不代表自动修复历史，也不保证核心数据库或配置损坏后可以运行。
 
+### 离线定点修复
+
+用户或当前 Operator 可以运行 `yui repair inspect`，无需启动 Controller 或读取 Task
+历史；Task Role 不能借此修改 Home 配置。`yui repair config --patch /absolute/patch.json`
+先预览，例如补丁正文为 `{"set":{"telemetryEnabled":false},"remove":["unexpectedField"]}`。
+使用存储属性名而非连字符 CLI key，可通过 `repair inspect` 查询。只允许设置公共配置
+属性；显式删除也可移除非法的未知字段。禁止修改 `schemaVersion`，未指定字段保留，
+完整候选配置必须通过校验。原配置已合法时仍用普通 `config set/clear`。
+
+在相同命令后增加 `--apply --expect <预览返回的digest>` 才会写入。摘要绑定 Home、
+原始控制记录/修订号和候选值；内容变化必须重新预览。修改和修订号递增处于同一 SQL
+事务，执行时持有现有维护锁和启动锁；发现 Controller 记录或进程就拒绝，不自动停启
+服务。响应不确定时先检查目标值，不盲目重试。修复成功不等于整个 Home/服务健康。
+
+`yui repair identity --from-backup /absolute/original.db` 从用户指定的既有 SQLite 副本
+预览恢复身份元数据，应用时同样携带摘要。副本身份必须合法，与残存且合法的 `homeId`
+一致；其他残存合法身份字段也必须一致。不生成新身份、不整库覆盖、不自动创建备份。
+JSON 无法解析、单例行丢失、原 Home ID 无法确认、修订号损坏、不支持的 schema 和物理
+数据库损坏均明确阻断，不猜测重建。预览只输出字段名，不输出完整配置值。
+补丁指定的默认工作目录必须已存在且位于 Home 之外，修复不代为创建目录。
+
 升级沿用维护栅栏，先备份仍内嵌全部旧正文的数据库，再持久化对象文件，最后提交元数据。已捕获的失败会回滚或恢复数据库，只清理本次新建文件；恢复和清理失败必须报告。提交前进程崩溃可能留下未引用的不可变对象，它们不是权威快照，重试校验后复用。若用户另行选择完整历史备份，需要同时保留 `yui.db`、`task-data/` 和既有 Artifact 仓库；文件备份不是升级前置条件。执行 worktree 回收不得删除这些持久命名空间。这项迁移本身不等于实现 Task 删除。
 
 新 Task/Run Context 只包含可移植 Project policy 和当前生效的 Knowledge 版本，不再混入本机注册路径、待审批提案或全部知识历史。显式 Project 命令仍可读取完整记录；已经冻结的 Context 保留原来的值。

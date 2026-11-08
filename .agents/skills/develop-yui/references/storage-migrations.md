@@ -51,6 +51,12 @@ including uncommitted files. This does not remove the existing database
 migration backup/rollback mechanism.
 Explicit record audits and exact reads remain strict; migrations validate their
 own transformed data. Catalog diagnostics are not execution or cleanup authority.
+Explicit `repair` is a separate user/current-Operator maintenance operation,
+not an automatic reader fallback or migration. It patches named config fields
+only when the existing object is parseable, or restores identity metadata from
+a supplied backup matching the surviving Home ID. Preserve preview guards,
+maintenance/startup fences, exact scope and atomic revision updates; never
+generate a replacement identity or bootstrap missing control rows.
 Real Home operations and publication require explicit user authority;
 development uses isolated fixtures. See
 [the storage baseline](../../../../docs/storage-baseline.md) for current
