@@ -36,7 +36,7 @@ import { validateAgentJobRun, assertAgentJobRunTransition, type AgentJobRun, typ
  * in-process contract or deferred validation phase.
  */
 import Database from "../sqlite/driver.js";
-import { loadSnapshotContent, storeSnapshotContent, type ContextSnapshotQuery } from "./taskContent.js";
+import { loadSnapshotContent, storeSnapshotContent, validateStoredSnapshotMetadata, type ContextSnapshotQuery } from "./taskContent.js";
 import { ControllerWorkObserver, compactWorkObservation } from "../core/controllerTelemetry.js";
 import { findNativeSessionSets } from "./nativeSessionLookup.js";
 import { existsSync, mkdirSync } from "node:fs";
@@ -416,14 +416,18 @@ export class SqliteTaskStore implements TaskStore {
     return this.#json(value);
   }
 
-  /** Explicit full-Home diagnosis; ordinary reads validate only their records. */
+  /** Validate control records for admission. Historical file availability and
+   * content digests are checked by exact reads, never a whole-Home prerequisite. */
   validateCurrentRecords(): void {
     this.getConfig();
     for (const table of STORED_RECORD_TABLES) {
       if (table === "context_snapshots") {
-        for (const row of this.#db.prepare("SELECT task_id,snapshot_id FROM context_snapshots").iterate() as
-          Iterable<{ task_id: string; snapshot_id: string }>) {
-          this.getContextSnapshot(row.task_id, row.snapshot_id);
+        for (const row of this.#db.prepare("SELECT task_id,snapshot_id,payload FROM context_snapshots").iterate() as
+          Iterable<{ task_id: string; snapshot_id: string; payload: string }>) {
+          const metadata = validateStoredSnapshotMetadata(JSON.parse(row.payload));
+          if (metadata.taskId !== row.task_id || metadata.id !== row.snapshot_id) {
+            throw new StorageRecordError("Context Snapshot ownership differs from its database key.");
+          }
         }
         continue;
       }

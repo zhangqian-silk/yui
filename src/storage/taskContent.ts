@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { requireIdentity } from "../domain/validation.js";
 import {
   CONTEXT_SNAPSHOT_MAX_RESOURCE_BYTES, contextContentDigest,
-  validateContextSnapshot, type ContextSnapshot
+  validateContextSnapshot, validateContextSnapshotMetadata, type ContextSnapshot, type ContextSnapshotMetadata
 } from "../context/contextSnapshot.js";
 import { writeTextFileAtomically } from "./durableFile.js";
 
@@ -14,7 +14,7 @@ import { writeTextFileAtomically } from "./durableFile.js";
  * resource bytes belong to the Task, independently of its execution worktrees.
  * No shared blob pool: deleting A's content cannot remove B's frozen evidence.
  */
-export type StoredContextSnapshot = Omit<ContextSnapshot, "resources">;
+export type StoredContextSnapshot = ContextSnapshotMetadata;
 export type ContextSnapshotQuery = Readonly<{
   scope: ContextSnapshot["scope"];
   scopeRef?: string;
@@ -92,13 +92,16 @@ export function storeSnapshotContent(
   return metadata;
 }
 
-export function loadSnapshotContent(home: string, value: unknown): ContextSnapshot {
+export function validateStoredSnapshotMetadata(value: unknown): StoredContextSnapshot {
   if (value === null || typeof value !== "object" || Array.isArray(value)
     || Object.hasOwn(value, "resources")) {
     throw new Error("Invalid stored Context Snapshot metadata; storage upgrade is required.");
   }
-  const metadata = value as StoredContextSnapshot;
-  if (!Array.isArray(metadata.refs)) throw new Error("Invalid stored Context Snapshot references.");
+  return validateContextSnapshotMetadata(value as StoredContextSnapshot);
+}
+
+export function loadSnapshotContent(home: string, value: unknown): ContextSnapshot {
+  const metadata = validateStoredSnapshotMetadata(value);
   const directory = metadata.refs.length > 0
     ? contentDirectory(home, metadata.taskId, false) : undefined;
   const resources = metadata.refs.map(ref => {

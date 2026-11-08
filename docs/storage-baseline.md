@@ -10,14 +10,22 @@ authorized values and historical references do not change. Scope lookups use
 the existing SQLite index before loading selected content. Missing or corrupt
 content is an error, never reconstructed from current state.
 
+Home admission validates snapshot metadata without opening all historical
+files. Exact reads return missing-file/content errors for the Agent to assess;
+missing history does not disable unrelated Tasks. Normal upgrades do not
+rewrite Task worktree contents or create automatic task-data/Artifact backups,
+and deleted history is not automatically restored. The existing database
+migration backup and rollback mechanism is unchanged.
+
 Upgrade runs under the existing maintenance fence, first backing up the old
 database (which still embeds all old values). It fsyncs objects before committing
 metadata. On a handled failure the database is rolled back/restored and only
 this attempt's new files are removed; cleanup/restoration errors are reported.
 A process crash before commit may leave unreferenced immutable objects. They
 are not authoritative snapshots and a retry verifies and reuses them.
-Backups of a current Home must include `task-data/` as well as `yui.db` and the
-existing artifact repositories. Worktree cleanup must never remove these
+If a user separately chooses a complete historical backup, it must include
+`task-data/` as well as `yui.db` and existing artifact repositories; such a file
+backup is not an upgrade prerequisite. Worktree cleanup must never remove these
 durable namespaces. These changes do not themselves implement Task deletion.
 
 New Task/Run Context includes portable Project policy and the effective

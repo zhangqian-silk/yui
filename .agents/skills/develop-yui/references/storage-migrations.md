@@ -42,6 +42,12 @@ The 1.32 upgrade backup is self-contained because its snapshots still embed
 their values. Migration publishes fsynced content before committing references,
 and tracks only its own new file/directory effects for rollback. Never refill
 missing frozen content from live records or garbage-collect it by age.
+Historical files are not a whole-Home admission prerequisite: validate control
+metadata without opening all old content, and return the original missing-file
+error on the exact requested read. Do not create file backups or restore deleted
+Task content automatically. Normal upgrades must preserve Task worktree contents,
+including uncommitted files. This does not remove the existing database
+migration backup/rollback mechanism.
 Real Home operations and publication require explicit user authority;
 development uses isolated fixtures. See
 [the storage baseline](../../../../docs/storage-baseline.md) for current

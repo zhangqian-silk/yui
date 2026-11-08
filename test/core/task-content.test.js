@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
@@ -8,6 +8,7 @@ import { createTask } from "../../dist/task/task.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
 import Database from "../../dist/sqlite/driver.js";
 import { runStorageUpgrade } from "../../dist/storage/upgrade/upgradeOrchestrator.js";
+import { validateCurrentTaskStore } from "../../dist/storage/currentTaskStore.js";
 
 const now = new Date("2026-11-08T00:00:00Z");
 function snapshot(taskId, sequence, value) {
@@ -59,7 +60,14 @@ test("rollback cannot publish a partial snapshot; retry verifies and reuses immu
   store.saveContextSnapshot(frozen);
   assert.deepEqual(store.getContextSnapshot("task-1", "snapshot-1"), frozen);
   rmSync(join(home, "task-data/task-1/context-values", `${frozen.refs[0].digest}.json`));
-  assert.throws(() => store.validateCurrentRecords(), /ENOENT|content/i);
+  assert.doesNotThrow(() => validateCurrentTaskStore(home), "missing history must not block Home admission");
+  assert.throws(() => store.getContextSnapshot("task-1", frozen.id),
+    error => error.code === "ENOENT", "exact reads preserve missing-file errors; no reconstruction");
+  assert.equal(existsSync(join(home, "task-data/task-1/context-values", `${frozen.refs[0].digest}.json`)), false);
+  const row = store.databaseHandle().prepare("SELECT payload FROM context_snapshots WHERE task_id=?").get("task-1");
+  store.databaseHandle().prepare("UPDATE context_snapshots SET payload=? WHERE task_id=?")
+    .run(JSON.stringify({ ...JSON.parse(row.payload), sequence: 0 }), "task-1");
+  assert.throws(() => validateCurrentTaskStore(home), /sequence/i, "invalid control metadata remains an admission error");
 });
 
 test("snapshot scope lookup reads selected content only and rejects symlinked task storage", t => {
@@ -85,6 +93,10 @@ test("1.32 migration is backed up, preserves frozen values and rolls back its ow
   let store = new SqliteTaskStore(home);
   let db;
   t.after(() => { store?.close(); db?.close(); rmSync(home, { recursive: true, force: true }); });
+  const workspace = join(home, "workspaces/tasks/task-1/main");
+  mkdirSync(workspace, { recursive: true });
+  const dirtyFile = join(workspace, "uncommitted.txt");
+  writeFileSync(dirtyFile, "User edits must survive an upgrade.\n");
   store.saveTask(createTask("task-1", "Migration", now));
   store.upsertTelemetryProgress({ taskId: "task-1", roleName: "leader", runId: "run-1",
     progressId: "p-1", payload: { text: "Upgrade is not cleanup authorization" }, receivedAt: now.toISOString() });
@@ -116,4 +128,5 @@ test("1.32 migration is backed up, preserves frozen values and rolls back its ow
   assert.deepEqual(store.getContextSnapshot("task-1", second.id), second);
   assert.equal(store.countTelemetry("task-1"), 1, "version upgrade must not clear process data");
   assert.equal(store.listEventsByType("task-1", ["task.process-cleanup"]).length, 0);
+  assert.equal(readFileSync(dirtyFile, "utf8"), "User edits must survive an upgrade.\n");
 });
