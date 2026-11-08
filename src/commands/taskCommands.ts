@@ -7,7 +7,7 @@ import type { ConfiguredAgent } from "../agent/agent.js";
 import { agentExecutionComponentLabel } from "../agent/executionComponents.js";
 import { assertLeaderArchiveAdmission } from "../task/leaderArchiveAuthority.js";
 import { assertRoleEnabled, isEnabled } from "../role/availability.js";
-import { createExperimentLeader } from "../role/roleTemplate.js";
+import { createExperimentLeaderFromRole } from "../role/roleTemplate.js";
 import {
   createRun,
   runExecutionObservation,
@@ -1599,7 +1599,7 @@ export function createTaskAggregate(
   const task = { ...createTask(store.nextTaskId(), title, now, metadata),
     ...(source === undefined ? {} : { source: structuredClone(source) }) };
   const leader = mode === "experiment"
-    ? createExperimentLeader(task.id, planningRuntimeCwd(store.rootDirectory(), task.id), store.getGlobalRole("leader"), now)
+    ? createExperimentLeaderFromRole(createTaskRole(store, task, LEADER_ROLE, undefined, now))
     : createTaskRole(store, task, LEADER_ROLE, undefined, now);
   store.saveTask(task);
   store.saveRole(task.id, leader);
@@ -3463,7 +3463,7 @@ function taskRoleSessionCommand(
         taskId: task.id,
         roleName: role.name,
         desired: { launchRevision: role.launchRevision, activeAgentId: role.activeAgentId,
-          binding: activeRoleAgentBinding(role) },
+          binding: activeRoleAgentBinding(role), stages: role.leaderStages },
         session: active,
         providerBinding: binding === null ? null : {
           providerNamespace: binding.providerNamespace, accountScope: binding.accountScope,

@@ -13,16 +13,60 @@ the normal Task entry; this mode never starts a measurement or grants access to
 models, quota or shared resources. Existing Tasks remain ordinary and are not
 automatically converted.
 
-## One Leader, current inherited rules
+## One Leader, ordinary Task configuration
 
-The Task's logical Role remains `leader`; `template: experiment-leader` selects
-its specialized role template and Skill. Configuration is inherited directly
-from the global Leader on every read, not copied into the Task. Parent updates
-refresh the next input's profile/Skill pointers; already-read model history is
-not erased. Agent/model selection applies through the existing launch rules,
-not by changing the identity or permissions of an already running execution.
-Change inherited settings at the parent; use the Task execution gate to stop
-one Task. Ordinary Task Roles retain their existing copied-configuration behavior.
+The logical Role remains `leader`. Experiment mode uses the same creation path
+as an ordinary Task Leader: copy the global configuration once, then maintain
+Task Agent/model/effort, permissions, profile and draft/develop settings independently.
+Later global template changes do not rewrite existing Task settings. The only
+additions are experiment responsibilities, the experimental Skill and knowledge
+capabilities. There is no experimental configuration overlay or execution engine.
+
+Skills remain references to current shared files in the installation/Home.
+The experimental entry reuses the ordinary Leader operation manuals; configured
+custom Skills are copied as references, not duplicated bodies. Both modes use
+the same version checks and reload changed Skills. Changing a global Role's
+attached Skill list is a template configuration change, not a shared Skill file
+update; it does not retroactively replace existing Task/Session lists.
+
+### Task-local launch settings
+
+```sh
+# Bind/select the default Agent exactly as for ordinary Task Leaders.
+yui task role bind <task> leader codex
+yui task role update <task> leader --agent codex --model <model> --effort medium
+yui task role update <task> leader --stage draft --model <planning-model>
+yui task role show <task> leader --json
+yui task role session inspect <task> leader --json
+
+# Clear a binding field, or a stage field/whole stage.
+yui task role update <task> leader --clear-model
+yui task role update <task> leader --stage draft --clear-effort
+yui task role update <task> leader --stage draft --clear-agent
+yui task role update <task> leader --stage draft --clear-agent-config
+# Reset the selected binding's config; other bindings/stages are unaffected.
+yui task role update <task> leader --clear-agent-config
+```
+
+`codex` is an example registered Agent id. Without `--stage`, `role update --agent`
+targets a binding; `role bind` selects the default Agent. Stage Agent overrides
+win over the Task default Agent; stage model/effort win over the selected Task
+binding. Clearing stage fields falls back to that Task's binding, never today's
+global template. Stage fields retain ordinary Leader semantics when changing
+Agent; provider capability validation applies before saving.
+
+Session inspection separates desired settings from the immutable effective
+launch snapshot. Changes apply at the ordinary next-launch boundary; a live
+Session keeps its existing Agent/model/effort. No implicit stop, replacement or
+input replay occurs, and existing lifecycle guards still apply. Adopt settings
+through the authorized `yui task role session new <task> leader --reason
+"Adopt launch configuration"` path after settling active work.
+
+Storage **1.32 → 1.33** snapshots each old inherited experiment binding using
+the global configuration effective at upgrade time. Original creation-time
+values were not stored and cannot be reconstructed. Ordinary Roles and historical
+Sessions/Runs remain unchanged. Use the normal Home upgrade path with a backup;
+do not edit stored Role records manually.
 
 Help, completion and discovery share the specialized view. Knowing a command
 does not authorize it: execution checks the current Session and Task binding.

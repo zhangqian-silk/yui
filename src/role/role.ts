@@ -88,7 +88,7 @@ export type GlobalRole = RoleAgentOwner & {
 export type TaskRole = RoleAgentOwner & {
   schemaVersion: 1;
   taskId: string;
-  /** Logical name stays leader; this selects a live single-inheritance template. */
+  /** Logical name stays leader; this adds experiment capabilities, not inheritance. */
   template?: "experiment-leader";
   /** Explicitly adopted environment for the next native Session. */
   executionEnvironment?: ExecutionEnvironmentSnapshot;
@@ -422,6 +422,9 @@ export function validateGlobalRole(role: GlobalRole): GlobalRole {
 
 export function validateTaskRole(role: TaskRole): TaskRole {
   requireSafeIdentity(role.taskId, "Task id");
+  if (role.template !== undefined && (role.template !== "experiment-leader" || role.name !== "leader")) {
+    throw new Error("Invalid Task Leader template.");
+  }
   return validateRoleOwner(role);
 }
 

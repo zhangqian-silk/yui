@@ -12,6 +12,7 @@ import { migrateJobDefinitions } from "./upgrade/jobDefinitionMigration.js";
 import { migrateJobBusinessResults } from "./upgrade/jobBusinessResultMigration.js";
 import { migrateScheduleDispatch } from "./upgrade/scheduleDispatchMigration.js";
 import { migrateProjectSyncClock } from "./upgrade/projectSyncClockMigration.js";
+import { migrateExperimentLeaders } from "./upgrade/experimentLeaderMigration.js";
 import {
   CURRENT_STORAGE_VERSION, MIN_SUPPORTED_STORAGE_VERSION, STORAGE_FORMAT,
   isMinorStorageUpgrade, isStorageVersion, storageVersionParts, type StorageVersion
@@ -48,7 +49,7 @@ export type StorageMinorUpgrade = Readonly<{
   sourceChecksum: string;
   targetChecksum: string;
   sql: string;
-  dataMigration?: "task-main-workspace" | "project-knowledge" | "job-definitions" | "job-business-results" | "schedule-dispatch" | "project-sync-clock";
+  dataMigration?: "task-main-workspace" | "project-knowledge" | "job-definitions" | "job-business-results" | "schedule-dispatch" | "project-sync-clock" | "experiment-leader-copy";
 }>;
 
 // Only explicit, contiguous minor changes in this baseline may be added here.
@@ -371,6 +372,17 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   // Additive artifact knowledge schema and explicit inherited Task Role bindings.
   // Existing Tasks and copied Roles remain byte-for-byte unchanged.
   sql: ""
+}, {
+  fromVersion: "1.32",
+  toVersion: "1.33",
+  name: "experiment-leader-copied-configuration",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Freeze 1.32 inherited bindings at upgrade time. Ordinary Roles and all
+  // historical execution snapshots are unchanged.
+  sql: "",
+  dataMigration: "experiment-leader-copy"
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {
@@ -511,6 +523,7 @@ export function applySqliteMinorUpgrades(
       if (step.dataMigration === "job-business-results") migrateJobBusinessResults(db);
       if (step.dataMigration === "schedule-dispatch") migrateScheduleDispatch(db);
       if (step.dataMigration === "project-sync-clock") migrateProjectSyncClock(db);
+      if (step.dataMigration === "experiment-leader-copy") migrateExperimentLeaders(db);
       const { major, minor } = storageVersionParts(step.toVersion);
       db.prepare("UPDATE storage_schema SET major=?,minor=?,checksum=? WHERE id=1")
         .run(major, minor, step.targetChecksum);
