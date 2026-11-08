@@ -86,6 +86,8 @@ test("1.32 migration is backed up, preserves frozen values and rolls back its ow
   let db;
   t.after(() => { store?.close(); db?.close(); rmSync(home, { recursive: true, force: true }); });
   store.saveTask(createTask("task-1", "Migration", now));
+  store.upsertTelemetryProgress({ taskId: "task-1", roleName: "leader", runId: "run-1",
+    progressId: "p-1", payload: { text: "Upgrade is not cleanup authorization" }, receivedAt: now.toISOString() });
   store.close(); store = undefined;
   const first = snapshot("task-1", 1, { body: "original" });
   const second = snapshot("task-1", 2, { body: "second" });
@@ -112,4 +114,6 @@ test("1.32 migration is backed up, preserves frozen values and rolls back its ow
   store = new SqliteTaskStore(home);
   assert.deepEqual(store.getContextSnapshot("task-1", first.id), first);
   assert.deepEqual(store.getContextSnapshot("task-1", second.id), second);
+  assert.equal(store.countTelemetry("task-1"), 1, "version upgrade must not clear process data");
+  assert.equal(store.listEventsByType("task-1", ["task.process-cleanup"]).length, 0);
 });

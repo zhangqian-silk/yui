@@ -158,6 +158,7 @@ const READ_ONLY_STORE_METHODS: ReadonlySet<string> = new Set([
   "getStateRevision",
   "getTaskReadRevision",
   "queryContextSnapshots",
+  "inspectTaskProcessData",
   "listConfiguredAgents",
   "getConfiguredAgent",
   "listProjects",

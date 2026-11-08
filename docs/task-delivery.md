@@ -501,6 +501,17 @@ and remaining ownership separately from historical warnings; no background retry
 is implied. Both archive paths preserve Task history and recovery information.
 Archived Tasks cannot reopen.
 
+To explicitly remove retained telemetry details, first run
+`yui task process-cleanup <task> --preview`, then confirm its exact digest with
+`yui task process-cleanup <task> --confirm <digest> --request-id <stable-id>`.
+This narrow operation preserves aggregates, semantic events, frozen evidence,
+Artifacts, logs and workspaces; it is not full process-file or Task deletion.
+Apply requires an archived, settled Task and verified physical quiescence,
+rechecks the preview under the SQLite writer fence, and commits removal with
+its audit receipt. Reuse the same request ID and digest after an uncertain
+response. Archived Tasks no longer ingest delayed online telemetry.
+Software upgrades deliver this capability but never invoke cleanup.
+
 Interrupted runtime cleanup may leave an adjacent `.cleanup-*` directory.
 Retries inspect these claims as well as the original path: only an exact Owner
 marker and no live process references permit deletion. Missing or mismatched

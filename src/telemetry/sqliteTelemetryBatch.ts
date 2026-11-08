@@ -28,7 +28,11 @@ export function writeTelemetryBatch(
   );
   db.transaction(() => {
     const runs = new Map<string, TelemetryProgressEntry>();
+    const archived = db.prepare("SELECT 1 FROM tasks_catalog WHERE task_id=? AND status='archived'");
     for (const entry of entries) {
+      // A delayed observer flush must not repopulate explicitly cleaned data.
+      // Archive ends diagnostic ingestion; it does not itself delete history.
+      if (archived.get(entry.taskId) !== undefined) continue;
       upsert.run(entry.taskId, entry.roleName, entry.runId, entry.progressId,
         entry.sequence ?? null, JSON.stringify(entry.payload), entry.receivedAt);
       runs.set(`${entry.taskId}\0${entry.runId}`, entry);

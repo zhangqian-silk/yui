@@ -46,3 +46,10 @@ Real Home operations and publication require explicit user authority;
 development uses isolated fixtures. See
 [the storage baseline](../../../../docs/storage-baseline.md) for current
 admission and recovery boundaries, and verify the runtime tarball.
+
+Cleanup capabilities ship through normal software upgrades; migrations may
+prepare required storage but must not invoke destructive cleanup. Process-data
+cleanup and full Task deletion require separate explicit operations. Verify
+that upgrading old Homes preserves existing process data. The current
+`task process-cleanup` removes only archived-Task telemetry details after
+preview confirmation; it is not full Task deletion or file cleanup.

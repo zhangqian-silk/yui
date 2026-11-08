@@ -58,6 +58,8 @@ import {
 } from "../coordination/workMailbox.js";
 import type { Decision } from "../decision/decision.js";
 import { createTaskEvent, type TaskEvent } from "../event/taskEvent.js";
+import { createHash } from "node:crypto";
+import { assertTaskProcessCleanupReady, type TaskProcessData, type TaskProcessCleanupReceipt } from "../task/processCleanup.js";
 import { enqueueDurableOperatorFact } from "../scheduler/operatorEvent.js";
 import type { GlobalRoleSessionSet, RoleAgentSession, TaskRoleSessionSet } from "../executor/agentExecutor.js";
 import type { CapabilityGrant } from "../grant/capabilityGrant.js";
@@ -3565,6 +3567,57 @@ export class SqliteTaskStore implements TaskStore {
 
   // -- telemetry (§4.4) -----------------------------------------------------------
 
+  inspectTaskProcessData(taskId: string): TaskProcessData {
+    return this.readTransaction(() => {
+      const task = this.getTask(taskId);
+      if (task === null) throw new Error(`Task not found: ${taskId}.`);
+      const hash = createHash("sha256").update(JSON.stringify({
+        contract: "telemetry-details-v1", home: this.getHomeIdentity(), task
+      }));
+      let telemetryRows = 0;
+      let payloadBytes = 0;
+      // Stream rows in stable primary-key order: the preview remains bounded
+      // in memory and pins content, not just a count or latest timestamp.
+      for (const row of this.#db.prepare(
+        `SELECT role_name, turn_id, progress_id, sequence, payload, received_at
+         FROM telemetry WHERE task_id=? ORDER BY role_name, turn_id, progress_id`
+      ).iterate(taskId) as Iterable<{ payload: string }>) {
+        hash.update("\n").update(JSON.stringify(row));
+        telemetryRows++;
+        payloadBytes += Buffer.byteLength(row.payload);
+      }
+      return { taskId, scope: "telemetry-details", digest: hash.digest("hex"), telemetryRows, payloadBytes,
+        preserved: ["telemetry aggregates", "events and receipts", "task history", "frozen context",
+          "artifacts", "logs and files", "workspaces", "other tasks and global data"] };
+    });
+  }
+
+  clearTaskProcessData(
+    taskId: string, digest: string, requestId: string, actor: "user" | "operator" | "leader"
+  ): TaskProcessCleanupReceipt {
+    if (!/^[a-f0-9]{64}$/.test(digest) || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(requestId)
+      || !["user", "operator", "leader"].includes(actor)) throw new Error("Invalid process cleanup request.");
+    return this.transaction(() => {
+      const previous = this.listEventsByType(taskId, ["task.process-cleanup"])
+        .find(event => event.payload.requestId === requestId);
+      if (previous !== undefined) {
+        if (previous.payload.digest !== digest) throw new Error("Cleanup request ID already used for a different preview.");
+        return { taskId, requestId, digest, removedTelemetryRows: Number(previous.payload.removedTelemetryRows),
+          eventId: previous.id };
+      }
+      assertTaskProcessCleanupReady(this, taskId);
+      const preview = this.inspectTaskProcessData(taskId);
+      if (preview.digest !== digest) throw new Error("Process cleanup preview changed; inspect again before confirming.");
+      const removedTelemetryRows = this.#mutate(() =>
+        this.#db.prepare("DELETE FROM telemetry WHERE task_id=?").run(taskId).changes);
+      const eventId = this.nextEventId(taskId);
+      this.saveEvent(taskId, createTaskEvent(eventId, taskId, "task.process-cleanup", {
+        scope: "telemetry-details", requestId, digest, actor, removedTelemetryRows: String(removedTelemetryRows)
+      }, new Date()));
+      return { taskId, requestId, digest, removedTelemetryRows, eventId };
+    });
+  }
+
   /**
    * Upsert one progress row. The PK is (task_id, role_name, turn_id,
    * progress_id): a repeated progress id updates in place, so a high-frequency
@@ -3573,6 +3626,7 @@ export class SqliteTaskStore implements TaskStore {
    */
   upsertTelemetryProgress(entry: TelemetryProgress): void {
     this.#mutate(() => {
+      if (this.getTask(entry.taskId)?.status === "archived") return;
       this.#db.prepare(
         `INSERT INTO telemetry (task_id, role_name, turn_id, progress_id, sequence, payload, received_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)

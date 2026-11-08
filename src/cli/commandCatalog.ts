@@ -610,6 +610,15 @@ const taskChildren: readonly NodeInput[] = [
     usage: "yui task archive-cleanup <id>"
   },
   {
+    name: "process-cleanup", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+    summary: "Explicitly preview or clear archived Task telemetry details only; preserve aggregates, history and all files. Never runs during upgrade.",
+    usage: [
+      "yui task process-cleanup <id> --preview",
+      "yui task process-cleanup <id> --confirm <preview-digest> --request-id <id>"
+    ],
+    options: ["--preview", "--confirm", "--request-id"]
+  },
+  {
     name: "archive", discovery: { surface: "public", audiences: ["public","operator","leader"], optionAudiences: { "--force": ["public", "operator"] } },
     summary: "Archive settled, delivered, stopped work, then attempt exact-owner cleanup. Retained physical resources do not require --force; force separately bypasses business admission.",
     usage: "yui task archive <id> (--integrated|--abandon) [--force] [--source-message <id> --purpose <verbatim-authorization> --request-id <id>]",
@@ -1818,7 +1827,7 @@ export const ROOT_COMMAND = buildNode({
       name: "task", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Manage Tasks, WorkItems, AgentRuns, and integration.",
       sections: [
-        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "replace", "reconcile", "upstream", "artifact", "iteration"] },
+        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "process-cleanup", "replace", "reconcile", "upstream", "artifact", "iteration"] },
         { id: "collaboration", title: "Collaboration", entries: ["message", "input", "grant", "workflow", "publication", "work", "run", "review", "integration", "role", "overlap", "change-set"] },
         { id: "knowledge", title: "Task Knowledge", entries: ["search", "brief", "decision", "milestone", "event", "continuation", "wake", "usage"] }
       ],
