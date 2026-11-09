@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "status": "passed",
+  "fixture": "http://127.0.0.1:4318",
+  "checks": [
+    {
+      "name": "Native Agent observation card keeps title and timestamp readable at real 360x800 and 390x844",
+      "status": "passed"
+    },
+    {
+      "name": "Expanded Profile diff wraps five long rows without horizontal overflow at real 360x800 and 390x844",
+      "status": "passed"
+    },
+    {
+      "name": "Profile acknowledgement and apply action are reachable after scrolling at real 360x800 and 390x844",
+      "status": "passed"
+    },
+    {
+      "name": "Native Agent card and Profile diff retain shared wide layout at 1365x800",
+      "status": "passed"
+    }
+  ],
+  "pngDimensionsVerifiedWithPillow": true,
+  "invalidatedRun12Captures": [
+    "390-agent-observation-zh.png",
+    "390-role-profile-preview-zh.png"
+  ]
+}

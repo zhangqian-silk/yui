@@ -1,6 +1,6 @@
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { validateModelConnection } from "../models/modelManagementConfig.js";
+import { validateModelRegistry } from "../models/modelRegistry.js";
 import {
   basename,
   dirname,
@@ -112,7 +112,7 @@ export type CompletionInstallation = Readonly<{
 }>;
 export type YuiConfig = Readonly<{
   schemaVersion: typeof CURRENT_CONFIG_SCHEMA_VERSION;
-  modelManagement?: import("../models/modelManagementTypes.js").ModelConnection;
+  modelManagement?: import("../models/modelManagementTypes.js").ModelRegistry;
   defaultAgent?: string;
   defaultWorkspace?: string;
   timeZone?: string;
@@ -621,7 +621,7 @@ export function validateYuiConfig(config: YuiConfig): void {
     }
     reconciliationIntervalMilliseconds(config.reconciliationIntervalSeconds);
     resolveTimeZone(config.timeZone);
-    if (config.modelManagement !== undefined) validateModelConnection(config.modelManagement);
+    if (config.modelManagement !== undefined) validateModelRegistry(config.modelManagement);
     if (config.review !== undefined) validateReviewConfig(config.review);
     resolveResourcesGcMode(config.resourcesGcMode);
     resolveResourcesGcAutoQuarantine(config.resourcesGcAutoQuarantine);

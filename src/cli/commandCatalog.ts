@@ -3,6 +3,7 @@ import { CONTEXT_FAMILIES } from "../context/contextFamilies.js";
 import { supportedAgentExecutionComponentIds } from "../agent/executionComponents.js";
 import { productConfigurationOptions } from "../nativeAgent/product/config.js";
 import { catalogCommands, catalogCommandOptions } from "../nativeAgent/product/catalog.js";
+import { MODEL_COMMAND_ACTIONS } from "../commands/modelCommands.js";
 import {
   CONFIG_DEFINITIONS,
   CONFIG_DOMAINS,
@@ -286,6 +287,7 @@ const roleChildren: readonly NodeInput[] = [
   },
   { name: "remove", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Remove a global Role.", usage: "yui config role remove <name>" },
   { name: "bind", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Bind and activate an Agent for a global Role.", usage: "yui config role bind <role> <agent-id>" },
+  { name: "apply-profile", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Copy one Profile into a global Role; existing Sessions and Tasks keep their configuration.", usage: "yui config role apply-profile <role> <profile> [--yes]", options: ["--yes"] },
   { name: "unbind", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Unbind a dormant Agent from a global Role.", usage: "yui config role unbind <role> <agent-id>" }
 ];
 
@@ -1332,7 +1334,7 @@ export const ROOT_COMMAND = buildNode({
     ] },
     { id: "workflow", title: "Workflow", entries: ["agent", "operator", "role", "inbox", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
-    { id: "operations", title: "Operations", entries: ["web", "controller", "session", "execution", "capability", "job", "schedule", "jobs", "telemetry", "release"] },
+    { id: "operations", title: "Operations", entries: ["web", "controller", "session", "execution", "models", "capability", "job", "schedule", "jobs", "telemetry", "release"] },
     { id: "resources", title: "Resources", entries: ["resources"] },
     { id: "internal", title: "Internal", entries: ["internal"] }
   ],
@@ -1615,7 +1617,7 @@ export const ROOT_COMMAND = buildNode({
           examples: ["yui config role list", "yui config role show operator"],
           sections: [
             { id: "inspect", title: "Inspect", entries: ["list", "show"] },
-            { id: "manage", title: "Manage", entries: ["add", "update", "enable", "disable", "remove", "bind", "unbind"] }
+            { id: "manage", title: "Manage", entries: ["add", "update", "apply-profile", "enable", "disable", "remove", "bind", "unbind"] }
           ],
           children: roleChildren
         },
@@ -1850,6 +1852,23 @@ export const ROOT_COMMAND = buildNode({
         { id: "knowledge", title: "Task Knowledge", entries: ["search", "brief", "decision", "milestone", "event", "continuation", "wake", "usage"] }
       ],
       children: taskChildren
+    },
+    {
+      name: "models",
+      summary: "Operator-guided model setup and narrow model-management commands.",
+      sections: [{ id: "entry", title: "Commands", entries: ["guide", ...MODEL_COMMAND_ACTIONS] }],
+      children: [
+        { name: "guide", discovery: { surface: "public", audiences: ["public", "operator", "leader", "assignment", "global", "unbound"] },
+          summary: "Read offline Operator instructions and installed manual paths; no configuration changes.",
+          usage: "yui models guide [metabridge|binding|maintenance]",
+          argumentValues: { 0: ["metabridge", "binding", "maintenance"] } },
+        ...MODEL_COMMAND_ACTIONS.map(name => ({
+          name, discovery: { surface: "managed" as const, audiences: ["operator", "leader", "assignment"] as const },
+          summary: `Invoke models ${name} through the existing authenticated capability boundary.`,
+          usage: `yui models ${name} --task <id> ${name === "read" ? "[--input <json>]" : "--input <json>"} [--request-id <id>]`,
+          options: ["--task", "--input", "--request-id"]
+        }))
+      ]
     },
     {
       name: "capability", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },

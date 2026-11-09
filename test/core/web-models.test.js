@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { webcrypto } from "node:crypto";
 import { MODELS_VIEW_SCRIPT } from "../../dist/web/assets/client/views/models.js";
+import { OPERATOR_HANDOFF_SCRIPT } from "../../dist/web/assets/client/views/operatorHandoff.js";
 import { MODELS_HTML } from "../../dist/web/assets/shell/models.js";
 import { appRail } from "../../dist/web/assets/shell/appRail.js";
 import { SETTINGS_HTML } from "../../dist/web/assets/shell/settings.js";
 import { WEB_ASSETS } from "../../dist/web/assets/assetManifest.js";
 import { MANAGE_SHELL_SCRIPT } from "../../dist/web/assets/client/layout/manageShell.js";
+import { EN } from "../../dist/web/assets/client/i18n/en.js";
+import { ZH_CN } from "../../dist/web/assets/client/i18n/zh-CN.js";
 
 // Minimal DOM: enough for h(), forms and buttons; no browser required.
 function element(spec, attrs, ...children) {
@@ -43,7 +47,9 @@ const button = (root, label) => find(root, n => n.tagName === "BUTTON" && n.chil
 const copy = value => JSON.parse(JSON.stringify(value));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const submit = form => form.handlers.submit({ preventDefault() {} });
-const connectionForm = root => find(root, n => n.tagName === "FORM" && n.className.includes("models-connection-form"));
+const resourceForm = (root, kind) => find(root, n => n.tagName === "FORM" && n.dataset.resourceKind === kind);
+const connectionForm = root => resourceForm(root, "endpoint");
+const endpointCard = root => find(root, n => n.className.includes("models-card") && resourceForm(n, "endpoint"));
 
 test("management navigation shares history across areas and normalizes direct URLs", () => {
   const elements = new Map();
@@ -66,12 +72,13 @@ test("management navigation shares history across areas and normalizes direct UR
   vm.runInContext(MANAGE_SHELL_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), ctx);
   for (const page of ["models", "settings", "jobs"]) ctx.registerManagePage(page, { show: route => shown.push({ ...route }) });
   ctx.startManagement();
-  assert.equal(location.pathname + location.search, "/models/quota?source=command-code");
+  assert.equal(location.pathname + location.search, "/models/providers?detail=quota&source=command-code");
   assert.equal(history.pushes, 0, "normalizing a direct URL must not add a Back step");
   ctx.navigateManage({ page: "settings", section: "preferences" });
   ctx.navigateManage({ page: "models", section: "connection" });
-  assert.equal(location.pathname, "/settings/connection");
-  assert.equal(elements.get("#models-root").hidden, false);
+  assert.equal(location.pathname, "/models/agents");
+  assert.equal(ctx.manageHref(ctx.readManageRoute(new URL("http://localhost/settings/connection"))), "/models/agents");
+  assert.equal(elements.get("#settings-root").hidden, false);
   ctx.navigateManage({ page: "models", section: "connection" });
   assert.equal(history.pushes, 2, "clicking the selected destination is a no-op");
   location.href = "http://localhost/settings/server";
@@ -80,7 +87,7 @@ test("management navigation shares history across areas and normalizes direct UR
   assert.equal(shown.at(-1).section, "server");
   assert.equal(elements.get("#settings-root").hidden, false);
   assert.equal(elements.get("#manage-scroll").scrollTop, 70, "the center column restores its own scroll");
-  assert.deepEqual({ ...places }, { models: "/models/quota?source=command-code", settings: "/settings/server", manage: "/settings/server" },
+  assert.deepEqual({ ...places }, { models: "/models/agents", settings: "/settings/server", manage: "/settings/server" },
     "each area remembers its last section for the return trip from the workbench");
   const ref = JSON.stringify({ version: "a".repeat(40), relativePath: "report.md" });
   const fixed = new URL("http://localhost/settings/jobs?job=reports&jobRun=run-1&artifact=" + encodeURIComponent(ref));
@@ -112,7 +119,14 @@ function connection(extra = {}) {
   return { bridgeUrl: "http://127.0.0.1:9", bridgeConfigFile: "/fixture/bridge.yaml", cpaUrl: "", managementKeyFile: "", catalogKeyFile: "", ...extra };
 }
 function view(revision, extra = {}) {
-  return { revision, connection: connection(), configurationError: null, application: "unverified", notice: "notice-" + revision,
+  const c = extra.connection === undefined ? connection() : extra.connection;
+  const registry = { modules: c ? [{ id: "bridge", kind: "metabridge", version: "fixture", managementUrl: c.bridgeUrl,
+    managementKeyFile: "", configFile: c.bridgeConfigFile, maintenance: "configuration", quotaAdapter: "none" },
+    ...(c.cpaUrl ? [{ id: "cpa", kind: "cliproxyapi", version: "8.0.12", managementUrl: c.cpaUrl,
+      managementKeyFile: c.managementKeyFile, configFile: "", maintenance: "external", quotaAdapter: "factory-quota-v1" }] : [])] : [],
+    endpoints: c ? [{ id: "bridge-api", moduleId: "bridge", url: c.bridgeUrl + "/v1", protocol: "responses", clientKeyFile: "" }] : [],
+    bindings: [], receipts: [] };
+  return { revision, registryRevision: revision, registry, quotaSources: ["factory", "command-code"].map(source => ({ moduleId: c?.cpaUrl ? "cpa" : "", source })), configuredAgents: [{ id: "codex", adapterId: "codex" }], connection: connection(), configurationError: null, application: "unverified", notice: "notice-" + revision,
     providers: [
       { id: "official", name: "Official", via: "unknown", baseUrl: "https://upstream.invalid", prefix: "", enabled: true,
         editable: false, reason: "official subscription route", credentialPresent: true, owner: "metabridge" },
@@ -123,40 +137,288 @@ function view(revision, extra = {}) {
 const observation = (status, extra = {}) => ({ status, attemptedAt: null, observedAt: null, stale: false, error: null, items: [], ...extra });
 
 function mount(api, extra = {}) {
-  const context = vm.createContext({ h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {} });
+  let handoff;
+  const context = vm.createContext({ crypto: webcrypto, h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {},
+    openOperatorHandoff: options => { handoff = options; } });
   vm.runInContext(MODELS_VIEW_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
   const root = element("div");
+  root.querySelectorAll = selector => all(root, node => selector === "[data-model-detail]"
+    ? node.dataset.modelDetail !== undefined : node.dataset.observationTime !== undefined);
   const confirmations = [];
   const page = context.mountModels(root, { t: (key, fallback) => key, api,
     confirm: message => { confirmations.push(message); return true; }, ...extra });
-  return { root, page, confirmations };
+  return { root, page, confirmations, handoff: () => handoff };
 }
 
 test("initial observations wait for the configuration baseline", async () => {
   let resolveView;
-  const api = fakeApi({ models: () => new Promise(resolve => { resolveView = resolve; }) });
+  const baseline = view("new", { connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) });
+  const api = fakeApi({ models: id => id ? Promise.resolve(baseline) : new Promise(resolve => { resolveView = resolve; }) });
   const { page } = mount(api);
   await tick();
   assert.equal(api.calls.length, 0, "no observation may precede the first configuration read");
-  resolveView(view("new", { connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) }));
+  resolveView(baseline);
   await page.ready;
   assert.deepEqual(api.calls.map(call => call[0]), ["catalog", "quota"]);
 });
 
-test("language changes retain current observations and drafts without loading again", async () => {
+test("language changes retain current observations without loading again", async () => {
   let reads = 0;
   const api = fakeApi({ models: async () => { reads++; return view("r1"); } });
   const { page } = mount(api);
   await page.ready;
   const observation = page.state.catalog.page;
-  page.state.connectionDraft = { ...connection(), bridgeUrl: "http://127.0.0.1:91" };
   const calls = api.calls.length;
   page.translate();
-  assert.equal(reads, 1);
+  assert.equal(reads, 2, "one baseline plus one explicit component-source read");
   assert.equal(api.calls.length, calls);
   assert.equal(page.state.catalog.page, observation);
-  assert.equal(page.state.connectionDraft.bridgeUrl, "http://127.0.0.1:91");
-  assert.equal(page.dirty(), true);
+  assert.equal(page.dirty(), false);
+});
+
+test("Provider overview includes every configured source, keeps instance identity and isolates component failures", async () => {
+  const baseline = view("r1", { quotaSources: [],
+    connection: connection({ cpaUrl: "https://cpa.invalid", managementKeyFile: "/fixture/key" }),
+    nativeProviders: [{ id: "native-bridge", name: "Same name", agentId: "codex", sourceFile: "/fixture/config",
+      baseUrl: "https://native.invalid", protocol: "responses", credentialPresent: true }] });
+  const direct = { ...baseline.providers[1], id: "shared-name", name: "Same name", protocol: "responses",
+    models: [{ name: "upstream-model", alias: "public-model" }], sourceFile: "/fixture/bridge",
+    compaction: { mode: "local", models: ["matching/*"], stripImages: true }, apiKey: "must-not-render" };
+  const forwarding = { ...direct, id: "cpa-upstream", name: "CPA connection", via: "cpa" };
+  const cpa = Array.from({ length: 9 }, (_, index) => ({ ...direct, id: index ? "cpa-" + index : "shared-name",
+    owner: "cliproxyapi", via: "direct", sourceFile: "/fixture/cpa" }));
+  let fail = false;
+  const calls = [];
+  const api = fakeApi({ models: async id => {
+    calls.push(id || "baseline");
+    if (!id) return baseline;
+    if (id === "cpa" && fail) throw Error("CPA config unreadable");
+    return { ...baseline, providers: id === "cpa" ? cpa : [direct, forwarding] };
+  } });
+  const { root, page, handoff } = mount(api);
+  await page.ready;
+  const records = all(root, node => node.dataset.providerIdentity);
+  const identities = records.map(node => node.dataset.providerIdentity);
+  // Two metabridge backends (one routed via CPA), nine CPA Providers, one
+  // native Provider and the registered endpoint, each under its own owner.
+  assert.equal(identities.filter(id => id.startsWith("bridge:")).length, 2);
+  assert.equal(identities.filter(id => id.startsWith("cpa:")).length, 9);
+  assert.equal(identities.filter(id => id.startsWith("native:")).length, 1);
+  assert.deepEqual(identities.filter(id => id.startsWith("endpoint:")), ["endpoint:bridge-api"]);
+  assert.equal(new Set(identities).size, identities.length, "same names and IDs from distinct sources are not merged");
+  assert.deepEqual(all(root, node => node.dataset.dimension).map(node => node.dataset.dimension), ["codex", "claude"],
+    "services are grouped by the Agent connection dimension, not by model vendor");
+  assert.deepEqual(all(root, node => node.dataset.component).map(node => node.dataset.component), ["metabridge", "cliproxyapi"],
+    "optional components are sections of the page, not separate destinations");
+  const native = records.find(node => node.dataset.providerIdentity.startsWith("native:"));
+  assert.doesNotMatch(text(native), /models.enabled/, "an unspecified native enablement is not presented as enabled");
+  const forwarded = records.find(node => node.dataset.providerIdentity === "bridge:cpa-upstream");
+  assert.match(text(forwarded), /services.upstream.cpa/, "a metabridge backend routed through CPA says so");
+  assert.match(text(root), /matching\/\*/);
+  assert.match(text(root), /models.compactionMatched/);
+  assert.match(text(root), /public-model/);
+  assert.doesNotMatch(text(root), /must-not-render/);
+  assert.equal(api.calls.some(call => call[0] === "refresh"), false);
+  assert.deepEqual(calls, ["baseline", "bridge", "cpa"]);
+  page.show({ section: "catalog" });
+  assert.equal(find(root, node => node.dataset.modelDetail === "catalog").open, true, "retired catalog URL opens the in-page detail");
+  assert.equal(all(root, node => node.tagName === "H1").length, 1);
+  fail = true;
+  button(root, "services.guide.codex").handlers.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(handoff().scenario)), { kind: "service", adapter: "codex", agents: ["codex"], endpoints: ["bridge-api"] });
+  await handoff().onReadback();
+  assert.equal(all(root, node => node.dataset.providerIdentity?.startsWith("bridge:")).length, 2, "a failed source does not erase other configuration records");
+  assert.equal(all(root, node => node.dataset.providerIdentity?.startsWith("native:")).length, 1);
+  const cpaCard = find(root, node => node.dataset.componentId === "cpa");
+  const visibleAlert = find(cpaCard, node => node.role === "alert");
+  assert.ok(visibleAlert, "a source failure is shown on that component, without opening a disclosure");
+  assert.match(text(visibleAlert), /CPA config unreadable/);
+});
+
+test("native-only Provider records have no invented components, catalog, quota placeholder or upstream reads", async () => {
+  const api = fakeApi({ current: view("r1", { connection: null, providers: [], quotaSources: [],
+    nativeProviders: [{ id: "native", agentId: "codex", name: "Native", sourceFile: "/fixture/config",
+      baseUrl: "https://native.invalid", credentialPresent: false }] }) });
+  const { root, page } = mount(api);
+  await page.ready;
+  assert.match(text(root), /Native/);
+  assert.doesNotMatch(text(root), /models.disconnected/, "native Agent use does not require component registration");
+  for (const key of ["maintenance", "catalog", "quota"]) {
+    assert.equal(find(root, node => node.dataset.modelDetail === key), undefined);
+  }
+  assert.deepEqual(api.calls.map(call => call[0]), ["models"]);
+  page.show({ section: "maintenance" });
+  assert.equal(find(root, node => node.dataset.modelDetail === "maintenance"), undefined);
+});
+
+test("an unreadable native config is unknown on the services page, not a built-in service without Providers", async () => {
+  const routeText = root => text(find(root, node => node.dataset.routeAgent === "codex"));
+  const nativeText = root => text(find(root, node => node.dataset.dimension === "codex"));
+  for (const [status, bound] of [["unavailable", false], ["unavailable", true], ["read", false], ["absent", false]]) {
+    const current = view("r1", { connection: null, providers: [], quotaSources: [], nativeProviders: [],
+      nativeConfigurations: [{ agentId: "codex", status, sourceFile: "/fixture/config.toml" }] });
+    if (bound) current.registry.bindings.push({ agentId: "codex", adapterId: "codex", endpointId: "bridge-api", model: "m", scope: "yui-new-session" });
+    const { root, page } = mount(fakeApi({ current }));
+    await page.ready;
+    const label = status + (bound ? " bound" : "");
+    if (status === "unavailable") {
+      assert.doesNotMatch(routeText(root), /services\.nativeDefault|services\.noCustomProvider/, label);
+      assert.match(nativeText(root), /services\.nativeUnreadList/, label);
+      assert.doesNotMatch(nativeText(root), /services\.noNative\b/, label + ": an unread file does not claim no Providers");
+      if (!bound) assert.match(routeText(root), /services\.nativeUnreadable.*services\.nativeUnknownHelp/, label);
+    } else {
+      assert.match(routeText(root), /services\.nativeDefault/, label);
+      assert.match(routeText(root), status === "absent" ? /services\.noNativeFile/ : /services\.noCustomProvider/, label);
+      assert.match(nativeText(root), /services\.noNative\b/, label);
+      assert.doesNotMatch(nativeText(root), /services\.nativeUnreadList/, label);
+    }
+  }
+});
+
+test("a standalone registered endpoint remains visible without any optional component", async () => {
+  const current = view("r1", { connection: null, providers: [], quotaSources: [] });
+  current.registry.endpoints.push({ id: "standalone", moduleId: null, url: "https://standalone.invalid",
+    protocol: "responses", clientKeyFile: "/fixture/private-reference" });
+  const api = fakeApi({ current });
+  const { root, page } = mount(api);
+  await page.ready;
+  const record = find(root, node => node.dataset.providerIdentity === "endpoint:standalone");
+  assert.ok(record);
+  assert.match(text(record), /https:\/\/standalone.invalid/);
+  assert.match(text(record), /services.direct/, "a registered endpoint without a component is direct");
+  assert.match(text(record), /\/fixture\/private-reference/);
+  assert.equal(find(root, node => node.dataset.modelDetail === "maintenance"), undefined);
+  assert.deepEqual(api.calls.map(call => call[0]), ["models", "catalog"], "only the explicitly registered endpoint cache is read");
+});
+
+// Manual Provider/binding forms have been retired. Their mutation authority,
+// preview, credential and replay contracts remain covered by model-management
+// and model-registry tests; the Web now protects a read-only handoff boundary.
+test("Provider facts distinguish native connections and snapshots, with one non-mutating configuration handoff", async () => {
+  const api = fakeApi({ current: view("r1", { readOnly: true, quotaSources: [],
+    provenance: { label: "Production snapshot", capturedAt: "2026-10-26T00:00:00Z" },
+    nativeProviders: [{ id: "native", agentId: "codex", name: "Native service", baseUrl: "https://native.invalid",
+      credentialPresent: true }] }) });
+  const { root, page, handoff } = mount(api);
+  await page.ready;
+  assert.doesNotMatch(text(root), /Production snapshot|2026-10-26T00:00:00Z|access\.snapshot/,
+    "the page looks the same as the live one: no snapshot or provenance debug text");
+  assert.match(text(root), /Native service.*codex/);
+  assert.match(text(root), /https:\/\/native.invalid/);
+  assert.equal(all(root, n => n.tagName === "FORM" || n.tagName === "TEXTAREA" || n.type === "password").length, 0);
+  assert.equal(api.calls.some(call => call[0] === "quota"), false, "no invented default quota source");
+  assert.equal(all(root, n => n.tagName === "BUTTON" && /models.source.(factory|command-code)/.test(text(n))).length, 0);
+  button(root, "services.guide.claude").handlers.click();
+  assert.equal(handoff().scenario.adapter, "claude", "each dimension opens its own guide scenario");
+  assert.equal(button(root, "models.refreshCatalog").disabled, true);
+  await button(root, "models.refreshCatalog").handlers.click();
+  assert.equal(button(root, "models.readQuota"), undefined, "no quota component means no empty quota control");
+  assert.equal(api.calls.some(call => ["resource", "provider", "refresh"].includes(call[0])), false,
+    "snapshot refresh is blocked in handlers as well as controls");
+});
+
+test("first quota read is explicit and exposes only real accounts while retaining a partial success", async () => {
+  const account = { id: "actual-account", source: "factory", status: "success", windows: [],
+    balance: null, balanceDetails: [], periodEnd: null, error: null };
+  const actual = observation("success", { items: [account], observedAt: "2026-10-26T00:00:00Z" });
+  const api = fakeApi({ current: view("r1", { quotaSources: [],
+    connection: connection({ cpaUrl: "https://fixture.invalid", managementKeyFile: "/fixture/private-key" }) }),
+    modelQuota: async source => { api.calls.push(["quota", source]); return actual; },
+    refreshModels: async input => {
+      api.calls.push(["refresh", copy(input)]);
+      if (input.source === "command-code") throw new Error("quota request failed");
+      api.current.quotaSources = [{ moduleId: "cpa", source: "factory" }];
+      return actual;
+    }
+  });
+  const { root, page } = mount(api);
+  await page.ready;
+  page.show({ section: "quota" });
+  assert.equal(api.calls.some(call => ["quota", "refresh"].includes(call[0])), false);
+  assert.equal(button(root, "models.source.factory"), undefined);
+  assert.equal(button(root, "models.source.command-code"), undefined);
+  const read = button(root, "models.readQuota");
+  assert.equal(read.disabled, false);
+  await read.handlers.click();
+  assert.equal(api.calls.filter(call => call[0] === "refresh").length, 2);
+  assert.match(text(root), /actual-account/);
+  assert.match(text(root), /quota request failed/);
+  assert.equal(page.state.quota.source, "factory");
+  assert.equal(button(root, "models.source.command-code"), undefined, "failed source never becomes an invented account tab");
+  page.show({ section: "providers" }); page.show({ section: "quota" });
+  assert.equal(api.calls.filter(call => call[0] === "refresh").length, 2, "navigation does not repeat upstream calls");
+});
+
+test("Operator guides join free intent with entry-specific context, block secrets and never execute", async () => {
+  const body = element("body");
+  let focused = 0;
+  const document = { body, activeElement: { focus() { focused++; } } };
+  const h = (...args) => {
+    const node = element(...args);
+    node.focus = () => {};
+    node.showModal = () => { node.open = true; };
+    node.close = () => { node.open = false; node.handlers.close?.(); };
+    node.remove = () => { body.children = body.children.filter(child => child !== node); };
+    return node;
+  };
+  const context = vm.createContext({ h, document });
+  vm.runInContext(OPERATOR_HANDOFF_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
+  const build = (scenario, intent = "调整一下") => context.buildOperatorPrompt(scenario, intent, "zh-CN");
+  const prompts = {
+    role: build({ kind: "role", name: "reviewer", agentId: "codex", adapter: "codex", route: "bridge-codex" }),
+    roleNew: build({ kind: "role-new", roles: ["leader"], agents: ["codex"], profiles: [] }),
+    profile: build({ kind: "profile", id: "reader", inherit: true }),
+    agent: build({ kind: "agent", id: "claude", adapter: "claude", roles: ["ui-developer"] }),
+    agentNew: build({ kind: "agent-new", configured: ["codex"], unconfigured: ["ACP Agent"] }),
+    codex: build({ kind: "service", adapter: "codex", agents: ["codex"], endpoints: ["bridge-codex"] }),
+    claude: build({ kind: "service", adapter: "claude", agents: ["claude"], endpoints: [] }),
+    metabridge: build({ kind: "component", componentKind: "metabridge", id: "bridge" }),
+    cpa: build({ kind: "component", componentKind: "cliproxyapi", id: "cpa" })
+  };
+  assert.equal(new Set(Object.values(prompts)).size, Object.keys(prompts).length, "every entry produces its own prompt");
+  for (const prompt of Object.values(prompts)) assert.match(prompt, /^我想：调整一下\n/, "the user's own words lead the prompt");
+  assert.match(prompts.role, /「reviewer」.*「codex」（Codex CLI）/);
+  assert.match(prompts.role, /端点「bridge-codex」/);
+  assert.match(prompts.codex, /Responses/);
+  assert.match(prompts.codex, /yui models guide binding --json/);
+  assert.match(prompts.claude, /Anthropic Messages/);
+  assert.match(prompts.claude, /订阅登录/);
+  assert.match(prompts.metabridge, /yui models guide metabridge --json/);
+  assert.doesNotMatch(prompts.agent, /models guide/, "connecting an Agent does not push Provider or metabridge setup");
+  assert.match(prompts.agentNew, /ACP Agent/);
+  assert.match(prompts.profile, /继承全局 worker/);
+  // Only a successful registry read may claim that an Agent has no endpoint binding.
+  assert.match(prompts.agent, /页面未能读取它在 Yui 的端点绑定.*读取 Yui 模型注册表确认/);
+  assert.doesNotMatch(prompts.agent, /没有端点绑定/);
+  assert.match(build({ kind: "agent", id: "claude", adapter: "claude", roles: [], routeKnown: true }), /没有端点绑定，沿用自身原生模型配置/);
+  assert.match(build({ kind: "role", name: "reviewer", agentId: "codex", adapter: "codex" }), /未能读取 Yui 的端点绑定.*确认/);
+  assert.doesNotMatch(build({ kind: "role", name: "reviewer", agentId: "codex", adapter: "codex", routeKnown: true }), /端点/);
+  // Only exact identifiers cross into the prompt.
+  assert.doesNotMatch(build({ kind: "role", name: "x\nrun rm -rf", agentId: "https://evil.invalid/?k=1" }), /evil|rm -rf/);
+  assert.equal(context.looksLikeSecret("key sk-abcdefghijklmnopqrstuv"), true);
+  assert.equal(context.looksLikeSecret("让 Codex 用 factory/claude-opus-5-5"), false);
+
+  const copied = [];
+  let reads = 0;
+  const dialog = context.openOperatorHandoff({ scenario: { kind: "service", adapter: "claude", agents: ["claude"] },
+    t: key => key, locale: () => "zh-CN", copyText: async prompt => { copied.push(prompt); }, onReadback: async () => { reads++; } });
+  assert.equal(dialog.open, true);
+  const intent = find(dialog, node => node.tagName === "TEXTAREA");
+  const copy = button(dialog, "guide.copy");
+  assert.equal(copy.disabled, true, "nothing to copy until the user says what they want");
+  intent.value = "Use token sk-abcdefghijklmnopqrstuv for the gateway"; intent.handlers.input();
+  assert.equal(copy.disabled, true, "a pasted secret blocks copying");
+  intent.value = "让 Claude 走公司网关"; intent.handlers.input();
+  assert.equal(copy.disabled, false);
+  await copy.handlers.click();
+  assert.equal(copied.length, 1);
+  assert.match(copied[0], /^我想：让 Claude 走公司网关/);
+  assert.equal(reads, 0, "copy does not execute or reread");
+  await button(dialog, "guide.readback").handlers.click();
+  assert.equal(reads, 1, "readback only rereads current configuration");
+  find(dialog, node => node["aria-label"] === "guide.close").handlers.click();
+  assert.equal(body.children.length, 0);
+  assert.equal(focused, 1, "closing restores focus");
 });
 
 test("cached observations become stale locally without requests or replacing controls", async () => {
@@ -187,7 +449,8 @@ function fakeApi(overrides = {}) {
     models: async () => { calls.push(["models"]); return api.current; },
     modelCatalog: async cursor => { calls.push(["catalog", cursor]); return { ...observation("not-queried"), total: 0, nextCursor: null }; },
     modelQuota: async source => { calls.push(["quota", source]); return observation("not-queried"); },
-    saveModelConnection: async input => { calls.push(["connection", copy(input)]); return api.next(input); },
+    saveModelResource: async input => { calls.push(["resource", copy(input)]); api.current = api.next(input); return { application: "saved" }; },
+    previewModelBinding: async input => ({ ...input, notice: "New Session only" }),
     saveModelProvider: async input => { calls.push(["provider", copy(input)]); return api.next(input); },
     releaseModelWrites: () => calls.push(["release"]),
     refreshModels: async input => { calls.push(["refresh", copy(input)]); return observation("success"); },
@@ -210,8 +473,8 @@ test("models shell is served and linked from the dashboard navigation", () => {
   // The shared rail links back to Yui and Settings and gives every section a real URL.
   assert.match(MODELS_HTML, /href="\/"/);
   assert.match(MODELS_HTML, /href="\/settings"/);
-  for (const section of ["providers", "catalog", "quota", "connection"]) {
-    assert.match(MODELS_HTML, new RegExp(`href="/${section === "connection" ? "settings" : "models"}/${section}" data-page="models" data-section="${section}"`));
+  for (const section of ["providers"]) {
+    assert.match(MODELS_HTML, new RegExp(`href="/models/${section}" data-page="models" data-section="${section}"`));
   }
 });
 
@@ -223,135 +486,49 @@ test("models and settings share one management rail with the same navigation", (
   for (const area of ["workbench", "jobs", "models", "settings"]) assert.match(MODELS_HTML, new RegExp(`class="rail-item"[^>]*data-area="${area}"`));
   assert.match(MODELS_HTML, /class="app manage-app"/);
   assert.match(MODELS_HTML, /<header class="top-bar">[\s\S]*data-sidebar-toggle="true"/);
-  // Daily model work stays under Models; the connection is a Settings section still served by /models.
+  // All model operations belong to Models, not Settings.
   const models = nav.match(/data-area-group="models">[\s\S]*?<\/div>\s*<\/div>/)[0];
   const settings = nav.match(/data-area-group="settings">[\s\S]*?<\/div>\s*<\/div>/)[0];
-  for (const section of ["providers", "catalog", "quota"]) assert.match(models, new RegExp(`data-section="${section}"`));
-  assert.doesNotMatch(models, /data-section="connection"/);
+  for (const section of ["roles", "agents", "providers"]) assert.match(models, new RegExp(`data-section="${section}"`));
+  assert.doesNotMatch(models, /data-section="(catalog|quota|maintenance|metabridge|cpa)"/,
+    "execution configs, Agents and model services are the only entries; optional components are not destinations");
   for (const section of ["preferences", "skills", "server"]) {
     assert.match(settings, new RegExp(`href="/settings/${section}" data-page="settings" data-section="${section}"`));
   }
-  assert.match(settings, /href="\/settings\/connection" data-page="models" data-section="connection"/);
+  assert.doesNotMatch(settings, /data-page="models"/);
   // Jobs are their own entry, not a Settings section; its list mounts in the same rail.
   assert.doesNotMatch(settings, /data-section="jobs"/);
   assert.match(nav, /data-area-group="jobs">\s*<div id="jobs-index"/);
   assert.match(MODELS_HTML, /<div id="jobs-root" class="jobs-root" hidden><\/div>/);
   assert.match(appRail("jobs"), /href="\/jobs" data-area="jobs" aria-current="page" data-nav-area="jobs"/);
-  assert.match(nav, /Agents &amp; server/, "labels are HTML-escaped");
+  assert.doesNotMatch(settings, /data-section="agents"/, "Agent editing has one entry in the Agent/Provider area");
   for (const section of ["preferences", "skills", "server"]) assert.match(SETTINGS_HTML, new RegExp(`data-section="${section}"`));
-  assert.match(SETTINGS_HTML, /id="settings-search"/);
+  assert.match(SETTINGS_HTML, /id="server-settings-search"/);
+  assert.match(SETTINGS_HTML, /id="role-access-host"/);
+  assert.match(SETTINGS_HTML, /id="agent-access-host"/);
+  assert.match(SETTINGS_HTML, /id="server-settings-groups"/);
+  assert.doesNotMatch(SETTINGS_HTML, /id="settings-editor"/, "section chrome is mounted with each visible section rather than a hidden shared editor");
   assert.match(SETTINGS_HTML, /id="skill-browser"/);
   assert.match(SETTINGS_HTML, /src="\/assets\/js\/app\/manage\.js"/);
   assert.ok(WEB_ASSETS["/assets/js/layout/manageShell.js"] && WEB_ASSETS["/assets/css/views/manage.css"]);
 });
 
-test("connection and provider writes carry the read revision, never echo keys and never resend unknown outcomes", async () => {
+test("Operator readback handles a removed bridge without targeting the removed resource or replaying a write", async () => {
   const api = fakeApi();
-  const { root, page } = mount(api);
-  await page.ready;
-  assert.match(text(root), /models\.application\.unverified/);
-  assert.doesNotMatch(text(root), /\b(null|undefined)\b/, "empty slots never render as text");
-  assert.match(text(root), /models\.scope/, "the ownership notice uses the current UI language");
-  // Read-only providers expose their reason, never edit controls.
-  const official = find(root, n => n.dataset.provider === "official");
-  assert.match(text(official), /models\.providerReadOnlyHelp/);
-  assert.equal(all(official, n => n.tagName === "BUTTON").length, 0);
-  // The server returns the prefix with its trailing slash; it is shown as-is.
-  const mine = text(find(root, n => n.dataset.provider === "mine"));
-  assert.match(mine, /mine\//);
-  assert.doesNotMatch(mine, /mine\/\//);
-
-  // Connection save sends all five fields with the read revision.
-  const form0 = connectionForm(root);
-  const urlInput = find(form0, n => n.tagName === "INPUT");
-  assert.ok(button(form0, "models.discard").disabled);
-  urlInput.value = " http://127.0.0.1:10 "; urlInput.handlers.input();
-  assert.equal(button(form0, "models.discard").disabled, false, "the first edit enables discard");
-  await submit(form0); await tick();
-  const [, sent] = api.calls.find(c => c[0] === "connection");
-  assert.deepEqual(sent, { revision: "r1", connection: connection({ bridgeUrl: "http://127.0.0.1:10" }) });
-  assert.match(text(root), /models\.saved/);
-
-  // New provider: key is required, sent once and cleared; it never enters page state.
-  button(root, "models.addProvider").handlers.click();
-  let form = find(root, n => n.className.includes("models-provider-form"));
-  const inputs = all(form, n => n.tagName === "INPUT");
-  const [name, baseUrl, prefix] = inputs.filter(n => n.type !== "password" && n.type !== "checkbox");
-  const key = inputs.find(n => n.type === "password");
-  assert.equal(key.autocomplete, "new-password");
-  name.value = "New"; name.handlers.input();
-  baseUrl.value = "https://new.invalid"; baseUrl.handlers.input();
-  assert.equal(prefix.placeholder, "mine/");
-  prefix.value = "new/"; prefix.handlers.input();
-  await submit(form);
-  assert.equal(api.calls.filter(c => c[0] === "provider").length, 0, "new provider without key is not submitted");
-  assert.match(text(root), /models\.providerNewRequired/);
-  for (const invalid of ["new", "a/b/", "bad prefix/", "x".repeat(65) + "/"]) {
-    form = find(root, n => n.className.includes("models-provider-form"));
-    all(form, n => n.tagName === "INPUT")[2].value = invalid;
-    find(form, n => n.type === "password").value = "sk-fixture-secret";
-    await submit(form);
-    assert.match(text(root), /models\.prefixInvalid/, invalid);
-  }
-  assert.equal(api.calls.filter(c => c[0] === "provider").length, 0, "prefixes outside the server contract are not submitted");
-  form = find(root, n => n.className.includes("models-provider-form"));
-  all(form, n => n.tagName === "INPUT")[2].value = "new/";
-
-  api.saveModelProvider = async input => {
-    api.calls.push(["provider", copy(input)]);
-    throw Object.assign(new Error("prefix taken"), { disposition: "not-submitted" });
+  api.models = async id => {
+    if (id && !api.current.registry.modules.some(m => m.id === id)) throw new Error("Module not found");
+    return api.current;
   };
-  form = find(root, n => n.className.includes("models-provider-form"));
-  const keyInput = find(form, n => n.type === "password");
-  keyInput.value = "sk-fixture-secret";
-  await submit(form); await tick();
-  const [, rejected] = api.calls.filter(c => c[0] === "provider").at(-1);
-  assert.deepEqual(rejected, { revision: "r2", operation: "save",
-    provider: { name: "New", via: "direct", baseUrl: "https://new.invalid", prefix: "new/", enabled: true, apiKey: "sk-fixture-secret" } });
-  assert.equal(keyInput.value, "", "key input is cleared after submission");
-  assert.doesNotMatch(JSON.stringify(page.state), /sk-fixture-secret/);
-  assert.doesNotMatch(text(root), /sk-fixture-secret/);
-  form = find(root, n => n.className.includes("models-provider-form"));
-  assert.equal(find(form, n => n.type === "password").value, "", "rendered key is never rehydrated");
-  assert.equal(all(form, n => n.tagName === "INPUT")[0].value, "New", "rejected draft is kept");
-  assert.match(text(root), /models\.rejected prefix taken/);
-
-  // Unknown outcome: every model write is blocked until current facts are read.
-  api.saveModelProvider = async input => {
-    api.calls.push(["provider", copy(input)]);
-    throw Object.assign(new Error("connection reset"), { disposition: "unknown" });
-  };
-  find(form, n => n.type === "password").value = "sk-second";
-  await submit(form); await tick();
-  const count = api.calls.filter(c => c[0] === "provider").length;
-  assert.match(text(root), /models\.unknownBlocked/);
-  form = find(root, n => n.className.includes("models-provider-form"));
-  assert.ok(find(form, n => n.tagName === "BUTTON" && n.type === "submit").disabled);
-  await submit(form); await submit(connectionForm(root));
-  assert.equal(api.calls.filter(c => c[0] === "provider" || c[0] === "connection").length, count + 1, "nothing is resent");
-  assert.ok(!api.calls.some(c => c[0] === "release"));
-
-  api.current = view("r3");
-  button(root, "models.readFacts").handlers.click(); await tick(); await tick();
-  assert.ok(api.calls.some(c => c[0] === "release"), "explicit reconciliation releases the write key");
-  assert.match(text(root), /models\.reconciledChanged/);
-  assert.equal(button(find(root, n => n.dataset.provider === "mine"), "models.editProvider").disabled, false);
-});
-
-test("editing keeps the stored credential unless a new key is typed; removal is confirmed", async () => {
-  const api = fakeApi();
-  const { root, page, confirmations } = mount(api);
+  const { root, page, handoff } = mount(api);
   await page.ready;
-  button(find(root, n => n.dataset.provider === "mine"), "models.editProvider").handlers.click();
-  const form = find(root, n => n.className.includes("models-provider-form"));
-  assert.match(text(form), /models\.provider\.apiKeyKeepHelp/);
-  await submit(form); await tick();
-  const [, saved] = api.calls.find(c => c[0] === "provider");
-  assert.equal(Object.hasOwn(saved.provider, "apiKey"), false);
-  assert.equal(saved.provider.id, "mine");
-  button(find(root, n => n.dataset.provider === "mine"), "models.removeProvider").handlers.click(); await tick();
-  assert.equal(confirmations.length, 1);
-  assert.deepEqual(api.calls.filter(c => c[0] === "provider").at(-1)[1], { revision: "r2", operation: "remove", id: "mine" });
+  api.current = view("r2", { connection: null, providers: [] });
+  button(root, "services.guide.codex").handlers.click();
+  await handoff().onReadback();
+  await tick(); await tick();
+  assert.equal(page.state.unknown, false);
+  assert.equal(page.state.bridgeId, "");
+  assert.equal(page.state.view.registry.modules.length, 0);
+  assert.equal(api.calls.some(c => c[0] === "resource"), false);
 });
 
 test("catalog and quota stay separate and never present unknown, failed or stale data as current success", async () => {
@@ -366,7 +543,7 @@ test("catalog and quota stay separate and never present unknown, failed or stale
     modelCatalog: async cursor => { api.calls.push(["catalog", cursor]); return pages[cursor]; },
     modelQuota: async source => { api.calls.push(["quota", source]); return quotaRead(source); }
   });
-  const { root, page } = mount(api);
+  const { root, page, handoff } = mount(api);
   await page.ready; await tick();
   assert.match(text(root), /models\.quotaUnavailable/);
   assert.doesNotMatch(text(root), /models\.quotaFailed/);
@@ -394,7 +571,7 @@ test("catalog and quota stay separate and never present unknown, failed or stale
 
   api.refreshModels = async input => { api.calls.push(["refresh", copy(input)]); throw new Error("billing unreachable"); };
   button(root, "models.refreshQuota").handlers.click(); await tick();
-  assert.deepEqual(api.calls.at(-1), ["refresh", { revision: "r1", kind: "quota", source: "command-code" }]);
+  assert.deepEqual(api.calls.at(-1), ["refresh", { revision: "r1", kind: "quota", source: "command-code", resourceId: "cpa" }]);
   assert.equal(page.state.quota.observation, null, "a failed refresh does not keep the previous value");
   assert.match(text(root), /models\.quotaFailed billing unreachable/);
 });
@@ -410,7 +587,7 @@ test("observations are invalidated with the configuration revision and late resp
     modelCatalog: async cursor => { api.calls.push(["catalog", cursor]); const d = deferred(); reads.push(d); return d.promise; },
     modelQuota: async source => { api.calls.push(["quota", source]); const d = deferred(); quotaReads.push(d); return d.promise; }
   });
-  const { root, page } = mount(api);
+  const { root, page, handoff } = mount(api);
   await tick();
   reads.shift().resolve(success([{ id: "old/a", source: "metabridge" }]));
   quotaReads.shift().resolve(observation("success", { items: [{ id: "old-acct", source: "factory", status: "success", windows: [], balance: 1, periodEnd: null, error: null }] }));
@@ -422,9 +599,9 @@ test("observations are invalidated with the configuration revision and late resp
   const lateRefresh = deferred();
   api.refreshModels = async input => { api.calls.push(["refresh", copy(input)]); return lateRefresh.promise; };
   button(root, "models.refreshCatalog").handlers.click(); await tick();
-  const form0 = connectionForm(root);
-  find(form0, n => n.tagName === "INPUT").value = "http://127.0.0.1:11";
-  await submit(form0); await tick();
+  api.current = view("r2", { connection: connection({ cpaUrl: "http://127.0.0.1:8", managementKeyFile: "/fixture/key" }) });
+  button(root, "services.guide.codex").handlers.click();
+  void handoff().onReadback(); await tick();
 
   const refreshes = api.calls.filter(c => c[0] === "refresh").length;
   assert.equal(page.state.view.revision, "r2");
@@ -440,11 +617,9 @@ test("observations are invalidated with the configuration revision and late resp
   assert.equal(page.state.quota.observation, null);
   assert.equal(api.calls.filter(c => c[0] === "refresh").length, refreshes, "no external refresh is sent automatically");
 
-  // Reconciling an unknown write that landed invalidates the same way.
-  api.saveModelProvider = async input => { api.calls.push(["provider", copy(input)]); throw Object.assign(new Error("reset"), { disposition: "unknown" }); };
-  button(find(root, n => n.dataset.provider === "mine"), "models.removeProvider").handlers.click(); await tick();
+  // A second Operator change invalidates the same way, with no Web mutation.
   api.current = view("r3");
-  button(root, "models.readFacts").handlers.click(); await tick();
+  void handoff().onReadback(); await tick();
   assert.equal(page.state.catalog.page, null);
   assert.equal(api.calls.filter(c => c[0] === "catalog").length, 3);
 
@@ -454,89 +629,6 @@ test("observations are invalidated with the configuration revision and late resp
   assert.match(text(root), /models\.catalogItemsUnknown/);
   assert.match(text(root), /models\.quotaItemsUnknown/);
   assert.doesNotMatch(text(root), /models\.catalogEmpty|models\.quotaEmpty/);
-});
-
-test("a stale-revision rejection keeps the draft and offers an explicit re-read without replay", async () => {
-  const api = fakeApi();
-  const { root, page } = mount(api);
-  await page.ready;
-  api.saveModelConnection = async input => {
-    api.calls.push(["connection", copy(input)]);
-    throw Object.assign(new Error("revision is stale"), { disposition: "not-submitted" });
-  };
-  let form = connectionForm(root);
-  const urlInput = find(form, n => n.tagName === "INPUT");
-  urlInput.value = "http://127.0.0.1:12"; urlInput.handlers.input();
-  await submit(form); await tick();
-  assert.match(text(root), /models\.rejected revision is stale/);
-  assert.equal(page.state.connectionDraft.bridgeUrl, "http://127.0.0.1:12");
-
-  // Writes are blocked while the facts are being read again.
-  const reread = deferred();
-  api.models = async () => { api.calls.push(["models"]); return reread.promise; };
-  button(root, "models.readFacts").handlers.click(); await tick();
-  form = connectionForm(root);
-  assert.ok(find(form, n => n.type === "submit").disabled);
-  await submit(form);
-  assert.equal(api.calls.filter(c => c[0] === "connection").length, 1, "no save races the re-read");
-  reread.resolve(view("r5")); await tick();
-
-  assert.match(text(root), /models\.rereadChanged/);
-  assert.ok(!api.calls.some(c => c[0] === "release"), "a rejection holds no unresolved write key");
-  assert.equal(api.calls.filter(c => c[0] === "connection").length, 1, "nothing is replayed automatically");
-  form = connectionForm(root);
-  assert.equal(find(form, n => n.tagName === "INPUT").value, "http://127.0.0.1:12", "the draft is kept");
-  api.saveModelConnection = async input => { api.calls.push(["connection", copy(input)]); return view("r6"); };
-  await submit(form); await tick();
-  assert.equal(api.calls.filter(c => c[0] === "connection").at(-1)[1].revision, "r5", "the next save carries the re-read revision");
-});
-
-
-test("sections are routed without remounting, so drafts and typed keys survive navigation and filtering", async () => {
-  const api = fakeApi();
-  const routes = [];
-  const flags = [];
-  const context = vm.createContext({ h: element, icon: name => element("svg.icon." + name), formatDateTime: iso => "at:" + iso, window: {} });
-  vm.runInContext(MODELS_VIEW_SCRIPT.replace(/^import .*;\n/gm, "").replace(/^export /gm, ""), context);
-  assert.deepEqual({ ...context.normalizeRoute({ section: "bogus", source: "nope" }) }, { section: "providers", source: "factory" });
-  const root = element("div");
-  const page = context.mountModels(root, { t: key => key, api, confirm: () => true,
-    route: { section: "quota", source: "command-code" },
-    navigate: route => { routes.push({ ...route }); page.show(route); },
-    onChange: next => flags.push({ ...next }) });
-  await page.ready;
-  const section = name => find(root, n => n.dataset.section === name);
-  assert.equal(section("quota").hidden, false);
-  assert.equal(section("providers").hidden, true);
-  assert.deepEqual(api.calls.filter(c => c[0] === "quota").map(c => c[1]), ["command-code"], "a direct open reads the routed source");
-
-  // In-page links go through navigate(); the quota source is part of the route.
-  button(root, "models.source.factory").handlers.click(); await tick();
-  assert.deepEqual(routes.at(-1), { section: "quota", source: "factory" });
-  assert.deepEqual(api.calls.filter(c => c[0] === "quota").map(c => c[1]), ["command-code", "factory"]);
-
-  // A connection draft and a provider editor with a typed key survive section
-  // changes, back/forward (show) and provider filtering.
-  const urlInput = find(connectionForm(root), n => n.tagName === "INPUT");
-  urlInput.value = "http://127.0.0.1:99"; urlInput.handlers.input();
-  page.show({ section: "providers" });
-  assert.equal(flags.at(-1).connection, true, "the rail can mark the section with a draft");
-  button(find(root, n => n.dataset.provider === "mine"), "models.editProvider").handlers.click();
-  const key = find(root, n => n.type === "password");
-  key.value = "sk-typed";
-  const search = find(section("providers"), n => n.type === "search");
-  search.value = "official"; search.handlers.input();
-  assert.equal(find(root, n => n.dataset.provider === "mine"), undefined, "search filters rows");
-  assert.match(text(section("providers")), /models\.providerCount/);
-  button(section("providers"), "models.filter.readonly").handlers.click();
-  assert.ok(find(root, n => n.dataset.provider === "official"));
-  assert.equal(find(root, n => n.type === "password"), key, "filtering never rebuilds the editor");
-  assert.equal(key.value, "sk-typed");
-  page.show({ section: "catalog" }); page.show({ section: "providers" });
-  assert.equal(find(root, n => n.type === "password").value, "sk-typed");
-  assert.equal(connectionForm(root).children.length > 0 && find(connectionForm(root), n => n.tagName === "INPUT").value, "http://127.0.0.1:99");
-  assert.equal(page.state.quota.source, "factory", "leaving quota keeps its source for the way back");
-  assert.ok(page.dirty());
 });
 
 test("quota groups windows by the server's own labels and never draws unknown as zero", async () => {

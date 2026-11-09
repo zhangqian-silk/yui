@@ -35,6 +35,7 @@ import type { CapabilitySchema } from "./capabilitySchema.js";
 import type { InstanceHost } from "./instanceHost.js";
 import type { LeaderArchivePort } from "../task/leaderArchive.js";
 import type { AccessAssessment } from "./accessAssessment.js";
+import { createModelManagement } from "../models/modelManagement.js";
 
 const text: CapabilitySchema = { type: "string", minLength: 1 };
 const strings: CapabilitySchema = { type: "object", additionalProperties: { type: "string" } };
@@ -50,6 +51,16 @@ const provider = Object.freeze({ id: "yui:builtin-capabilities", generation: "1"
 
 /** Source locators identify the existing semantic owner, not a new Store. */
 const definitions: readonly Omit<CapabilityDescriptor, "contractVersion" | "provider" | "scope">[] = [
+  ...["read", "save", "preview", "refresh", "maintain", "connection-preview", "connection-apply"].map(action => ({
+    name: `models.${action}`, summary: "Manage independent modules, endpoints and exact new-Session Agent bindings (Operator only).",
+    effect: action === "read" || action === "preview" || action === "connection-preview" ? "query" as const
+      : ["refresh", "maintain", "connection-apply"].includes(action) ? "external-operation" as const : "local-mutation" as const,
+    requiredPermissions: [action === "read" || action === "preview" || action === "connection-preview" ? "config:read" : "model:manage"], source: "createModelManagement",
+    inputSchema: action === "read"
+      ? object({ kind: { enum: ["registry", "catalog", "quota", "status", "maintenance"] }, resourceId: text, source: { enum: ["factory", "command-code"] }, cursor: text }, [])
+      : object({ operation: { enum: ["resource", "provider"] }, input: { type: "object" } }, ["input"]),
+    outputSchema: recordOutput
+  })),
   {
     name: "message.send", summary: "Save collaboration for Leader or continue the same dispatched work owner.",
     effect: "local-mutation", requiredPermissions: ["task:read"], source: "sendTaskMessageCommand",
@@ -267,7 +278,8 @@ export function createBuiltinCapabilities(
   jobs: DurableJobControlPort,
   signal: (taskId: string) => void = () => undefined,
   contextProviders: readonly ContextObservationProvider[] = [],
-  archiveTask?: LeaderArchivePort
+  archiveTask?: LeaderArchivePort,
+  models = createModelManagement(store)
 ) {
   const authority = createJobCallAuthority(store);
   const resources = createProjectResources(store);
@@ -293,6 +305,20 @@ export function createBuiltinCapabilities(
         throw new Error("Capability target is outside the authenticated Task.");
       }
       const taskId = invocation.context.targetId;
+      if (name === "models.read") {
+        if (params.kind === "maintenance") return models.readMaintenance(params.resourceId as string ?? "");
+        if (params.kind === "catalog") return models.readCatalog(params.cursor as string | undefined, params.resourceId as string | undefined);
+        if (params.kind === "quota") return models.readQuota(params.source as string ?? "factory", params.resourceId as string | undefined);
+        if (params.kind === "status") return models.readStatus(params.resourceId as string ?? "");
+        return models.read();
+      }
+      if (name === "models.preview") return models.previewBinding(params.input);
+      if (name === "models.maintain") return models.maintain(params.input, caller);
+      if (name === "models.connection-preview") return models.connectionPreview(params.input);
+      if (name === "models.connection-apply") return models.connectionApply(params.input, caller);
+      if (name === "models.refresh") return models.refresh(params.input);
+      if (name === "models.save") return params.operation === "provider"
+        ? models.saveProvider(params.input) : models.saveResource(params.input);
       if (name === "task.archive") {
         if (!archiveTask) throw new Error("Controller archive execution is unavailable.");
         if (!invocation.requestId) throw new Error("Archive requires a stable requestId.");
@@ -460,7 +486,7 @@ export function createBuiltinCapabilities(
       if (permission === "plugin:manage" && caller.scope === "task" && caller.role === "leader") continue;
       if (permission === "resource:register" && descriptor?.name === "resource.local.register"
         && caller.scope === "task" && caller.role === "leader") continue;
-      if ((permission === "config:read" || permission === "plugin:manage" || permission === "resource:register")
+      if ((permission === "config:read" || permission === "model:manage" || permission === "plugin:manage" || permission === "resource:register")
         && caller.scope === "global" && caller.role === "operator") continue;
       throw new Error(`Permission unavailable: ${permission}.`);
     }

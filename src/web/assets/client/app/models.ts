@@ -7,7 +7,7 @@ const initial = readManageRoute(new URL(location.href));
 const page = mountModels(document.querySelector("#models-root"), {
   t: i18n.t, locale: i18n.getLocale, api, route: initial,
   navigate: next => navigateManage({ page: "models", ...next }),
-  onChange: flags => shell.setDirty({ providers: !!flags.provider, connection: !!flags.connection })
+  onChange: flags => shell.setDirty({ providers: !!flags.provider, connection: !!flags.connection, maintenance: !!flags.maintenance })
 });
 registerManagePage("models", { show: next => page.show(next) });
 window.setInterval(() => page.updateFreshness(), 1000);

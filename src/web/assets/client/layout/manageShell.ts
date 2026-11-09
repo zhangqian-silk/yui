@@ -12,7 +12,8 @@ let started = false;
 let route;
 
 export function manageArea(page, section) {
-  return section === "connection" ? "settings" : page;
+  if (page === "settings" && (section === "agents" || section === "roles")) return "models";
+  return page;
 }
 export function pageSections(page) {
   return Object.values(SECTIONS).flat().filter(item => item.page === page).map(item => item.section);
@@ -29,12 +30,15 @@ export function readManageRoute(url) {
       job: url.searchParams.get("job"), jobRun: url.searchParams.get("jobRun"),
       artifact: url.searchParams.get("artifact"), ...(legacyJobs ? { moved: true } : {}) };
   }
-  const area = parts[0] === "settings" ? "settings" : "models";
   const requested = parts[1] || url.searchParams.get("section");
-  const section = (SECTIONS[area].find(item => item.section === requested) ||
-    (area === "models" && requested === "connection" ? SECTIONS.settings.at(-1) : SECTIONS[area][0])).section;
-  return { page: section === "connection" ? "models" : area, section,
-    source: url.searchParams.get("source") === "command-code" ? "command-code" : "factory" };
+  if (requested === "connection" || requested === "agents") return { page: "settings", section: "agents" };
+  if (requested === "roles" || requested === "profiles") return { page: "settings", section: "roles" };
+  const area = parts[0] === "settings" && requested !== "connection" ? "settings" : "models";
+  const detail = ["catalog", "quota", "maintenance"].includes(requested) ? requested : url.searchParams.get("detail");
+  const target = ["catalog", "quota", "maintenance"].includes(requested) ? "providers" : requested;
+  const item = SECTIONS[area].find(item => item.section === target) || SECTIONS[area][0];
+  return { page: item.page, section: item.section, source: url.searchParams.get("source") || "",
+    detail: ["catalog", "quota", "maintenance"].includes(detail) ? detail : "" };
 }
 export function manageHref(next) {
   if (next.page === "jobs") {
@@ -42,8 +46,10 @@ export function manageHref(next) {
     for (const key of ["task", "job", "jobRun", "artifact"]) if (next[key]) query.set(key, next[key]);
     return "/jobs" + (query.size ? "?" + query : "");
   }
-  return "/" + manageArea(next.page, next.section) + "/" + next.section +
-    (next.section === "quota" && next.source === "command-code" ? "?source=command-code" : "");
+  const query = new URLSearchParams();
+  if (next.section === "providers" && next.detail) query.set("detail", next.detail);
+  if ((next.section === "quota" || next.detail === "quota") && next.source) query.set("source", next.source);
+  return "/" + manageArea(next.page, next.section) + "/" + next.section + (query.size ? "?" + query : "");
 }
 // The center column scrolls, not the document (the frame is the workbench's).
 function scroller() { return document.querySelector("#manage-scroll"); }

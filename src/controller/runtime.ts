@@ -106,7 +106,6 @@ import { inspectAgentHost, sendAgentHostNativeControl, AGENT_HOST_CONTROL_PROTOC
 import { recoverTaskHostTerminals, type TaskHostTerminalObservation } from "./taskHostTerminalRecovery.js";
 import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import { createWebSettings } from "../web/webSettings.js";
-import { createModelManagement } from "../models/modelManagement.js";
 import { createWebSkills } from "../web/webSkills.js";
 import { createWebPermissions } from "../web/webPermissions.js";
 import { createWebJobs } from "../web/webJobs.js";
@@ -671,7 +670,7 @@ async function createFileTaskControllerRuntime(
       skills: createWebSkills(store),
       permissions: createWebPermissions(store),
       jobs: createWebJobs(store, home),
-      models: createModelManagement(store),
+      models: kernel.models,
       settings: createWebSettings(store, {
         environment: options.environment ?? process.env, catalogs,
         refreshConfiguration: () => {

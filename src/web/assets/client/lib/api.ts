@@ -150,11 +150,12 @@ export const api = {
   // Model management. Configuration writes share one key: the view revision
   // covers the connection and providers together, so an unknown outcome
   // blocks every model write until the page reads current facts again.
-  models: function () { return requestJson("/api/models"); },
-  modelCatalog: function (cursor) { return requestJson("/api/models/catalog?" + new URLSearchParams({ cursor: cursor || "0" })); },
-  modelQuota: function (source) { return requestJson("/api/models/quota?" + new URLSearchParams({ source: source })); },
-  saveModelConnection: function (input) { return submitMutation("models/configuration", "/api/models/connection", input); },
-  saveModelProvider: function (input) { return submitMutation("models/configuration", "/api/models/provider", input); },
+  models: function (moduleId) { return requestJson("/api/models" + (moduleId ? "?" + new URLSearchParams({ moduleId: moduleId }) : "")); },
+  modelCatalog: function (cursor, resourceId) { return requestJson("/api/models/catalog?" + new URLSearchParams({ cursor: cursor || "0", ...(resourceId ? { resourceId: resourceId } : {}) })); },
+  modelQuota: function (source, resourceId) { return requestJson("/api/models/quota?" + new URLSearchParams({ source: source, ...(resourceId ? { resourceId: resourceId } : {}) })); },
+  saveModelResource: function (input) { return submitMutation("models/configuration", "/api/models/resource", input); },
+  previewModelBinding: function (input) { return postJson("/api/models/binding/preview", input); },
+  saveModelProvider: function (input) { return submitMutation("models/configuration", "/api/models/provider", Object.assign({ requestId: crypto.randomUUID(), exclusiveWriter: true }, input)); },
   releaseModelWrites: function () { releaseMutation("models/configuration"); },
   // An explicit refresh is an observation, not a configuration write; a
   // failed or unknown refresh may be requested again by the reader.

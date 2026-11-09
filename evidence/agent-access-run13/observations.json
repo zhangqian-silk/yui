@@ -1,0 +1,534 @@
+{
+  "schemaVersion": 1,
+  "url": "http://127.0.0.1:4318/models/agents",
+  "captures": {
+    "360-agent-native-observation-zh.png": {
+      "width": 360,
+      "height": 800,
+      "mode": "RGB"
+    },
+    "360-role-profile-diff-zh.png": {
+      "width": 360,
+      "height": 800,
+      "mode": "RGB"
+    },
+    "360-role-profile-actions-zh.png": {
+      "width": 360,
+      "height": 800,
+      "mode": "RGB"
+    },
+    "390-agent-native-observation-zh.png": {
+      "width": 390,
+      "height": 844,
+      "mode": "RGB"
+    },
+    "390-role-profile-diff-zh.png": {
+      "width": 390,
+      "height": 844,
+      "mode": "RGB"
+    },
+    "390-role-profile-actions-zh.png": {
+      "width": 390,
+      "height": 844,
+      "mode": "RGB"
+    },
+    "1365-agent-native-observation-zh.png": {
+      "width": 1365,
+      "height": 800,
+      "mode": "RGB"
+    },
+    "1365-role-profile-diff-zh.png": {
+      "width": 1365,
+      "height": 800,
+      "mode": "RGB"
+    }
+  },
+  "checks": {
+    "agent-360": {
+      "innerWidth": 360,
+      "innerHeight": 800,
+      "scrollY": 0,
+      "card": {
+        "x": 27,
+        "y": 199.84375,
+        "width": 306,
+        "height": 400.59375,
+        "top": 199.84375,
+        "right": 333,
+        "bottom": 600.4375,
+        "left": 27
+      },
+      "head": {
+        "x": 42,
+        "y": 214.84375,
+        "width": 276,
+        "height": 97.65625,
+        "top": 214.84375,
+        "right": 318,
+        "bottom": 312.5,
+        "left": 42
+      },
+      "copy": {
+        "x": 42,
+        "y": 214.84375,
+        "width": 276,
+        "height": 63.90625,
+        "top": 214.84375,
+        "right": 318,
+        "bottom": 278.75,
+        "left": 42
+      },
+      "title": {
+        "x": 42,
+        "y": 214.84375,
+        "width": 276,
+        "height": 16.25,
+        "top": 214.84375,
+        "right": 318,
+        "bottom": 231.09375,
+        "left": 42
+      },
+      "desc": {
+        "x": 42,
+        "y": 233.09375,
+        "width": 276,
+        "height": 45.65625,
+        "top": 233.09375,
+        "right": 318,
+        "bottom": 278.75,
+        "left": 42
+      },
+      "pill": {
+        "x": 42,
+        "y": 290.75,
+        "width": 233.25,
+        "height": 21.75,
+        "top": 290.75,
+        "right": 275.25,
+        "bottom": 312.5,
+        "left": 42
+      },
+      "pillOverflow": 0,
+      "cardVisible": true,
+      "headInsideCard": true,
+      "doc": {
+        "scrollWidth": 360,
+        "clientWidth": 360
+      },
+      "text": "原生模型配置\n\n以下为用户级原生配置与本地模型缓存，不代表正在运行的会话或实时可用性。无需在 Yui 登记 Provider 即可沿用原生配置。\n\n观测时间 · 2026-10-27T14:05:54.952+08:00",
+      "button": ""
+    },
+    "profile-360": {
+      "innerWidth": 360,
+      "innerHeight": 800,
+      "scrollY": 0,
+      "preview": {
+        "x": 44,
+        "y": 0.28125,
+        "width": 272,
+        "height": 442.6875,
+        "top": 0.28125,
+        "right": 316,
+        "bottom": 442.96875,
+        "left": 44
+      },
+      "scroll": {
+        "x": 44,
+        "y": 82.96875,
+        "width": 272,
+        "height": 360,
+        "top": 82.96875,
+        "right": 316,
+        "bottom": 442.96875,
+        "left": 44
+      },
+      "table": {
+        "x": 45,
+        "y": -616.03125,
+        "width": 270,
+        "height": 1057.859375,
+        "top": -616.03125,
+        "right": 315,
+        "bottom": 441.828125,
+        "left": 45
+      },
+      "rows": 5,
+      "rowLabels": [
+        "默认访问权限",
+        "说明",
+        "系统指令",
+        "Skill",
+        "约束"
+      ],
+      "scrollWidth": 270,
+      "clientWidth": 270,
+      "scrollHeight": 1058,
+      "clientHeight": 358,
+      "internalAtBottom": true,
+      "lastRow": {
+        "x": 45,
+        "y": 304.015625,
+        "width": 270,
+        "height": 137.3125,
+        "top": 304.015625,
+        "right": 315,
+        "bottom": 441.328125,
+        "left": 45
+      },
+      "overflowCells": [],
+      "doc": {
+        "scrollWidth": 360,
+        "clientWidth": 360
+      },
+      "text": "配置差异 · explorer\n\n选择一个模板，先查看差异再确认。应用会复制当前模板配置，不建立持续绑定；以后修改模板不会自动更新此角色。\n\n配置项\t当前配置\t应用后\n默认访问权限\t\nwrite\n\t\nread\n\n说明\t\nCurrent worker role description that is intentionally distinct from the template.\n\t\nReusable read-only explorer template with a deliberately long description for narrow-screen diff wrapping and accessibility inspection.\n\n系统指令\t\nCurrent worker system instruction text that will be replaced by the template preview.\n\t\nInspect the fixture without modifying external state. Preserve exact source evidence, distinguish observations from conclusions, report bounded risks, and never access production services or credentials.\n\nSkill\t\n[\n  \"yui-worker\",\n  \"browser-workflows\"\n]\n\t\n[\n  \"yui-runtime\",\n  \"yui-worker\",\n  \"browser-workflows\",\n  \"frontend-design\"\n]\n\n约束\t\n[\n  \"no real services\"\n]\n\t\n[\n  \"Do not modify files or external state.\"\n]"
+    },
+    "actions-360": {
+      "acknowledgement": {
+        "rect": {
+          "x": 48,
+          "y": 392.21875,
+          "width": 16,
+          "height": 16,
+          "top": 392.21875,
+          "right": 64,
+          "bottom": 408.21875,
+          "left": 48
+        },
+        "checked": false,
+        "visible": true,
+        "label": "我理解本次会复制配置一次；现有 Session 和 Task 保持不变，也不会建立持续的 Profile 绑定。"
+      },
+      "confirm": {
+        "rect": {
+          "x": 44,
+          "y": 454.96875,
+          "width": 113.5,
+          "height": 32,
+          "top": 454.96875,
+          "right": 157.5,
+          "bottom": 486.96875,
+          "left": 44
+        },
+        "text": "确认应用此配置",
+        "disabled": false,
+        "visible": true
+      },
+      "scroll": {
+        "innerWidth": 360,
+        "innerHeight": 800,
+        "devicePixelRatio": 1,
+        "doc": {
+          "scrollWidth": 360,
+          "clientWidth": 360,
+          "scrollHeight": 800,
+          "clientHeight": 800
+        },
+        "body": {
+          "scrollWidth": 360,
+          "clientWidth": 360,
+          "scrollHeight": 800,
+          "clientHeight": 800
+        },
+        "scrollY": 0
+      }
+    },
+    "agent-390": {
+      "innerWidth": 390,
+      "innerHeight": 844,
+      "scrollY": 0,
+      "card": {
+        "x": 27,
+        "y": 236.84375,
+        "width": 336,
+        "height": 370.15625,
+        "top": 236.84375,
+        "right": 363,
+        "bottom": 607,
+        "left": 27
+      },
+      "head": {
+        "x": 42,
+        "y": 251.84375,
+        "width": 306,
+        "height": 82.4375,
+        "top": 251.84375,
+        "right": 348,
+        "bottom": 334.28125,
+        "left": 42
+      },
+      "copy": {
+        "x": 42,
+        "y": 251.84375,
+        "width": 306,
+        "height": 48.6875,
+        "top": 251.84375,
+        "right": 348,
+        "bottom": 300.53125,
+        "left": 42
+      },
+      "title": {
+        "x": 42,
+        "y": 251.84375,
+        "width": 306,
+        "height": 16.25,
+        "top": 251.84375,
+        "right": 348,
+        "bottom": 268.09375,
+        "left": 42
+      },
+      "desc": {
+        "x": 42,
+        "y": 270.09375,
+        "width": 306,
+        "height": 30.4375,
+        "top": 270.09375,
+        "right": 348,
+        "bottom": 300.53125,
+        "left": 42
+      },
+      "pill": {
+        "x": 42,
+        "y": 312.53125,
+        "width": 233.25,
+        "height": 21.75,
+        "top": 312.53125,
+        "right": 275.25,
+        "bottom": 334.28125,
+        "left": 42
+      },
+      "pillOverflow": 0,
+      "cardVisible": true,
+      "headInsideCard": true,
+      "doc": {
+        "scrollWidth": 390,
+        "clientWidth": 390
+      },
+      "text": "原生模型配置\n\n以下为用户级原生配置与本地模型缓存，不代表正在运行的会话或实时可用性。无需在 Yui 登记 Provider 即可沿用原生配置。\n\n观测时间 · 2026-10-27T14:05:54.952+08:00",
+      "button": ""
+    },
+    "profile-390": {
+      "innerWidth": 390,
+      "innerHeight": 844,
+      "scrollY": 0,
+      "preview": {
+        "x": 44,
+        "y": -0.1875,
+        "width": 302,
+        "height": 425.4375,
+        "top": -0.1875,
+        "right": 346,
+        "bottom": 425.25,
+        "left": 44
+      },
+      "scroll": {
+        "x": 44,
+        "y": 65.25,
+        "width": 302,
+        "height": 360,
+        "top": 65.25,
+        "right": 346,
+        "bottom": 425.25,
+        "left": 44
+      },
+      "table": {
+        "x": 45,
+        "y": -617.75,
+        "width": 300,
+        "height": 1042,
+        "top": -617.75,
+        "right": 345,
+        "bottom": 424.25,
+        "left": 45
+      },
+      "rows": 5,
+      "rowLabels": [
+        "默认访问权限",
+        "说明",
+        "系统指令",
+        "Skill",
+        "约束"
+      ],
+      "scrollWidth": 300,
+      "clientWidth": 300,
+      "scrollHeight": 1042,
+      "clientHeight": 358,
+      "internalAtBottom": true,
+      "lastRow": {
+        "x": 45,
+        "y": 286.4375,
+        "width": 300,
+        "height": 137.3125,
+        "top": 286.4375,
+        "right": 345,
+        "bottom": 423.75,
+        "left": 45
+      },
+      "overflowCells": [],
+      "doc": {
+        "scrollWidth": 390,
+        "clientWidth": 390
+      },
+      "text": "配置差异 · explorer\n\n选择一个模板，先查看差异再确认。应用会复制当前模板配置，不建立持续绑定；以后修改模板不会自动更新此角色。\n\n配置项\t当前配置\t应用后\n默认访问权限\t\nwrite\n\t\nread\n\n说明\t\nCurrent worker role description that is intentionally distinct from the template.\n\t\nReusable read-only explorer template with a deliberately long description for narrow-screen diff wrapping and accessibility inspection.\n\n系统指令\t\nCurrent worker system instruction text that will be replaced by the template preview.\n\t\nInspect the fixture without modifying external state. Preserve exact source evidence, distinguish observations from conclusions, report bounded risks, and never access production services or credentials.\n\nSkill\t\n[\n  \"yui-worker\",\n  \"browser-workflows\"\n]\n\t\n[\n  \"yui-runtime\",\n  \"yui-worker\",\n  \"browser-workflows\",\n  \"frontend-design\"\n]\n\n约束\t\n[\n  \"no real services\"\n]\n\t\n[\n  \"Do not modify files or external state.\"\n]"
+    },
+    "actions-390": {
+      "acknowledgement": {
+        "rect": {
+          "x": 48,
+          "y": 446.5,
+          "width": 16,
+          "height": 16,
+          "top": 446.5,
+          "right": 64,
+          "bottom": 462.5,
+          "left": 48
+        },
+        "checked": false,
+        "visible": true,
+        "label": "我理解本次会复制配置一次；现有 Session 和 Task 保持不变，也不会建立持续的 Profile 绑定。"
+      },
+      "confirm": {
+        "rect": {
+          "x": 44,
+          "y": 498,
+          "width": 113.5,
+          "height": 32,
+          "top": 498,
+          "right": 157.5,
+          "bottom": 530,
+          "left": 44
+        },
+        "text": "确认应用此配置",
+        "disabled": false,
+        "visible": true
+      },
+      "scroll": {
+        "innerWidth": 390,
+        "innerHeight": 844,
+        "devicePixelRatio": 1,
+        "doc": {
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "scrollHeight": 844,
+          "clientHeight": 844
+        },
+        "body": {
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "scrollHeight": 844,
+          "clientHeight": 844
+        },
+        "scrollY": 0
+      }
+    },
+    "agent-1365": {
+      "innerWidth": 1365,
+      "innerHeight": 800,
+      "scrollY": 0,
+      "card": {
+        "x": 683,
+        "y": 278.765625,
+        "width": 623,
+        "height": 241.65625,
+        "top": 278.765625,
+        "right": 1306,
+        "bottom": 520.421875,
+        "left": 683
+      },
+      "head": {
+        "x": 698,
+        "y": 293.765625,
+        "width": 593,
+        "height": 48.6875,
+        "top": 293.765625,
+        "right": 1291,
+        "bottom": 342.453125,
+        "left": 698
+      },
+      "copy": {
+        "x": 698,
+        "y": 293.765625,
+        "width": 347.75,
+        "height": 48.6875,
+        "top": 293.765625,
+        "right": 1045.75,
+        "bottom": 342.453125,
+        "left": 698
+      },
+      "pill": {
+        "x": 1057.75,
+        "y": 293.765625,
+        "width": 233.25,
+        "height": 21.75,
+        "top": 293.765625,
+        "right": 1291,
+        "bottom": 315.515625,
+        "left": 1057.75
+      },
+      "doc": {
+        "scrollWidth": 1365,
+        "clientWidth": 1365
+      },
+      "text": "原生模型配置\n\n以下为用户级原生配置与本地模型缓存，不代表正在运行的会话或实时可用性。无需在 Yui 登记 Provider 即可沿用原生配置。\n\n观测时间 · 2026-10-27T14:05:54.952+08:00"
+    },
+    "profile-1365": {
+      "innerWidth": 1365,
+      "innerHeight": 800,
+      "scrollY": 0,
+      "preview": {
+        "x": 700,
+        "y": 187.234375,
+        "width": 589,
+        "height": 425.4375,
+        "top": 187.234375,
+        "right": 1289,
+        "bottom": 612.671875,
+        "left": 700
+      },
+      "scroll": {
+        "x": 700,
+        "y": 252.671875,
+        "width": 589,
+        "height": 360,
+        "top": 252.671875,
+        "right": 1289,
+        "bottom": 612.671875,
+        "left": 700
+      },
+      "table": {
+        "x": 701,
+        "y": 253.671875,
+        "width": 587,
+        "height": 629.65625,
+        "top": 253.671875,
+        "right": 1288,
+        "bottom": 883.328125,
+        "left": 701
+      },
+      "scrollWidth": 587,
+      "clientWidth": 587,
+      "scrollHeight": 630,
+      "clientHeight": 358,
+      "doc": {
+        "scrollWidth": 1365,
+        "clientWidth": 1365
+      },
+      "text": "配置差异 · explorer\n\n选择一个模板，先查看差异再确认。应用会复制当前模板配置，不建立持续绑定；以后修改模板不会自动更新此角色。\n\n配置项\t当前配置\t应用后\n默认访问权限\t\nwrite\n\t\nread\n\n说明\t\nCurrent worker role description that is intentionally distinct from the template.\n\t\nReusable read-only explorer template with a deliberately long description for narrow-screen diff wrapping and accessibility inspection.\n\n系统指令\t\nCurrent worker system instruction text that will be replaced by the template preview.\n\t\nInspect the fixture without modifying external state. Preserve exact source evidence, distinguish observations from conclusions, report bounded risks, and never access production services or credentials.\n\nSkill\t\n[\n  \"yui-worker\",\n  \"browser-workflows\"\n]\n\t\n[\n  \"yui-runtime\",\n  \"yui-worker\",\n  \"browser-workflows\",\n  \"frontend-design\"\n]\n\n约束\t\n[\n  \"no real services\"\n]\n\t\n[\n  \"Do not modify files or external state.\"\n]"
+    }
+  },
+  "invalidatedRun12Evidence": {
+    "390-agent-observation-zh.png": {
+      "actualPng": [
+        1365,
+        800
+      ],
+      "reason": "desktop capture falsely named as mobile"
+    },
+    "390-role-profile-preview-zh.png": {
+      "actualPng": [
+        1365,
+        800
+      ],
+      "reason": "desktop Role home capture without expanded Profile diff"
+    }
+  }
+}

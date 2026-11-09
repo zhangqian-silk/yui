@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -404,13 +405,16 @@ async function handleHttpRequest(
       const service = dependencies.models;
       if (!service) throw new WebRequestRejected("Model management unavailable.");
       const query = new URL(request.url!, "http://localhost").searchParams;
-      if ([...query.keys()].some(k => !["cursor", "source"].includes(k) || query.getAll(k).length !== 1)) {
+      if ([...query.keys()].some(k => !["cursor", "source", "resourceId", "moduleId"].includes(k) || query.getAll(k).length !== 1)) {
         throw new WebRequestRejected("Unknown Model query.");
       }
       let value: unknown;
-      if (method === "GET" && pathname === "/api/models") value = service.read();
-      else if (method === "GET" && pathname === "/api/models/catalog") value = service.readCatalog(query.get("cursor") ?? "0");
-      else if (method === "GET" && pathname === "/api/models/quota") value = service.readQuota(query.get("source") ?? "factory");
+      if (method === "GET" && pathname === "/api/models") value = service.read(query.get("moduleId") ?? undefined);
+      else if (method === "GET" && pathname === "/api/models/registry") value = service.readRegistry();
+      else if (method === "GET" && pathname === "/api/models/catalog") value = service.readCatalog(query.get("cursor") ?? "0", query.get("resourceId") ?? undefined);
+      else if (method === "GET" && pathname === "/api/models/quota") value = service.readQuota(query.get("source") ?? "factory", query.get("resourceId") ?? undefined);
+      else if (method === "GET" && pathname === "/api/models/status") value = service.readStatus(query.get("resourceId") ?? "");
+      else if (method === "GET" && pathname === "/api/models/maintenance") value = service.readMaintenance(query.get("moduleId") ?? "");
       else if (method === "POST") {
         // Credential-bearing forms require an exact same-origin browser request.
         if (headerValue(request, "origin") !== `http://${headerValue(request, "host")}`) {
@@ -420,9 +424,13 @@ async function handleHttpRequest(
           throw new WebRequestRejected("Model changes require JSON.");
         }
         const body = await readMutationBody(request);
-        if (pathname === "/api/models/connection") value = service.saveConnection(body);
+        if (pathname === "/api/models/resource") value = service.saveResource(body);
+        else if (pathname === "/api/models/binding/preview") value = service.previewBinding(body);
         else if (pathname === "/api/models/provider") value = service.saveProvider(body);
         else if (pathname === "/api/models/refresh") value = await service.refresh(body);
+        else if (pathname === "/api/models/maintenance") value = service.maintain(body, { scope: "user" });
+        else if (pathname === "/api/models/connection/preview") value = service.connectionPreview(body);
+        else if (pathname === "/api/models/connection/apply") value = service.connectionApply(body, { scope: "user" });
         else throw new WebRequestRejected("Unknown Model operation.");
       } else { sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false); return; }
       sendJson(response, 200, value, false);
@@ -460,16 +468,18 @@ async function handleHttpRequest(
     }
     return;
   }
-  if (pathname === "/api/settings" || pathname === "/api/settings/group" || pathname === "/api/settings/capabilities") {
+  if (pathname === "/api/settings" || pathname === "/api/settings/group" || pathname === "/api/settings/capabilities" || pathname === "/api/settings/profile") {
     try {
       if (!dependencies.settings) throw new WebRequestRejected("Settings service unavailable.");
       const query = new URL(request.url!, "http://localhost").searchParams;
-      if ([...query.keys()].some(k => !["id", "refresh", "q", "cursor"].includes(k))) throw new WebRequestRejected("Unknown settings query.");
+      if ([...query.keys()].some(k => !(pathname === "/api/settings/profile" ? ["id", "profileId"] : ["id", "refresh", "q", "cursor"]).includes(k))) throw new WebRequestRejected("Unknown settings query.");
       let value: unknown;
       if (method === "GET" && pathname === "/api/settings") value = dependencies.settings.index(query.get("q") ?? "", query.get("cursor") ?? "0");
       else if (method === "GET" && pathname === "/api/settings/group") value = dependencies.settings.read(query.get("id") ?? "");
       else if (method === "GET" && pathname === "/api/settings/capabilities") value = await dependencies.settings.capabilities(query.get("id") ?? "", query.get("refresh") === "true");
       else if (method === "POST" && pathname === "/api/settings/group") value = await dependencies.settings.save(await readMutationBody(request));
+      else if (method === "GET" && pathname === "/api/settings/profile") value = dependencies.settings.previewProfile(query.get("id") ?? "", query.get("profileId") ?? "");
+      else if (method === "POST" && pathname === "/api/settings/profile") value = await dependencies.settings.applyProfile(await readMutationBody(request));
       else {
         sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false);
         return;
@@ -745,9 +755,19 @@ async function handleHttpRequest(
 
   if (method === "GET" || method === "HEAD") {
     try {
+      const modelDocs: Record<string, string> = {
+        "/models/docs": "model-components.md", "/models/docs/connection": "model-connection-tools.md",
+        "/models/docs/maintenance": "model-maintenance.md",
+        "/models/docs/metabridge": "model-metabridge.md", "/models/docs/cliproxyapi": "model-cliproxyapi.md"
+      };
+      if (modelDocs[pathname]) {
+        sendText(response, 200, "text/plain; charset=utf-8",
+          readFileSync(new URL(`../../docs/${modelDocs[pathname]}`, import.meta.url), "utf8"), method === "HEAD");
+        return;
+      }
       const assetVersion = new URL(request.url!, "http://localhost").searchParams.get("v");
       const asset = findWebAsset(pathname, assetVersion);
-      const managementPage = /^\/(?:models(?:\/(?:providers|catalog|quota))?|settings(?:\/(?:preferences|skills|jobs|permissions|server|connection))?|jobs)\/?$/.test(pathname);
+      const managementPage = /^\/(?:models(?:\/(?:roles|agents|providers|connection|maintenance|catalog|quota))?|settings(?:\/(?:roles|agents|preferences|skills|jobs|permissions|server|connection))?|jobs)\/?$/.test(pathname);
       if (pathname === "/" || pathname === "/index.html" || managementPage) {
         sendText(
           response,

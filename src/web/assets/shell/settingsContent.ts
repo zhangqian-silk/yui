@@ -24,10 +24,22 @@ export const SETTINGS_MAIN = `
         <section id="skill-browser" class="card settings-card settings-stack"></section>
       </section>
       <section class="manage-section" data-section="server" aria-labelledby="settings-server-title" hidden>
-        ${manageHead("settings-server-title", "settings.section.server", "Agents & server", "settings.hint.server", "Desired configuration for Yui, Roles, Agents and Profiles. Saving targets later launches; it is not proof that existing Sessions adopted it.")}
-        <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="settings-search" type="search" autocomplete="off"></label>
-        <p id="settings-status" role="status"></p>
-        <div id="settings-groups" class="settings-stack"></div>
+        ${manageHead("settings-server-title", "settings.section.server", "Yui server", "settings.hint.server", "Yui server configuration.")}
+        <div id="server-settings-host">
+          <p id="server-settings-status" class="settings-section-status" role="status"></p>
+          <label class="field settings-search"><span data-i18n="settings.search">Find a setting</span><input id="server-settings-search" type="search" autocomplete="off"></label>
+          <div id="server-settings-groups" class="settings-stack"></div>
+          <div class="settings-actions"><button id="server-settings-more" class="btn" type="button" hidden data-i18n="settings.more">More</button></div>
+        </div>
+      </section>
+      <section class="manage-section access-page" data-section="roles" aria-labelledby="settings-roles-title" hidden>
+        <header class="manage-head access-head"><div class="manage-heading"><h1 id="settings-roles-title" data-i18n="settings.section.roles">Execution configs</h1><p data-i18n="access.hint.roles">Which Agent, model and effort each Role starts new Sessions with, and the Profile templates you can copy from.</p></div><div id="role-access-actions" class="access-head-actions"></div></header>
+        <div id="role-access-host" class="access-host"></div>
+      </section>
+      <section class="manage-section access-page" data-section="agents" aria-labelledby="settings-agents-title" hidden>
+        <header class="manage-head access-head"><div class="manage-heading"><h1 id="settings-agents-title" data-i18n="settings.section.agents">Agents</h1><p data-i18n="access.hint.agents">Execution tools, their own native model settings, and whether Yui routes them through a model service.</p></div><div id="agent-access-actions" class="access-head-actions"></div></header>
+        <div id="agent-access-host" class="access-host"></div>
+        <div id="agent-settings-groups" class="agent-settings-groups" hidden></div>
       </section>
       <section class="manage-section" data-section="permissions" aria-labelledby="settings-permissions-title" hidden>
         ${manageHead("settings-permissions-title", "settings.section.permissions", "Command permissions", "permissions.intro", "Read-only discovery templates, not authorization for a specific call. No rules or Grants are changed.")}

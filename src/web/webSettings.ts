@@ -3,7 +3,7 @@ import { isEnabled } from "../role/availability.js";
 import { CONFIG_DOMAINS, configDefinitionsForDomain, type ConfigDomain } from "../config/configCatalog.js";
 import { effectiveConfigData, runConfigCommand } from "../commands/configCommands.js";
 import { runAgentCommand, type AgentCommandStore } from "../commands/agentCommands.js";
-import { runGlobalRoleCommand, previewGlobalRoleAgentConfigurationMutation } from "../commands/globalRoleCommands.js";
+import { runGlobalRoleCommand, previewGlobalRoleAgentConfigurationMutation, previewGlobalRoleProfileApplication } from "../commands/globalRoleCommands.js";
 import { runProfileCommand, previewProfileAgentConfigurationMutation } from "../commands/profileCommands.js";
 import { roleOptionSpecs } from "../commands/roleConfiguration.js";
 import { staticAgentConfigurationFields } from "../executor/agentConfigurationFields.js";
@@ -11,6 +11,8 @@ import { validateAgentLaunchConfiguration, type AgentConfigurationCatalogService
 import { resolveAgentProfileView } from "../profile/agentProfileRuntime.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { webLocalMutation, WebRequestRejected } from "./webMutation.js";
+import { readNativeModelConfiguration } from "../models/nativeModelConfiguration.js";
+import { AGENT_EXECUTION_COMPONENT_CATALOG } from "../agent/executionComponents.js";
 
 type Field = {
   key: string; label: string; value: unknown; kind: "text" | "number" | "boolean" | "json" | "multiline";
@@ -20,6 +22,7 @@ type Field = {
 type Group = {
   id: string; title: string; section: string; advanced: boolean; revision: string;
   fields: Field[]; notice: string; agentId?: string; observation?: unknown;
+  profiles?: { id: string; description?: string; available: boolean; reason?: string }[];
 };
 const ROLE_NOTICE = "Disabling blocks new execution and template selection, without stopping running Sessions or discarding input. Enable allows normal scheduling, not an immediate Session start. Existing Task bindings are unchanged. Launch settings apply to a subsequent launch; no Session is restarted here.";
 const PROFILE_NOTICE = "Disabling prevents new Profile application. A Profile is a template, not a process. Existing Task Roles are not rebound or stopped. Inherited runtime requires an enabled global Worker when applied. Reset preserves enabled state.";
@@ -48,6 +51,10 @@ export function createWebSettings(store: TaskStore, options: {
     ].join(" ").toLowerCase().includes(needle));
     const offset = Number(cursor);
     return { groups: all.slice(offset, offset + 50), total: all.length,
+      supportedAgents: AGENT_EXECUTION_COMPONENT_CATALOG.map(component => ({
+        id: component.id, label: component.label,
+        configuredIds: store.listConfiguredAgents().filter(agent => agent.component === component.id).map(agent => agent.id)
+      })),
       nextCursor: offset + 50 < all.length ? String(offset + 50) : null };
   }
   function read(id: string): Group {
@@ -85,6 +92,7 @@ export function createWebSettings(store: TaskStore, options: {
         { ...field("environment", agent.environment, "json"), summary: "Array of {target, source: \"process\", sourceName, required: true}. Only process-variable references are accepted." }
       ];
       observation = { component: agent.component, adapterId: agent.adapterId,
+        native: readNativeModelConfiguration(agent, options.environment),
         environment: agent.environment.map(b => ({ ...b, present: !!options.environment[b.sourceName] })) };
     } else if (id.startsWith("role/")) {
       const role = store.getGlobalRole(id.slice(5))!;
@@ -128,7 +136,78 @@ export function createWebSettings(store: TaskStore, options: {
       observation = view.runtime;
     }
     return { ...meta, fields, notice, agentId, observation,
+      ...(id.startsWith("role/") ? { profiles: store.listAgentProfiles().map(profile => {
+        const runtime = resolveAgentProfileView(profile, store).runtime;
+        return { id: profile.id, description: profile.description, available: runtime.status === "resolved",
+          ...(runtime.status === "unavailable" ? { reason: runtime.reason } : {}) };
+      }) } : {}),
       revision: createHash("sha256").update(JSON.stringify(version)).digest("hex") };
+  }
+  function profileCandidate(id: string, profileId: string) {
+    if (!id.startsWith("role/") || !profileId) throw new WebRequestRejected("Choose a Role and Profile.");
+    try { return previewGlobalRoleProfileApplication(id.slice(5), profileId, store); }
+    catch (error) { throw new WebRequestRejected(error instanceof Error ? error.message : "Profile unavailable."); }
+  }
+  const blank = (value: unknown) => value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
+  function previewProfile(id: string, profileId: string) {
+    const { role, profile, binding, patch } = profileCandidate(id, profileId);
+    const previous = role.agentBindings[role.activeAgentId]!;
+    const before: Record<string, unknown> = {
+      activeAgentId: role.activeAgentId, agentConfiguration: previous.config,
+      defaultAccess: role.defaultAccess, description: role.description, systemPrompt: role.systemPrompt,
+      skills: role.skills, constraints: role.constraints
+    };
+    const after: Record<string, unknown> = { activeAgentId: binding.agentId, agentConfiguration: binding.config, ...patch };
+    return {
+      id, profileId, agentId: binding.agentId,
+      revision: createHash("sha256").update(JSON.stringify({ role, profile, binding })).digest("hex"),
+      // null, "" and [] are the same "not set" value for a Role: not a change.
+      changes: Object.keys(after).filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key]) && !(blank(before[key]) && blank(after[key])))
+        .map(key => ({ key, before: before[key] ?? null, after: after[key] ?? null })),
+      // What the Role will read after applying: the template's copied text, or
+      // the Role's own value where the template copies nothing.
+      result: Object.fromEntries(["description", "systemPrompt", "constraints"].map(key =>
+        [key, (Object.hasOwn(after, key) ? after[key] : before[key]) ?? null])),
+      notice: "Copies Agent runtime, access, description, instructions, Skills and access constraints once. Keeps Role name, workspace, enabled state, responsibilities and expected output. Existing Tasks and running Sessions are unchanged; later Profile edits do not propagate."
+    };
+  }
+  async function applyProfile(input: unknown) {
+    let mutationEntered = false;
+    try {
+      const body = record(input);
+      if (Object.keys(body).some(key => !["id", "profileId", "revision", "acknowledgeLive"].includes(key))
+        || typeof body.id !== "string" || typeof body.profileId !== "string" || typeof body.revision !== "string"
+        || (body.acknowledgeLive !== undefined && typeof body.acknowledgeLive !== "boolean")) {
+        throw new WebRequestRejected("Expected Role, Profile and preview revision.");
+      }
+      const { id, profileId, revision } = body;
+      const check = () => {
+        if (previewProfile(id, profileId).revision !== revision) {
+          throw new WebRequestRejected("Role, Profile or inherited runtime changed. Preview again before applying.");
+        }
+      };
+      check();
+      const { role, binding } = profileCandidate(id, profileId);
+      const agent = store.getConfiguredAgent(binding.agentId);
+      if (!agent) throw new WebRequestRejected("Configured Agent not found.");
+      const candidate = { agentId: binding.agentId, config: binding.config, cwd: role.workspace };
+      const resolved = await options.catalogs.resolve({ agent, cwd: role.workspace, config: binding.config });
+      validateAgentLaunchConfiguration(resolved.catalog, binding.config);
+      mutationEntered = true;
+      const output = webLocalMutation(store, tx => {
+        check();
+        return runGlobalRoleCommand(["apply-profile", id.slice(5), profileId, ...(body.acknowledgeLive ? ["--yes"] : [])],
+          tx, { yuiHome: store.rootDirectory(), env: options.environment,
+            validateAgentConfiguration: current => {
+              if (JSON.stringify(current) !== JSON.stringify(candidate)) throw new Error("Profile runtime changed after validation.");
+              validateAgentLaunchConfiguration(resolved.catalog, current.config);
+            } });
+      });
+      return { status: "saved", output, group: read(id), adoption: "Applied once. Existing Sessions and Tasks are unchanged; later template edits do not propagate.", refresh: "not-required" };
+    } catch (error) {
+      if (!mutationEntered) throw new WebRequestRejected(error instanceof Error ? error.message : "Invalid Profile application.");
+      throw error;
+    }
   }
   async function capabilities(id: string, refresh: boolean) {
     const group = read(id);
@@ -228,7 +307,7 @@ export function createWebSettings(store: TaskStore, options: {
       throw error;
     }
   }
-  return { index, read, save, capabilities };
+  return { index, read, save, capabilities, previewProfile, applyProfile };
 }
 export type WebSettings = ReturnType<typeof createWebSettings>;
 

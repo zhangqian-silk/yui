@@ -1,41 +1,22 @@
 export const MODELS_VIEW_SCRIPT = String.raw`
-// Model management page body, split into four routed sections: access
-// (metabridge providers), the cached model catalog, per-source quota and the
-// management connection settings. Every fact comes from /api/models*; the
-// page keeps only drafts and view state. Saving configuration is not applying
-// it (metabridge needs its own reload), a quota or catalog observation is
-// never upgraded to success, and an API key typed here lives only in its
-// password input until submission.
-//
-// All four sections stay mounted and are only hidden, so moving between them
-// (including browser back/forward) never discards a draft. The entry module
-// owns the URL; this view renders whichever route it is given.
-//
-// deps: t, locale, api (models* functions from lib/api), confirm(text),
-// route {section, source}, navigate(route) and onChange(flags), all optional
-// except t and api.
+// Provider facts and cached observations. Configuration is handed to Operator,
+// while Agent/Role editing remains in the shared settings controller.
+// Navigation never probes upstream; only explicit refresh may do that.
 import { h, icon } from "/assets/js/lib/dom.js";
 import { formatDateTime } from "/assets/js/lib/format.js";
+import { openOperatorHandoff } from "/assets/js/views/operatorHandoff.js";
 
-export const QUOTA_SOURCES = ["factory", "command-code"];
-export const SECTIONS = ["providers", "catalog", "quota", "connection"];
-const CONNECTION_GROUPS = [
-  { key: "bridge", fields: ["bridgeUrl", "bridgeConfigFile", "catalogKeyFile"] },
-  { key: "cpa", fields: ["cpaUrl", "managementKeyFile"] }
-];
-const CONNECTION_FIELDS = ["bridgeUrl", "bridgeConfigFile", "cpaUrl", "managementKeyFile", "catalogKeyFile"];
+export const SECTIONS = ["providers"];
 const OBSERVATION_TONES = { success: "ok", partial: "warn", failed: "bad", unsupported: "idle", "not-queried": "idle" };
-const ROUTE_FILTERS = ["all", "direct", "cpa", "unknown"];
-const STATE_FILTERS = ["all", "enabled", "disabled", "readonly"];
-// Server contract: the prefix is sent and returned with its trailing slash.
-export const PREFIX_PATTERN = /^[a-zA-Z0-9_-]{1,64}\/$/;
 
 // Normalizes any requested route; unknown values fall back to the defaults.
 export function normalizeRoute(route) {
   const value = route || {};
   return {
-    section: SECTIONS.includes(value.section) ? value.section : SECTIONS[0],
-    source: QUOTA_SOURCES.includes(value.source) ? value.source : QUOTA_SOURCES[0]
+    section: "providers",
+    detail: ["catalog", "quota", "maintenance"].includes(value.section) ? value.section
+      : ["catalog", "quota", "maintenance"].includes(value.detail) ? value.detail : "",
+    source: typeof value.source === "string" ? value.source : ""
   };
 }
 
@@ -52,19 +33,14 @@ export function mountModels(root, deps) {
   const api = deps.api;
   const now = deps.now || Date.now;
   const locale = deps.locale || function () { return "en"; };
-  const confirm = deps.confirm || function (text) { return window.confirm(text); };
   const onChange = deps.onChange || function () {};
   const initial = normalizeRoute(deps.route);
   const state = {
     route: initial,
     view: null, loading: false, loadError: null,
-    // One write at a time; an unknown outcome blocks every write until the
-    // reader explicitly reads current facts again.
-    // A rejected write (for example a stale revision) keeps its draft and
-    // offers an explicit re-read; nothing is replayed automatically.
-    pending: false, unknown: false, rejected: false, receipt: null,
-    connectionDraft: null, providerDraft: null,
-    providerFilter: { query: "", route: "all", state: "all" },
+    pending: false, unknown: false, receipt: null,
+    components: [], expanded: initial.detail ? { [initial.detail]: true } : {},
+    endpointId: "", moduleId: "", bridgeId: "",
     catalog: { page: null, items: [], loading: false, error: null, note: null, generation: 0, query: "", source: "all" },
     quota: { source: initial.source, observation: null, loading: false, error: null, unavailable: false, generation: 0 }
   };
@@ -72,43 +48,46 @@ export function mountModels(root, deps) {
     return h("section.manage-section.models-section", { dataset: { section: name }, "aria-labelledby": "models-" + name + "-title" });
   }
   const status = h("div.models-status", { "aria-live": "polite" });
-  const sections = { providers: panel("providers"), catalog: panel("catalog"), quota: panel("quota"), connection: panel("connection") };
-  root.replaceChildren(status, sections.providers, sections.catalog, sections.quota, sections.connection);
+  const sections = { providers: panel("providers"), catalog: panel("catalog"), quota: panel("quota") };
+  root.replaceChildren(sections.providers);
 
   function tone(name, text) { return h("span.badge.tone-" + name, null, h("span.badge-dot"), text); }
   function when(iso) { return iso ? formatDateTime(iso, locale()) : t("models.unknown"); }
   function known(value, render) { return value === null || value === undefined ? t("models.unknown") : render ? render(value) : String(value); }
   function percent(fraction) { return Math.round(fraction * 1000) / 10 + "%"; }
   function number(value) { return new Intl.NumberFormat(locale(), { maximumFractionDigits: 2 }).format(value); }
-  // Re-reading facts also blocks writes so no save races the new revision.
-  function writesBlocked() { return !state.view || state.view.readOnly || state.pending || state.unknown || state.loading; }
   function go(route) {
     const next = normalizeRoute(Object.assign({}, state.route, route));
     if (deps.navigate) deps.navigate(next);
     else show(next);
   }
-  function sectionLink(section, text) {
-    return h("a.btn-link", { href: (section === "connection" ? "/settings/" : "/models/") + section, onclick: function (event) {
-      if (event.defaultPrevented || event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      event.preventDefault(); go({ section: section });
-    } }, text);
-  }
   function head(name, hint, actions) {
     return h("header.manage-head", null,
       h("div.manage-heading", null,
-        h("h1", { id: "models-" + name + "-title" }, t("models.section." + name)), hint ? h("p", null, hint) : null),
+        h(name === "providers" ? "h1" : "h2", { id: "models-" + name + "-title" }, t("models.section." + name)), hint ? h("p", null, hint) : null),
       actions && actions.length ? h("div.card-actions", null, actions) : null);
   }
   function receiptNode(scope) {
     if (!state.receipt || state.receipt.scope !== scope) return null;
     const line = h("p.receipt.models-receipt", { role: "status", "aria-live": "polite" }, state.receipt.text);
     line.dataset.state = state.receipt.state;
-    if (!(state.rejected && state.receipt.rejected && !state.unknown)) return line;
-    return h("div.models-receipt-group", null, line, h("div.settings-actions", null,
-      h("button.btn", { type: "button", disabled: state.loading || state.pending, onclick: function () { void reconcile(); } }, t("models.readFacts"))));
+    return line;
+  }
+  function disclosure(key, label, ...children) {
+    const node = h("details.models-disclosure", { open: !!state.expanded[key], dataset: { modelDetail: key } },
+      h("summary", key === "catalog" || key === "quota" ? { id: "models-" + key + "-title" } : null, label), ...children);
+    node.addEventListener("toggle", function () { state.expanded[key] = node.open; });
+    return node;
   }
   function field(labelText, control, hint) {
     return h("label.field", null, h("span", null, labelText), control, hint ? h("small.faint", null, hint) : null);
+  }
+  function resourcePicker(rows, selected, change, label = "models.queryInstance") {
+    const select = h("select", { disabled: state.pending || state.loading || state.quota.loading },
+      rows.map(row => h("option", { value: row.id }, row.id)));
+    select.value = selected;
+    select.addEventListener("change", function () { change(select.value); });
+    return field(t(label), select);
   }
   function searchBox(labelKey, value, onInput) {
     const input = h("input", { type: "search", autocomplete: "off", spellcheck: "false", placeholder: t(labelKey) });
@@ -122,7 +101,7 @@ export function mountModels(root, deps) {
     }));
   }
   function notify() {
-    onChange({ connection: !!state.connectionDraft, provider: !!state.providerDraft, unknown: state.unknown, pending: state.pending });
+    onChange({ connection: false, provider: false, maintenance: false, unknown: false, pending: false });
   }
 
   // ---- Routing ----------------------------------------------------------
@@ -130,11 +109,14 @@ export function mountModels(root, deps) {
     const next = normalizeRoute(route);
     // Only the quota section reads its source from the route; elsewhere the
     // last shown source is kept for the way back.
-    if (next.section !== "quota") next.source = state.quota.source;
+    if (next.detail !== "quota" || !next.source) next.source = state.quota.source;
+    const available = (state.view?.quotaSources || []).filter(item => item.moduleId === state.moduleId).map(item => item.source);
+    if (state.view && !available.includes(next.source)) next.source = available[0] || "";
     const sourceChanged = next.source !== state.quota.source;
     state.route = next;
+    if (next.detail) state.expanded[next.detail] = true;
     state.quota.source = next.source;
-    SECTIONS.forEach(function (name) { sections[name].hidden = name !== next.section; });
+    updateSections();
     renderStatus();
     if (sourceChanged) void loadQuota();
     else renderQuota();
@@ -143,9 +125,14 @@ export function mountModels(root, deps) {
   }
 
   function renderAll() {
-    renderStatus(); renderConnection(); renderProviders(); renderCatalog(); renderQuota();
-    SECTIONS.forEach(function (name) { sections[name].hidden = name !== state.route.section; });
+    renderStatus(); renderProviders(); renderCatalog(); renderQuota();
+    updateSections();
     notify();
+  }
+  function updateSections() {
+    root.querySelectorAll?.("[data-model-detail]").forEach(node => {
+      if (state.expanded[node.dataset.modelDetail]) node.open = true;
+    });
   }
 
   // Page-wide facts and blocking conditions stay visible in every section.
@@ -153,12 +140,6 @@ export function mountModels(root, deps) {
     const view = state.view;
     const children = [];
     if (state.loading && !view) children.push(h("p", { role: "status" }, t("models.loading")));
-    if (view && (state.route.section === "connection" || state.route.section === "providers")) {
-      children.push(h("div.models-facts", null,
-        tone(view.connection ? "info" : "idle", view.connection ? t("models.connected") : t("models.disconnected")),
-        tone("warn", t("models.application." + view.application, view.application)),
-        h("small.faint.models-notice", null, t(view.readOnly ? "models.readOnlyService" : "models.scope"))));
-    }
     if (state.loadError) {
       children.push(h("div.models-alert", { role: "alert" }, icon("alert"), h("p.settings-error", null, t("models.loadFailed") + " " + state.loadError),
         h("button.btn", { type: "button", onclick: function () { void load(); } }, t("models.retry"))));
@@ -166,250 +147,209 @@ export function mountModels(root, deps) {
     if (view && view.configurationError) {
       children.push(h("div.models-alert", { role: "alert" }, icon("alert"), h("p.settings-error", null, t("models.configurationError") + " " + view.configurationError)));
     }
-    if (state.unknown) {
-      children.push(h("div.models-alert", { role: "alert" }, icon("alert"), h("p.settings-error", null, t("models.unknownBlocked")),
-        h("button.btn", { type: "button", disabled: state.loading, onclick: function () { void reconcile(); } }, t("models.readFacts"))));
-    }
     children.push(receiptNode("summary"));
     status.replaceChildren.apply(status, children.filter(Boolean));
   }
 
-  // ---- Connection settings ----------------------------------------------
-  function connectionValues() {
-    if (state.connectionDraft) return state.connectionDraft;
-    const current = state.view && state.view.connection;
-    const values = {};
-    CONNECTION_FIELDS.forEach(function (key) { values[key] = current ? current[key] || "" : ""; });
-    return values;
+  // ---- Model services, by how each Agent connects ----------------------
+  // The usage dimension is the Agent adapter's wire protocol (Codex:
+  // Responses, Claude: Anthropic Messages), never a model name or vendor.
+  // Each record keeps its owner: the Agent's native file, Yui's registry,
+  // or an optional component's own configuration.
+  function componentName(module) { return module.kind === "cliproxyapi" ? "CPA" : module.kind; }
+  const DIMENSIONS = [
+    { adapter: "codex", protocol: "responses" },
+    { adapter: "claude", protocol: "anthropic-messages" }
+  ];
+  function facts(entries) {
+    return h("dl.models-record-facts", null, entries.filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([label, value]) => h("div", null, h("dt", null, label), h("dd", null, String(value)))));
   }
-  function renderConnection() {
-    const view = state.view;
-    const values = connectionValues();
-    const blocked = writesBlocked();
-    const form = h("form.models-connection-form", { novalidate: true });
-    const inputs = {};
-    const discard = h("button.btn.btn-ghost", { type: "button", disabled: !state.connectionDraft || state.pending }, t("models.discard"));
-    CONNECTION_GROUPS.forEach(function (group) {
-      const set = h("fieldset.models-fieldset", null, h("legend", null, t("models.connectionGroup." + group.key)));
-      group.fields.forEach(function (key) {
-        const input = h("input", { type: key.endsWith("Url") ? "url" : "text", autocomplete: "off", spellcheck: "false",
-          value: values[key], disabled: blocked, required: key === "bridgeUrl" });
-        input.value = values[key];
-        input.addEventListener("input", function () {
-          const draft = Object.assign({}, connectionValues());
-          draft[key] = input.value;
-          const first = !state.connectionDraft;
-          state.connectionDraft = draft;
-          discard.disabled = state.pending;
-          if (first) notify();
-        });
-        inputs[key] = input;
-        set.append(field(t("models.connection." + key), input, t("models.connection." + key + "Help")));
-      });
-      form.append(set);
-    });
-    const save = h("button.btn.btn-primary", { type: "submit", disabled: blocked }, t("models.saveConnection"));
-    const disconnect = h("button.btn", { type: "button", disabled: blocked || !(view && view.connection) }, t("models.disconnect"));
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      if (writesBlocked()) return;
-      const connection = {};
-      CONNECTION_FIELDS.forEach(function (key) { connection[key] = inputs[key].value.trim(); });
-      if (!connection.bridgeUrl) { setReceipt(t("models.bridgeUrlRequired"), "bad", "connection"); renderConnection(); return; }
-      void write(function (revision) { return api.saveModelConnection({ revision: revision, connection: connection }); },
-        { scope: "connection", clearConnection: true });
-    });
-    disconnect.addEventListener("click", function () {
-      if (writesBlocked() || !confirm(t("models.disconnectConfirm"))) return;
-      void write(function (revision) { return api.saveModelConnection({ revision: revision, connection: null }); },
-        { scope: "connection", clearConnection: true });
-    });
-    discard.addEventListener("click", function () { state.connectionDraft = null; renderConnection(); notify(); });
-    form.append(h("div.settings-actions", null, save, disconnect, discard,
-      state.connectionDraft ? h("small.faint", null, t("models.unsavedDraft")) : null));
-    const receipt = receiptNode("connection");
-    if (receipt) form.append(receipt);
-    sections.connection.replaceChildren.apply(sections.connection, [
-      head("connection", t("models.connectionHelp")),
-      view && !view.connection ? h("p.models-note", null, icon("info"), t("models.notConnected")) : null,
-      h("div.card.models-card", null, h("div.card-body", null, form)),
-      h("div.card.models-card", null, h("div.card-body.models-explain", null,
-        h("h2", null, t("models.applicationTitle")),
-        h("p", null, t("models.applicationHelp")),
-        h("p", null, t("models.agentSettings") + " ", h("a.btn-link", { href: "/settings?section=server" }, t("models.openSettings")))))].filter(Boolean));
-  }
-
-  // ---- Access (providers) -----------------------------------------------
-  function configurable() {
-    const view = state.view;
-    return !!(view && !view.readOnly && view.connection && view.connection.bridgeConfigFile);
-  }
-  function startProvider(provider) {
-    if (state.providerDraft && !confirm(t("models.discardProvider"))) return;
-    state.providerDraft = provider
-      ? { id: provider.id, name: provider.name, via: provider.via, baseUrl: provider.baseUrl, prefix: provider.prefix,
-        enabled: provider.enabled, credentialPresent: provider.credentialPresent }
-      : { id: null, name: "", via: "direct", baseUrl: "", prefix: "", enabled: true, credentialPresent: false };
-    renderProviders();
-    notify();
-  }
-  function providerMatches(provider) {
-    const filter = state.providerFilter;
-    if (filter.route !== "all" && provider.via !== filter.route) return false;
-    if (filter.state === "enabled" && !provider.enabled) return false;
-    if (filter.state === "disabled" && provider.enabled) return false;
-    if (filter.state === "readonly" && provider.editable) return false;
-    const query = filter.query.trim().toLowerCase();
-    if (!query) return true;
-    return [provider.name, provider.id, provider.baseUrl, provider.prefix].some(function (value) {
-      return String(value || "").toLowerCase().includes(query);
-    });
-  }
-  function providerRow(provider) {
-    const blocked = writesBlocked();
-    const editing = !!(state.providerDraft && state.providerDraft.id === provider.id);
-    const actions = h("div.models-row-actions");
-    if (provider.editable) {
-      actions.append(
-        h("button.btn", { type: "button", disabled: blocked, "aria-label": t("models.editProvider") + " " + provider.name,
-          onclick: function () { startProvider(provider); } }, t("models.editProvider")),
-        h("button.btn.btn-ghost.models-danger", { type: "button", disabled: blocked, "aria-label": t("models.removeProvider") + " " + provider.name, onclick: function () {
-          if (writesBlocked() || !confirm(t("models.removeConfirm") + " " + provider.name)) return;
-          void write(function (revision) { return api.saveModelProvider({ revision: revision, operation: "remove", id: provider.id }); },
-            { scope: "provider", clearProvider: !!(state.providerDraft && state.providerDraft.id === provider.id) });
-        } }, t("models.removeProvider")));
-    } else {
-      actions.append(h("span.chip", null, t("models.readOnly")));
-      if (provider.reason) actions.append(h("small.faint.models-reason", null,
-        t(provider.reason === "read-only-service" ? "models.readOnlyService" : "models.providerReadOnlyHelp")));
+  function providerDetails(provider, identity) {
+    const models = provider.models || [];
+    const children = [facts([
+      [t("models.recordId"), provider.id], [t("models.configurationSource"), provider.sourceFile],
+      [t("models.credentialReference"), provider.credentialReference],
+      [t("models.provider.prefix"), provider.prefix === "" ? t("models.noPrefix") : provider.prefix], [t("models.priority"), provider.priority],
+      [t("models.requestMode"), provider.requestMode]
+    ])];
+    if (models.length) children.push(h("h4", null, t("models.configuredModels")),
+      h("p.faint", null, t("models.configuredModelsHelp")),
+      h("ul.models-configured-models", null, models.map(model => h("li", null,
+        h("code", null, model.name || model.value), model.alias ? " → " + model.alias : ""))));
+    if (provider.excludedModels?.length) children.push(facts([[t("models.excludedModels"), provider.excludedModels.join(", ")]]));
+    if (provider.routeModels?.length) children.push(facts([[t("models.routeRules"), provider.routeModels.join(", ")]]));
+    if (provider.compaction) {
+      const policy = provider.compaction;
+      children.push(h("h4", null, t("models.compaction")),
+        h("p", null, t(policy.mode === "local" && policy.models?.length ? "models.compactionMatched" : "models.compaction." + policy.mode)),
+        facts([[t("models.routeRules"), policy.models?.join(", ")],
+          [t("models.stripImages"), policy.stripImages === true ? t("models.yes") : policy.stripImages === false ? t("models.no") : null]]));
     }
-    return h("tr", { dataset: { provider: provider.id }, "aria-current": editing ? "true" : null },
-      h("td", { dataset: { label: t("models.column.provider") } },
-        h("div.models-cell-main", null, h("strong", null, provider.name), h("code.id", { title: provider.id }, provider.id.slice(0, 12)))),
-      h("td", { dataset: { label: t("models.column.baseUrl") } },
-        h("span.mono-line.models-url", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.unknown"))),
-      h("td", { dataset: { label: t("models.column.prefix") } },
-        provider.prefix ? h("code.id", null, provider.prefix) : h("span.chip", null, t("models.noPrefix"))),
-      h("td", { dataset: { label: t("models.column.route") } }, h("span.chip", null, t("models.via." + provider.via, provider.via))),
-      h("td", { dataset: { label: t("models.column.state") } }, h("div.models-facts", null,
-        tone(provider.enabled ? "ok" : "idle", provider.enabled ? t("models.enabled") : t("models.disabled")),
-        tone(provider.credentialPresent ? "info" : "idle", provider.credentialKind === "subscription" ? t("models.subscriptionAuth")
-          : provider.credentialPresent ? t("models.credentialStored") : t("models.credentialMissing")))),
-      h("td", { dataset: { label: t("models.column.actions") } }, actions));
+    return disclosure("record:" + identity, t("models.recordDetails") + (models.length ? " · " + models.length + " " + t("models.modelsUnit") : ""), ...children);
   }
-  function providerForm() {
-    const draft = state.providerDraft;
-    const isNew = !draft.id;
-    const blocked = writesBlocked();
-    const form = h("form.settings-stack.models-provider-form", { novalidate: true });
-    function bind(control, key, read) {
-      control.addEventListener(control.type === "checkbox" ? "change" : "input", function () { draft[key] = read(control); });
-      return control;
-    }
-    const name = bind(h("input", { autocomplete: "off", disabled: blocked, value: draft.name }), "name", function (c) { return c.value; });
-    name.value = draft.name;
-    const via = h("select", { disabled: blocked },
-      h("option", { value: "direct" }, t("models.via.direct")), h("option", { value: "cpa" }, t("models.via.cpa")),
-      draft.via === "unknown" ? h("option", { value: "unknown", disabled: true }, t("models.via.unknown")) : null);
-    via.value = draft.via;
-    // Changing the route only retitles its hints; re-rendering would discard a typed key.
-    const viaHint = h("small.faint");
-    const keyLabel = h("span");
-    function describeVia() {
-      viaHint.textContent = via.value === "cpa" ? t("models.provider.viaCpaHelp") : t("models.provider.viaDirectHelp");
-      keyLabel.textContent = via.value === "cpa" ? t("models.provider.apiKeyCpa") : t("models.provider.apiKey");
-    }
-    via.addEventListener("change", function () { draft.via = via.value; describeVia(); });
-    const baseUrl = bind(h("input", { type: "url", autocomplete: "off", spellcheck: "false", disabled: blocked, value: draft.baseUrl }), "baseUrl", function (c) { return c.value; });
-    baseUrl.value = draft.baseUrl;
-    const prefix = bind(h("input", { autocomplete: "off", spellcheck: "false", disabled: blocked, value: draft.prefix,
-      placeholder: "mine/", maxlength: "65" }), "prefix", function (c) { return c.value; });
-    prefix.value = draft.prefix;
-    const enabled = bind(h("input", { type: "checkbox", disabled: blocked }), "enabled", function (c) { return c.checked; });
-    enabled.checked = !!draft.enabled;
-    // The key is never part of the draft or any re-render; it is read once at
-    // submission and the input is discarded afterwards.
-    const apiKey = h("input", { type: "password", autocomplete: "new-password", spellcheck: "false", disabled: blocked,
-      placeholder: isNew ? "" : t("models.apiKeyKeep") });
-    const save = h("button.btn.btn-primary", { type: "submit", disabled: blocked }, isNew ? t("models.createProvider") : t("models.saveProvider"));
-    const cancel = h("button.btn.btn-ghost", { type: "button", disabled: state.pending }, t("models.cancel"));
-    cancel.addEventListener("click", function () { state.providerDraft = null; renderProviders(); notify(); });
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      if (writesBlocked()) return;
-      const key = apiKey.value;
-      apiKey.value = "";
-      const provider = { name: name.value.trim(), via: via.value, baseUrl: baseUrl.value.trim(), prefix: prefix.value.trim(), enabled: enabled.checked };
-      if (!isNew) provider.id = draft.id;
-      const missing = !provider.name || !provider.baseUrl || (isNew && !provider.prefix) || (isNew && !key)
-        || (provider.via !== "direct" && provider.via !== "cpa");
-      if (missing) { setReceipt(t(isNew ? "models.providerNewRequired" : "models.providerRequired"), "bad", "provider"); renderProviders(); return; }
-      if (!PREFIX_PATTERN.test(provider.prefix)) { setReceipt(t("models.prefixInvalid"), "bad", "provider"); renderProviders(); return; }
-      if (key) provider.apiKey = key;
-      void write(function (revision) { return api.saveModelProvider({ revision: revision, operation: "save", provider: provider }); },
-        { scope: "provider", clearProvider: true });
-    });
-    describeVia();
-    form.append(
-      h("div.models-form-head", null, h("h2", null, isNew ? t("models.newProvider") : t("models.editProvider") + " · " + draft.name),
-        isNew ? null : h("code.id", null, draft.id)),
-      h("div.settings-grid", null,
-        field(t("models.provider.name"), name),
-        h("label.field", null, h("span", null, t("models.provider.via")), via, viaHint),
-        field(t("models.provider.baseUrl"), baseUrl),
-        field(t("models.provider.prefix"), prefix, t("models.provider.prefixHelp"))),
-      h("label.settings-reset", null, enabled, t("models.provider.enabled")),
-      h("label.field", null, keyLabel, apiKey, h("small.faint", null,
-        isNew ? t("models.provider.apiKeyNewHelp") : (draft.credentialPresent ? t("models.provider.apiKeyKeepHelp") : t("models.provider.apiKeyMissingHelp")))),
-      h("div.settings-actions", null, save, cancel));
-    return form;
+  function credentialLabel(provider, native) {
+    if (provider.credentialKind === "reference") return t(provider.credentialReference ? "models.credentialReference" : "models.credentialReferenceMissing");
+    if (provider.credentialKind === "subscription") return t("models.subscriptionAuth");
+    if (provider.credentialPresent) return t("models.credentialStored");
+    return native ? t("models.nativeCredentialUnknown") : t("models.credentialMissing");
   }
-  // The list re-renders on every keystroke in the search box; the toolbar
-  // (and the editor above it) are left alone so neither loses focus or input.
-  const providerResults = h("div.models-results");
-  function renderProviderResults() {
+  function enabledBadge(provider) {
+    return provider.enabled === true ? tone("ok", t("models.enabled"))
+      : provider.enabled === false ? tone("idle", t("models.disabled")) : tone("idle", t("models.enablementUnknown"));
+  }
+  function guide(labelKey, scenario, className = "btn btn-sm") {
+    return h("button." + className.split(" ").join("."), { type: "button", dataset: { guide: scenario.kind },
+      onclick: () => openOperatorHandoff({ scenario, t, locale, copyText: deps.copyText, onReadback: reconcile }) }, t(labelKey));
+  }
+  function table(columns, rows, key) {
+    return h("div.services-table", { dataset: { servicesTable: key }, role: "table" },
+      h("div.services-row.services-row-head", { role: "row" }, columns.map(label => h("span", { role: "columnheader" }, label))),
+      ...rows.map(row => {
+        // A row is its cells, optionally with the exact record identity.
+        const cells = Array.isArray(row) ? row : row.cells;
+        return h("div.services-row", { role: "row", dataset: Array.isArray(row) ? {} : row.data }, cells.map((value, index) =>
+          h("span", { role: "cell", dataset: { label: columns[index] } }, value)));
+      }));
+  }
+  function moduleOf(endpoint) {
+    return endpoint?.moduleId ? state.view.registry.modules.find(module => module.id === endpoint.moduleId) || null : null;
+  }
+  function viaLabel(endpoint) {
+    const module = moduleOf(endpoint);
+    return module ? componentName(module) + " · " + module.id : t("services.direct");
+  }
+  // Whether an Agent's native file was read. Only "read" (or a confirmed
+  // absent file) says anything about its Providers; a failed or unreported
+  // read is unknown, never "no custom Provider".
+  function nativeRead(agentId) {
+    const entry = (state.view.nativeConfigurations || []).find(item => item.agentId === agentId);
+    return entry ? entry.status : "unknown";
+  }
+  function nativeKnown(agentId) { return ["read", "absent"].includes(nativeRead(agentId)); }
+  function agentRoute(agent) {
+    const registry = state.view.registry;
+    const binding = registry.bindings.find(item => item.agentId === agent.id && item.endpointId);
+    const endpoint = binding ? registry.endpoints.find(item => item.id === binding.endpointId) : null;
+    const natives = (state.view.nativeProviders || []).filter(provider => provider.agentId === agent.id);
+    const selected = natives.find(provider => provider.selected);
+    const status = nativeRead(agent.id);
+    const known = nativeKnown(agent.id);
+    const nativeText = !known ? t("services.nativeUnreadable")
+      : selected ? t("services.nativeSelected").replace("{name}", selected.name || selected.id)
+        : t("services.nativeDefault");
+    const nativeNote = !known ? t("services.nativeUnknownHelp")
+      : selected ? t("services.ownedNative") : t(status === "absent" ? "services.noNativeFile" : "services.noCustomProvider");
+    const target = binding
+      ? [h("strong", null, t("services.viaEndpoint").replace("{id}", binding.endpointId)),
+        h("small", null, viaLabel(endpoint) + " · " + t("services.model") + " " + (binding.model || "—") + " · " + t("services.newSessionsOnly")),
+        h("small.faint", null, t("services.outsideYui").replace("{native}", nativeText))]
+      : [h("strong" + (known ? "" : ".services-native-unknown"), null, nativeText), h("small", null, nativeNote)];
+    return h("li.services-route", { dataset: { routeAgent: agent.id } },
+      h("span.services-route-agent", null, h("code", null, agent.id)),
+      h("span.services-route-arrow", { "aria-hidden": "true" }, "→"),
+      h("span.services-route-target", null, ...target),
+      tone(binding ? "info" : "idle", t(binding ? "services.routeYui" : "services.routeNative")));
+  }
+  function dimension(spec) {
     const view = state.view;
-    if (!view) { providerResults.replaceChildren(); return; }
-    const rows = view.providers.filter(providerMatches);
-    const count = h("p.faint.models-count", { role: "status" }, t("models.providerCount")
-      .replace("{shown}", String(rows.length)).replace("{total}", String(view.providers.length)));
-    if (!view.providers.length) { providerResults.replaceChildren(h("p.models-empty", null, t("models.noProviders"))); return; }
-    if (!rows.length) { providerResults.replaceChildren(count, h("p.models-empty", null, t("models.noProviderMatches"))); return; }
-    providerResults.replaceChildren(count, h("div.models-table-wrap", null, h("table.models-table", null,
-      h("thead", null, h("tr", null, ["provider", "baseUrl", "prefix", "route", "state", "actions"].map(function (key) {
-        return h("th", { scope: "col" }, t("models.column." + key));
-      }))),
-      h("tbody", null, rows.map(providerRow)))));
+    const agents = (view.configuredAgents || []).filter(agent => agent.adapterId === spec.adapter);
+    const endpoints = view.registry.endpoints.filter(endpoint => endpoint.protocol === spec.protocol);
+    const natives = (view.nativeProviders || []).filter(provider => agents.some(agent => agent.id === provider.agentId));
+    const unread = agents.filter(agent => !nativeKnown(agent.id)).map(agent => agent.id);
+    const bound = endpoint => view.registry.bindings.filter(binding => binding.endpointId === endpoint.id).map(binding => binding.agentId);
+    const children = [
+      h("header.services-dim-head", null,
+        h("div", null, h("h2", null, t("services.dim." + spec.adapter)),
+          h("p", null, t("services.dimHelp." + spec.adapter))),
+        guide("services.guide." + spec.adapter, { kind: "service", adapter: spec.adapter,
+          agents: agents.map(agent => agent.id), endpoints: endpoints.map(endpoint => endpoint.id) }))
+    ];
+    children.push(h("h3.services-sub", null, t("services.routes")),
+      agents.length ? h("ul.services-routes", null, agents.map(agentRoute))
+        : h("p.models-empty", null, t("services.noAgents." + spec.adapter)));
+    children.push(h("h3.services-sub", null, t("services.endpoints"), h("span.count", null, String(endpoints.length))),
+      endpoints.length ? table([t("services.col.endpoint"), t("services.col.via"), t("models.column.baseUrl"), t("services.col.key"), t("services.col.bound")],
+        endpoints.map(endpoint => ({ data: { providerIdentity: "endpoint:" + endpoint.id }, cells: [h("code", null, endpoint.id), viaLabel(endpoint),
+          h("span.mono-line", { title: endpoint.url }, endpoint.url),
+          h("span.services-key", null, t(endpoint.clientKeyFile ? "services.keyReferenced" : "services.keyNone"),
+            endpoint.clientKeyFile ? h("small.mono-line", null, endpoint.clientKeyFile) : null),
+          bound(endpoint).join(", ") || h("span.faint", null, t("services.unbound"))] })), "endpoints-" + spec.adapter)
+        : h("p.models-empty", null, t("services.noEndpoints")));
+    children.push(h("h3.services-sub", null, t("services.native"), h("span.count", null, !unread.length ? String(natives.length) : natives.length ? natives.length + "+?" : "?")),
+      unread.length ? h("p.services-native-unknown", { role: "note", dataset: { nativeUnread: unread.join(" ") } },
+        t("services.nativeUnreadList").replace("{agents}", unread.join(", "))) : null,
+      natives.length ? table([t("services.col.provider"), t("services.col.agent"), t("models.column.baseUrl"), t("models.credential"), ""],
+        natives.map(provider => ({ data: { providerIdentity: "native:" + provider.agentId + ":" + provider.sourceFile + ":" + provider.id }, cells: [h("strong", null, provider.name || provider.id), h("code", null, provider.agentId),
+          h("span.mono-line", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.notReported")),
+          credentialLabel(provider, true),
+          provider.selected ? tone("info", t("models.nativeSelected")) : h("span.faint", null, t("models.nativeNotSelected"))] })), "native-" + spec.adapter)
+        : unread.length ? null : h("p.models-empty", null, t("services.noNative")));
+    return h("section.services-dim", { dataset: { dimension: spec.adapter } }, ...children);
   }
-  // Filters re-render only the toolbar and list, never an open editor.
-  const providerTools = h("div.models-toolbar");
-  function renderProviderTools() {
-    const filter = state.providerFilter;
-    providerTools.replaceChildren(
-      searchBox("models.searchProviders", filter.query, function (value) { filter.query = value; renderProviderResults(); }),
-      filterGroup("models.filter.route", ROUTE_FILTERS, filter.route, function (value) {
-        return value === "all" ? t("models.filter.all") : t("models.via." + value, value);
-      }, function (value) { filter.route = value; renderProviderTools(); }),
-      filterGroup("models.filter.state", STATE_FILTERS, filter.state, function (value) {
-        return t("models.filter." + value);
-      }, function (value) { filter.state = value; renderProviderTools(); }));
-    renderProviderResults();
+  function componentCard(component) {
+    const module = component.module;
+    const view = state.view;
+    const providers = component.view?.providers || [];
+    const exposed = view.registry.endpoints.filter(endpoint => endpoint.moduleId === module.id);
+    const error = component.error || component.view?.configurationError;
+    const children = [
+      h("header.services-component-head", null,
+        h("div", null, h("h3", null, componentName(module), h("code.id", null, module.id)),
+          h("p", null, t("services.componentRole." + module.kind))),
+        h("div.services-component-tags", null, tone("idle", t("services.version").replace("{version}", module.version)),
+          tone(module.maintenance === "configuration" ? "info" : "idle", t("services.maintenance." + module.maintenance)),
+          guide("services.guide.component", { kind: "component", componentKind: module.kind, id: module.id }))),
+      facts([[t("services.ownerFile"), module.configFile || t("models.notReported")],
+        [t("models.managementAddress"), module.managementUrl],
+        [t("services.exposes"), exposed.map(endpoint => endpoint.id + " (" + endpoint.protocol + ")").join(", ") || t("services.exposesNone")]])
+    ];
+    if (error) children.push(h("p.settings-error", { role: "alert" }, error));
+    else if (component.view) children.push(providers.length
+      ? table([t("services.col.provider"), t("services.col.route"), t("models.column.baseUrl"), t("services.col.state"), ""],
+        providers.map(provider => ({ data: { providerIdentity: module.id + ":" + provider.id, provider: provider.id }, cells: [
+          h("span.services-provider-name", null, h("strong", null, provider.name || provider.id),
+            provider.prefix ? h("small", null, provider.prefix) : null),
+          t("services.upstream." + (provider.via || "unknown"), provider.via || ""),
+          h("span.mono-line", { title: provider.baseUrl || "" }, provider.baseUrl || t("models.notReported")),
+          h("span.services-provider-state", null, enabledBadge(provider), h("small", null, credentialLabel(provider, false))),
+          providerDetails(provider, module.id + ":" + provider.id)] })), "component-" + module.id)
+      : h("p.models-empty", null, t("services.noUpstreams")));
+    else children.push(h("p", { role: "status" }, t("models.loading")));
+    return h("article.services-component", { dataset: { component: module.kind, componentId: module.id } }, ...children);
   }
   function renderProviders() {
     const view = state.view;
-    const add = h("button.btn.btn-primary", { type: "button", disabled: writesBlocked() || !configurable() || !!state.providerDraft,
-      onclick: function () { startProvider(null); } }, icon("plus"), t("models.addProvider"));
-    const children = [head("providers", t("models.providersHelp"), view && !view.readOnly ? [add] : null)];
-    if (!view) children.push(h("p.models-empty", null, state.loading ? t("models.loading") : t("models.unavailable")));
-    else {
-      if (!configurable() && !view.readOnly) children.push(h("p.models-note", null, icon("info"), t("models.configFileRequired") + " ",
-        sectionLink("connection", t("models.openConnection"))));
-      children.push(receiptNode("provider"));
-      if (state.providerDraft) children.push(h("div.card.models-card.models-editor", null, h("div.card-body", null, providerForm())));
-      children.push(h("div.card.models-card", null, providerTools, providerResults));
-      renderProviderTools();
+    const reread = h("button.btn.btn-sm", { type: "button", disabled: state.loading || state.pending, onclick: function () { void reconcile(); } },
+      icon("refresh"), t("services.reread"));
+    const children = [h("header.manage-head.access-head", null,
+      h("div.manage-heading", null, h("h1", { id: "models-providers-title" }, t("models.section.providers")),
+        h("p", null, t("services.hint"))),
+      h("div.access-head-actions", null, reread))];
+    if (!view) {
+      sections.providers.replaceChildren(...children, status);
+      return;
     }
-    sections.providers.replaceChildren.apply(sections.providers, children.filter(Boolean));
+    children.push(status, h("div.services-dims", null, DIMENSIONS.map(dimension)));
+    const modules = state.components;
+    children.push(h("section.services-components", null,
+      h("header.services-dim-head", null, h("div", null, h("h2", null, t("services.components")),
+        h("p", null, t("services.componentsHelp")))),
+      modules.length ? h("div.services-component-list", null, modules.map(componentCard))
+        : h("div.services-none", null, h("p", null, t("services.noComponents")),
+          h("div.settings-actions", null,
+            guide("services.guide.metabridge", { kind: "component", componentKind: "metabridge" }),
+            guide("services.guide.cpa", { kind: "component", componentKind: "cliproxyapi" })))));
+    const endpoints = view.registry.endpoints || [];
+    const quotaModules = view.registry.modules.filter(module => module.kind === "cliproxyapi" && module.quotaAdapter !== "none");
+    const observed = [];
+    if (endpoints.length) observed.push(disclosure("catalog", t("models.endpointCatalog"),
+      h("p.faint", null, t("models.endpointCatalogHelp")), sections.catalog));
+    if (quotaModules.length || view.quotaSources?.length) observed.push(disclosure("quota", t("models.section.quota"), sections.quota));
+    if (observed.length) children.push(h("section.services-observed", null, h("h2", null, t("services.observed")),
+      h("p.faint", null, t("services.observedHelp")), ...observed));
+    children.push(h("p.services-footnote", null, t("services.footnote")));
+    sections.providers.replaceChildren(...children.filter(Boolean));
   }
 
   // ---- Observations -----------------------------------------------------
@@ -461,9 +401,12 @@ export function mountModels(root, deps) {
   function renderCatalog() {
     const catalog = state.catalog;
     const page = catalog.page;
-    const refresh = h("button.btn", { type: "button", disabled: catalog.loading || !state.view || !(state.view.connection), onclick: function () { void refreshCatalog(); } },
+    const refresh = h("button.btn", { type: "button", disabled: catalog.loading || !state.endpointId || state.view?.readOnly, onclick: function () { void refreshCatalog(); } },
       icon("refresh"), t("models.refreshCatalog"));
-    const children = [head("catalog", t("models.catalogHelp"), [refresh])];
+    const children = [h("div.models-subhead", null, h("p.faint", null, t("models.catalogHelp")), refresh)];
+    if (state.view) children.push(resourcePicker(state.view.registry.endpoints, state.endpointId, function (id) {
+      state.endpointId = id; void invalidateObservations();
+    }, "models.queryEndpoint"));
     const body = h("div.card-body");
     if (catalog.loading) body.append(h("p", { role: "status" }, t("models.loading")));
     if (catalog.error) body.append(h("p.settings-error", { role: "alert" }, t("models.catalogFailed") + " " + catalog.error));
@@ -549,6 +492,7 @@ export function mountModels(root, deps) {
         item.source === "factory" ? h("span.card-hint", { title: t("models.accountIdHelp") }, item.id) : null)),
       h("div.card-body", null,
         item.error ? h("p.settings-error", null, item.error) : null,
+        item.stale ? h("p.faint", null, t("models.stale") + " · " + t("models.observed") + " " + when(item.observedAt)) : null,
         item.windows.length ? h("div.models-groups", null, quotaGroups(item.windows).map(function (group) {
           return h("div.models-group", null, group.name ? h("h3", null, group.name) : null,
             h("ul.models-windows", null, group.windows.map(windowRow)));
@@ -556,19 +500,28 @@ export function mountModels(root, deps) {
         facts.length ? h("dl.models-balances", null, facts) : null));
   }
   function quotaReady() {
-    const connection = state.view && state.view.connection;
-    return !!(connection && connection.cpaUrl && connection.managementKeyFile);
+    return !!(state.view && state.view.registry.modules.some(m => m.id === state.moduleId
+      && m.kind === "cliproxyapi" && m.quotaAdapter === "factory-quota-v1" && m.managementUrl && m.managementKeyFile));
   }
   function renderQuota() {
     const quota = state.quota;
-    const tabs = h("div.seg", { role: "group", "aria-label": t("models.source") }, QUOTA_SOURCES.map(function (source) {
+    const sources = (state.view?.quotaSources || []).filter(item => item.moduleId === state.moduleId).map(item => item.source);
+    const tabs = sources.length > 1 ? h("div.seg", { role: "group", "aria-label": t("models.source") }, sources.map(function (source) {
       return h("button.seg-btn", { type: "button", "aria-pressed": String(source === quota.source), disabled: quota.loading && source !== quota.source,
         onclick: function () { if (source !== quota.source) go({ section: "quota", source: source }); } }, t("models.source." + source, source));
+    })) : null;
+    const refresh = h("button.btn", { type: "button", disabled: quota.loading || !quotaReady() || state.view?.readOnly, onclick: function () {
+      return quota.source ? refreshQuota() : readInitialQuota();
+    } }, icon("refresh"), t(quota.source ? "models.refreshQuota" : "models.readQuota"));
+    const children = [h("div.models-subhead", null, h("p.faint", null, t("models.quotaHelp")), refresh),
+      h("div.models-toolbar.models-toolbar-flat", null, tabs)];
+    if (state.view) children.push(resourcePicker(state.view.registry.modules.filter(m => m.kind === "cliproxyapi"), state.moduleId, function (id) {
+      state.moduleId = id;
+      state.quota.source = (state.view.quotaSources || []).find(item => item.moduleId === id)?.source || "";
+      void invalidateObservations();
     }));
-    const refresh = h("button.btn", { type: "button", disabled: quota.loading || !quotaReady(), onclick: function () { void refreshQuota(); } },
-      icon("refresh"), t("models.refreshQuota"));
-    const children = [head("quota", t("models.quotaHelp"), [refresh]), h("div.models-toolbar.models-toolbar-flat", null, tabs)];
-    if (!quotaReady()) children.push(h("p.models-note", null, icon("info"), t("models.quotaNeedsCpa") + " ", sectionLink("connection", t("models.openConnection"))));
+    if (!quota.source) children.push(h("p.models-note", null, icon("info"),
+      t(quotaReady() ? "models.quotaReadHelp" : "models.quotaNeedsCpa")));
     const body = [];
     if (quota.loading) body.push(h("p", { role: "status" }, t("models.loading")));
     if (quota.unavailable) body.push(h("p", { role: "status" }, t("models.quotaUnavailable")));
@@ -597,6 +550,12 @@ export function mountModels(root, deps) {
   function adoptView(view) {
     const previous = state.view;
     state.view = view;
+    if (!view.registry.modules.some(m => m.id === state.bridgeId)) state.bridgeId = view.registry.modules.find(m => m.kind === "metabridge")?.id || "";
+    if (!view.registry.endpoints.some(e => e.id === state.endpointId)) state.endpointId = view.registry.endpoints[0]?.id || "";
+    if (!view.registry.modules.some(m => m.id === state.moduleId)) state.moduleId = view.registry.modules.find(m => m.kind === "cliproxyapi" && m.quotaAdapter !== "none")?.id
+      || view.quotaSources?.[0]?.moduleId || "";
+    const sources = (view.quotaSources || []).filter(item => item.moduleId === state.moduleId).map(item => item.source);
+    if (!sources.includes(state.quota.source)) state.quota.source = sources[0] || "";
     if (previous && previous.revision === view.revision) return;
     return invalidateObservations();
   }
@@ -612,65 +571,41 @@ export function mountModels(root, deps) {
 
   async function load() {
     state.loading = true; state.loadError = null; renderAll();
-    try { await adoptView(await api.models()); }
+    try {
+      const view = await api.models();
+      // Each configured component is an independent read source. A failed
+      // source remains visible as a scoped error, without hiding other records.
+      const components = await Promise.all(view.registry.modules.map(async module => {
+        try {
+          const current = await api.models(module.id);
+          if (current.registryRevision !== view.registryRevision) return { module, error: t("models.configurationChangedRead") };
+          return { module, view: current };
+        } catch (error) { return { module, error: error.message }; }
+      }));
+      state.components = components;
+      await adoptView(view);
+    }
     catch (error) { state.loadError = error.message; }
     finally { state.loading = false; renderAll(); }
     return !state.loadError;
   }
 
-  // An unknown write is never resent. Reading current facts again lets the
-  // reader see whether it landed; later writes carry that fresh revision, so
-  // the server's revision check rejects anything based on the old view.
-  // After a rejection the same explicit read refreshes the revision while the
-  // non-secret drafts stay for the reader to review and save again.
+  // Operator owns configuration changes. Read every current source again;
+  // this action never replays a write or contacts an upstream model service.
   async function reconcile() {
     if (state.pending || state.loading) return;
     const view = state.view;
-    const wasUnknown = state.unknown;
+    // Reconcile against current registry facts even if an uncertain unregister
+    // removed the selected resource. This read never replays the write.
+    state.bridgeId = "";
     if (!(await load())) return;
     const unchanged = !!view && state.view.revision === view.revision;
-    if (wasUnknown) {
-      setReceipt(t(unchanged ? "models.reconciledUnchanged" : "models.reconciledChanged"), "warn", "summary");
-      state.unknown = false;
-      api.releaseModelWrites();
-      state.connectionDraft = null;
-    } else {
-      setReceipt(t(unchanged ? "models.rereadUnchanged" : "models.rereadChanged"), unchanged ? "ok" : "warn", "summary");
-    }
-    state.rejected = false;
+    setReceipt(t(unchanged ? "models.rereadUnchanged" : "models.rereadChanged"), unchanged ? "ok" : "warn", "summary");
     renderAll();
-  }
-
-  async function write(send, options) {
-    if (writesBlocked()) return;
-    state.pending = true;
-    state.rejected = false;
-    setReceipt(t("models.saving"), "pending", options.scope);
-    renderAll();
-    try {
-      const view = await send(state.view.revision);
-      if (options.clearConnection) state.connectionDraft = null;
-      if (options.clearProvider) state.providerDraft = null;
-      setReceipt(t("models.saved"), "ok", options.scope);
-      await adoptView(view);
-    } catch (error) {
-      if (error.disposition === "not-submitted") {
-        state.rejected = true;
-        setReceipt(t("models.rejected") + " " + error.message, "bad", options.scope);
-        state.receipt.rejected = true;
-      } else {
-        state.unknown = true;
-        // The blocking alert is page-wide; the receipt stays where it was made.
-        setReceipt(t("models.unknownWrite") + " " + error.message, "warn", options.scope);
-      }
-    } finally {
-      state.pending = false;
-      renderAll();
-    }
   }
 
   async function loadCatalog(cursor) {
-    if (!state.view) return;
+    if (!state.view || !state.endpointId) return;
     const catalog = state.catalog;
     const generation = ++catalog.generation;
     catalog.loading = true; catalog.error = null; catalog.note = null;
@@ -679,7 +614,7 @@ export function mountModels(root, deps) {
     if (!cursor) { catalog.page = null; catalog.items = []; }
     renderCatalog();
     try {
-      const page = await api.modelCatalog(cursor || "0");
+      const page = await api.modelCatalog(cursor || "0", state.endpointId);
       if (generation !== catalog.generation) return;
       // Pages from different observations are never mixed.
       if (cursor && catalog.page && page.observedAt !== catalog.page.observedAt) {
@@ -700,11 +635,11 @@ export function mountModels(root, deps) {
 
   async function refreshCatalog() {
     const catalog = state.catalog;
-    if (catalog.loading || !state.view) return;
+    if (catalog.loading || !state.view || state.view.readOnly) return;
     const generation = ++catalog.generation;
     catalog.loading = true; catalog.error = null; catalog.note = null; renderCatalog();
     try {
-      const page = await api.refreshModels({ revision: state.view.revision, kind: "catalog" });
+      const page = await api.refreshModels({ revision: state.view.registryRevision, kind: "catalog", resourceId: state.endpointId });
       if (generation !== catalog.generation) return;
       catalog.page = page; catalog.items = page.items.slice();
     } catch (error) {
@@ -724,13 +659,13 @@ export function mountModels(root, deps) {
   }
 
   async function loadQuota() {
-    if (!state.view) return;
+    if (!state.view || !state.quota.source) return;
     const quota = state.quota;
     const generation = ++quota.generation;
     const source = quota.source;
     quota.loading = true; quota.error = null; quota.unavailable = false; quota.observation = null; renderQuota();
     try {
-      const observation = await api.modelQuota(source);
+      const observation = await api.modelQuota(source, state.moduleId);
       if (generation === quota.generation) quota.observation = observation;
     } catch (error) {
       if (generation === quota.generation) quotaFailure(quota, error);
@@ -741,17 +676,61 @@ export function mountModels(root, deps) {
 
   async function refreshQuota() {
     const quota = state.quota;
-    if (quota.loading || !state.view) return;
+    if (quota.loading || !state.view || state.view.readOnly || !quotaReady()) return;
     const generation = ++quota.generation;
     const source = quota.source;
     quota.loading = true; quota.error = null; quota.unavailable = false; renderQuota();
     try {
-      const observation = await api.refreshModels({ revision: state.view.revision, kind: "quota", source: source });
+      const observation = await api.refreshModels({ revision: state.view.registryRevision, kind: "quota", source: source, resourceId: state.moduleId });
       if (generation === quota.generation) quota.observation = observation;
     } catch (error) {
       if (generation === quota.generation) quotaFailure(quota, error);
     } finally {
       if (generation === quota.generation) { quota.loading = false; renderQuota(); }
+    }
+  }
+
+  async function readInitialQuota() {
+    const quota = state.quota;
+    if (quota.loading || !state.view || state.view.readOnly || !quotaReady()) return;
+    const moduleId = state.moduleId;
+    const revision = state.view.registryRevision;
+    const generation = ++quota.generation;
+    let completionGeneration = generation;
+    quota.loading = true; quota.error = null; quota.unavailable = false; renderQuota();
+    // These are the registered adapter's wire operations, not default account
+    // categories. Only this explicit click calls them; actual returned accounts
+    // determine which source choices appear after reading the cache metadata.
+    try {
+      const results = await Promise.all(["factory", "command-code"].map(async source => {
+        try {
+          const observation = await api.refreshModels({ revision, kind: "quota", source, resourceId: moduleId });
+          return { source, observation, error: ["failed", "unsupported"].includes(observation.status) ? observation.error || t("models.quotaItemsUnknown") : null };
+        } catch (error) { return { source, error: error.message }; }
+      }));
+      if (generation !== quota.generation || moduleId !== state.moduleId) return;
+      const success = results.find(result => result.observation?.items.length);
+      if (success) quota.observation = success.observation;
+      const view = await api.models(state.bridgeId);
+      if (generation !== quota.generation || moduleId !== state.moduleId) return;
+      const adoption = adoptView(view);
+      completionGeneration = quota.generation;
+      await adoption;
+      if (moduleId !== state.moduleId || quota.generation !== completionGeneration) return;
+      if (quota.source) {
+        const read = loadQuota();
+        completionGeneration = quota.generation;
+        await read;
+      }
+      if (moduleId !== state.moduleId || quota.generation !== completionGeneration) return;
+      // A sibling failure must not erase a successfully observed account.
+      const errors = results.filter(result => result.error).map(result => result.error);
+      if (errors.length) quota.error = errors.join(" · ");
+      else if (!quota.source) quota.observation = results.find(result => result.observation)?.observation || null;
+    } catch (error) {
+      if (moduleId === state.moduleId && quota.generation === completionGeneration) quota.error = error.message;
+    } finally {
+      if (moduleId === state.moduleId && quota.generation === completionGeneration) { quota.loading = false; renderQuota(); }
     }
   }
 
@@ -763,15 +742,11 @@ export function mountModels(root, deps) {
     state: state,
     show: show,
     translate: function () {
-      // Keep data and drafts in this mount; never reload on language change.
-      const password = root.querySelector?.('input[type="password"]');
-      const value = password?.value;
+      // Keep observations and expanded details; locale changes make no reads.
       renderAll();
-      const replacement = root.querySelector?.('input[type="password"]');
-      if (replacement && value !== undefined) replacement.value = value;
     },
     updateFreshness: updateFreshness,
-    dirty: function () { return !!state.connectionDraft || !!state.providerDraft || state.pending; }
+    dirty: function () { return false; }
   };
 }
 `;

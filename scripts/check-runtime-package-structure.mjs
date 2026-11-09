@@ -16,6 +16,11 @@ const nativeFiles = nativeTargets.flatMap(target => [
 ]);
 const required = [
   "dist/cli.js",
+  "dist/models/configureConnection.js",
+  "dist/models/connectionConfigCli.js",
+  "dist/models/connectionConfig.js",
+  "dist/models/connectionToml.js",
+  "docs/model-connection-tools.md",
   "dist/cli/commandCatalog.js",
   ...nativeFiles,
   "ARCHITECTURE.md",
@@ -25,6 +30,11 @@ const required = [
   "docs/task-discovery.zh-CN.md",
   "docs/provider-retry.md",
   "docs/storage-baseline.md",
+  "docs/model-components.md",
+  "docs/model-management-api.md",
+  "docs/model-maintenance.md",
+  "docs/model-metabridge.md",
+  "docs/model-cliproxyapi.md",
   "docs/storage-baseline.zh-CN.md",
   "skills/yui-leader/SKILL.md",
   "skills/yui-experiment-leader/SKILL.md",

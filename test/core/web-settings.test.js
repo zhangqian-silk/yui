@@ -17,6 +17,11 @@ import { WebRequestRejected } from "../../dist/web/webMutation.js";
 import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { PREFS_SCRIPT } from "../../dist/web/assets/client/lib/prefs.js";
 import { SETTINGS_SCRIPT } from "../../dist/web/assets/client/app/settings.js";
+import { SETTINGS_STYLES } from "../../dist/web/assets/styles/views/settings.js";
+
+const nodeText = node => typeof node === "object" && node
+  ? [node.textContent || "", ...Array.from(node.children || [], nodeText)].join(" ")
+  : String(node);
 
 function fixture(t) {
   const home = mkdtempSync(join(tmpdir(), "yui-settings-"));
@@ -32,7 +37,7 @@ function fixture(t) {
   let refreshed = 0;
   const queries = [];
   const service = createWebSettings(store, {
-    environment: { FIXTURE_SECRET: "must-never-be-exposed" },
+    environment: { HOME: home, FIXTURE_SECRET: "must-never-be-exposed" },
     catalogs: { resolve: async input => {
       queries.push(input);
       return { source: "fallback", attemptedAt: new Date().toISOString(),
@@ -48,6 +53,8 @@ function fixture(t) {
 
 test("settings use CLI defaults and validation, atomic group writes, stale-read protection and supported reset", async t => {
   const f = fixture(t);
+  assert.deepEqual(f.service.index().supportedAgents.find(a => a.id === "codex-cli").configuredIds, ["fixture"]);
+  assert.deepEqual(f.service.index().supportedAgents.find(a => a.id === "claude-code-cli").configuredIds, []);
   assert.deepEqual(f.service.read("system").fields.find(f => f.key === "time-zone").value,
     runConfigCommand("system", ["show"], f.store).data.timeZone);
   const original = f.service.read("runtime");
@@ -180,7 +187,7 @@ test("settings HTTP ingress requires page token and reports rejected writes with
 test("Role default model/effort saves validate the selected model without changing a live Session", async t => {
   const f = fixture(t);
   const service = createWebSettings(f.store, {
-    environment: {},
+    environment: { HOME: f.home },
     catalogs: { resolve: async () => ({
       source: "live", attemptedAt: "2026-10-10T00:00:00Z",
       catalog: { schemaVersion: 1, agentId: "fixture", adapterId: "codex",
@@ -246,16 +253,29 @@ test("browser session access preference is isolated, validated and truthful when
 });
 
 test("settings editor preserves drafts and unknown receipts, with model-dependent capability choices", async () => {
+  let activeElement = null;
+  const childCollection = (items = []) => new Proxy(items, {
+    get(target, key, receiver) {
+      // HTMLCollection supports indexed iteration but not Array#forEach.
+      if (key === "forEach") return undefined;
+      return Reflect.get(target, key, receiver);
+    }
+  });
   function element(spec, attrs, ...children) {
     const result = {
       tagName: spec.split(".")[0].toUpperCase(), value: "", checked: false, disabled: false,
-      dataset: {}, handlers: {}, children: [], classList: { add() {} },
+      dataset: {}, handlers: {}, children: childCollection(), classList: { add() {} },
+      get parentElement() { return this.parent && this.parent.tagName ? this.parent : null; },
+      get parentNode() { return this.parent || null; },
       append(...items) {
         const children = items.flat().filter(x => x != null);
-        for (const child of children) if (typeof child === "object") child.parent = this;
+        for (const child of children) if (typeof child === "object") {
+          if (child.parent) child.parent.children = child.parent.children.filter(item => item !== child);
+          child.parent = this;
+        }
         this.children.push(...children);
       },
-      replaceChildren(...items) { this.children = []; this.append(...items); },
+      replaceChildren(...items) { this.children = childCollection(); this.append(...items); },
       addEventListener(name, fn) {
         const previous = this.handlers[name];
         this.handlers[name] = previous ? event => { previous(event); return fn(event); } : fn;
@@ -268,7 +288,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
         for (const item of items) item.parent = this.parent;
         this.parent.children.splice(this.parent.children.indexOf(this), 0, ...items);
       },
-      focus() {},
+      focus() { this.focused = true; activeElement = this; },
       querySelectorAll(selector) {
         const tags = selector.toUpperCase().split(",");
         const visit = node => typeof node === "object" ? [
@@ -286,19 +306,21 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   }
   const shell = new Map();
   const shown = [];
-  const panels = ["preferences", "skills", "server"].map(section => ({ hidden: false, dataset: { section } }));
+  const panels = ["preferences", "skills", "server", "agents", "roles"].map(section => ({ hidden: false, dataset: { section } }));
   let skillOptions;
   let failure = Object.assign(Error("Invalid value"), { disposition: "not-submitted" });
   let saved;
   let submissions = 0;
+  let language = "";
+  const translations = [];
   const context = vm.createContext({
     h: element, URLSearchParams,
-    document: { querySelector: key => {
+    document: { get activeElement() { return activeElement; }, querySelector: key => {
       if (!shell.has(key)) shell.set(key, element("div"));
       return shell.get(key);
     }, querySelectorAll: () => panels },
     window: { addEventListener() {}, location: { search: "?section=server" }, history: { pushState() {} }, scrollTo() {} },
-    i18n: { t: k => k, subscribe() {} }, createThemeController: () => ({}),
+    i18n: { t: k => language + k, subscribe(fn) { translations.push(fn); } }, createThemeController: () => ({ render() {} }),
     registerManagePage() {}, navigateManage() {},
     pageSections: () => ["preferences", "skills", "server"],
     createManageShell: () => ({ set: section => shown.push(section), setDirty() {}, render() {} }),
@@ -308,10 +330,10 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     requestJson: async () => ({}),
     submitMutation: async () => { submissions++; if (failure) throw failure; return saved; }
   });
-  vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", ""), context);
+  vm.runInContext(SETTINGS_SCRIPT.replace(/^import .*;\n/gm, "").replace("void start();", "").replace("void loadRoutes();", ""), context);
   // A direct open of ?section=server shows only that section in the shared rail.
   assert.deepEqual(shown, ["server"]);
-  assert.deepEqual(panels.map(panel => panel.hidden), [true, true, false]);
+  assert.deepEqual(panels.map(panel => panel.hidden), [true, true, false, true, true]);
   assert.equal(skillOptions.heading, false, "the section heading replaces the Skills card title");
   assert.equal(typeof skillOptions.onDirty, "function");
   shell.get("#reset-layout").handlers.click();
@@ -327,15 +349,15 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   context.renderGroup(state, group);
   const draft = state.editors[0].control;
   draft.value = "bad"; draft.handlers.input();
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(submissions, 0, "basic validation happens before submission");
   draft.value = "240"; draft.handlers.input();
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(draft.value, "240");
   assert.equal(state.dirty, true);
   assert.equal(state.save.disabled, false, "proven rejection is editable");
   failure = Object.assign(Error("Connection lost"), { disposition: "unknown" });
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(draft.value, "240");
   assert.equal(state.unknown, true);
   assert.equal(state.save.disabled, true);
@@ -343,7 +365,7 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   draft.value = "300"; draft.handlers.input();
   assert.equal(state.receipt.textContent, unknownReceipt, "editing never erases the unknown-write warning");
   const count = submissions;
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(submissions, count, "unknown outcome is not replayed");
   // A fresh, explicitly reconciled page receives a fresh read revision.
   context.renderGroup(state, { ...group, revision: "reconciled" });
@@ -351,18 +373,44 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   failure = null;
   saved = { group: { ...group, revision: "saved", fields: [{ ...group.fields[0], value: 240 }] },
     output: "saved 240", adoption: "next launch", refresh: "not-required" };
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(state.dirty, false);
   assert.equal(state.group.revision, "saved");
   assert.equal(state.editors[0].control.value, "240");
 
   const roleGroup = { id: "role/worker", agentId: "fixture", revision: "role-first", notice: "next launch",
+    provenance: { label: "Fixture snapshot", capturedAt: "2026-10-27T00:00:00Z" },
     fields: [
       { key: "model", label: "Model", kind: "text", value: "fast", reset: true },
       { key: "effort", label: "Effort", kind: "text", value: "low", reset: true },
-      { key: "systemPrompt", label: "Instructions", kind: "multiline", value: "" }
+      { key: "systemPrompt", label: "Instructions", kind: "multiline", value: "" },
+      { key: "workspace", label: "Workspace", kind: "text", value: "/fixture/workspace" },
+      { key: "enabled", label: "Enabled", kind: "boolean", value: true }
     ] };
   context.renderGroup(state, roleGroup);
+  const editorFor = key => state.editors.find(editor => editor.field.key === key);
+  const roleView = nodeText(state.content);
+  assert.equal(editorFor("workspace"), undefined, "the Role workspace is not shown or written from the execution detail");
+  for (const heading of ["settings.group.instructions", "access.groupHint.instructions"]) {
+    assert.match(roleView, new RegExp(heading), `the rebuilt inspector exposes ${heading}`);
+  }
+  assert.doesNotMatch(roleView, /settings.source.title|settings.group.workspace/,
+    "execution members show no diagnostic source block or workspace group");
+  assert.doesNotMatch(roleView, /settings.group.identity|settings.group.models/,
+    "the short daily choices form one compact block without section headings");
+  const compact = editorFor("model").row.parentNode;
+  assert.ok(compact && compact === editorFor("enabled").row.parentNode && compact === editorFor("effort").row.parentNode,
+    "enabled, model and effort share the compact block");
+  assert.match(roleView, /settings.editCount/, "the sticky action footer reports unsaved state");
+  assert.doesNotMatch(roleView, /settings.resetShort|settings.reset\b/, "execution members have no separate reset checkbox");
+  assert.match(SETTINGS_STYLES, /\.agent-inspector\{[^}]*overflow:clip/,
+    "the inspector must not become the sticky containing block for its action footer");
+  assert.match(SETTINGS_STYLES, /\.agent-native-head\{[^}]*flex-wrap:wrap/,
+    "the Native card stacks its non-shrinking observation pill before the title can collapse");
+  assert.match(SETTINGS_STYLES, /\.agent-native-head \.agent-status-pill\{white-space:normal\}/,
+    "an observation label may wrap rather than overflow its narrow card");
+  assert.match(SETTINGS_STYLES, /\.settings-profile-diff\{[^}]*table-layout:fixed/,
+    "Profile values wrap inside the narrow preview instead of forcing horizontal scrolling");
   const catalog = { agentId: "fixture", models: [
     { value: "fast", label: "Fast", isDefault: true, efforts: [{ value: "low", label: "Low" }] },
     { value: "deep", label: "Deep", efforts: [{ value: "high", label: "High" }] }
@@ -372,13 +420,14 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   const query = state.content.querySelectorAll("button").find(button => button.children.includes("settings.queryCapabilities"));
   const capabilityRead = query.handlers.click();
   const beforeQuerySubmit = submissions;
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.equal(submissions, beforeQuerySubmit, "submission waits for the in-flight capability read");
   resolveCapabilities({ source: "cache", fetchedAt: "2026-10-10T00:00:00Z", catalog });
   await capabilityRead;
   assert.equal(state.capabilityPending, false);
   assert.equal(query.disabled, false);
-  const [model, effort] = state.editors;
+  const model = editorFor("model");
+  const effort = editorFor("effort");
   assert.equal(model.control.tagName, "SELECT");
   assert.equal(effort.control.tagName, "SELECT");
   assert.equal(state.dirty, false, "a capability read does not change defaults");
@@ -404,6 +453,8 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
   const toggle = state.editors[0].control;
   assert.equal(toggle.tagName, "SELECT");
   assert.equal(toggle.value, "true");
+  assert.deepEqual(toggle.children.map(nodeText).map(value => value.trim()), ["settings.booleanOn", "settings.booleanOff"],
+    "boolean values use localized labels instead of true/false");
   toggle.value = "false"; toggle.handlers.change();
   let submitted;
   context.submitMutation = async (_key, _url, body) => {
@@ -411,8 +462,242 @@ test("settings editor preserves drafts and unknown receipts, with model-dependen
     return { group: { ...availability, revision: "disabled",
       fields: [{ ...availability.fields[0], value: false }] }, output: "disabled", adoption: "No Session stopped" };
   };
-  await state.content.children[0].handlers.submit({ preventDefault() {} });
+  await state.form.handlers.submit({ preventDefault() {} });
   assert.deepEqual(JSON.parse(JSON.stringify(submitted.changes)), [{ key: "enabled", value: false }]);
   assert.equal(state.editors[0].control.value, "false");
   assert.equal(state.dirty, false);
+  context.renderGroup(state, { ...roleGroup, readOnly: true,
+    provenance: { label: "Production snapshot", capturedAt: "2026-10-26T00:00:00Z" } });
+  context.applyCapabilities(state, { catalog });
+  assert.ok(state.editors.every(editor => editor.control.disabled), "capability choices cannot unlock snapshot inputs");
+  const snapshotModel = editorFor("model");
+  const snapshotCustom = snapshotModel.row.querySelectorAll("button").find(button => button.children.includes("settings.custom"));
+  assert.equal(snapshotCustom.disabled, true);
+  snapshotCustom.handlers.click();
+  assert.equal(snapshotModel.control.disabled, true);
+  const previous = submitted;
+  snapshotModel.control.value = "deep"; snapshotModel.control.handlers.change();
+  await state.form.handlers.submit({ preventDefault() {} });
+  assert.equal(submitted, previous, "snapshot mutation is blocked even if the submit handler is invoked");
+  assert.equal(state.save.disabled, true);
+
+  const metadata = [
+    { id: "system", section: "server", title: "System" },
+    { id: "profile/reader", section: "profiles", title: "Reader" },
+    { id: "profile/empty", section: "profiles", title: "Empty reader" },
+    { id: "role/worker", section: "roles", title: "Worker" },
+    { id: "role/empty", section: "roles", title: "Empty worker" },
+    { id: "agent/fixture", section: "agents", title: "Fixture" }
+  ];
+  const currentGroups = {
+    system: { id: "system", revision: "system-first", notice: "server settings",
+      fields: [
+        { key: "default-agent", label: "Default Agent", kind: "text", value: "fixture", source: "stored", reset: true },
+        { key: "default-workspace", label: "Default workspace", kind: "text", value: "/fixture/workspace", source: "default", reset: true },
+        { key: "time-zone", label: "Time zone", kind: "text", value: "Asia/Shanghai", source: "stored", reset: true },
+        { key: "delivery-timeout-seconds", label: "Timeout", kind: "number", value: 120, reset: true }
+      ] },
+    "role/worker": { ...roleGroup, fields: roleGroup.fields.map(field => ({ ...field, source: "stored" })) },
+    "role/empty": { id: "role/empty", agentId: "fixture",
+      fields: [{ key: "model", label: "Model", kind: "text", value: "" },
+        { key: "effort", label: "Effort", kind: "text", value: "" }] },
+    "agent/fixture": { id: "agent/fixture", agentId: "fixture", fields: [],
+      observation: { native: { model: "native-model", effort: "medium", catalogFetchedAt: "2026-10-27T08:00:00Z", models: [{ value: "native-model" }] } } },
+    "profile/reader": { id: "profile/reader", agentId: "fixture",
+      fields: [{ key: "model", label: "Model", kind: "text", value: "" }],
+      observation: { source: "global-worker", status: "resolved", binding: { config: { model: "worker-inherited", effort: "high" } } } },
+    "profile/empty": { id: "profile/empty", agentId: "fixture",
+      fields: [{ key: "model", label: "Model", kind: "text", value: "" },
+        { key: "effort", label: "Effort", kind: "text", value: "" }],
+      observation: { source: "explicit", status: "resolved", binding: { config: { model: "", effort: "" } } } }
+  };
+  const requests = [];
+  context.requestJson = async url => {
+    requests.push(url);
+    if (url.startsWith("/api/settings/group?")) return currentGroups[new URL(url, "http://fixture").searchParams.get("id")];
+    return { groups: metadata, total: 4, supportedAgents: [] };
+  };
+  context.showSection("roles");
+  await context.start();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const uiGroups = vm.runInContext("groups", context);
+  const agent = uiGroups.find(group => group.meta.id === "agent/fixture");
+  const role = uiGroups.find(group => group.meta.id === "role/worker");
+  const profile = uiGroups.find(group => group.meta.id === "profile/reader");
+  const emptyRole = uiGroups.find(group => group.meta.id === "role/empty");
+  const emptyProfile = uiGroups.find(group => group.meta.id === "profile/empty");
+  const text = nodeText;
+  assert.equal(agent.root.parent, shell.get("#agent-settings-groups"));
+  assert.equal(role.root.parent, shell.get("#agent-settings-groups"));
+  assert.equal(profile.root.parent, shell.get("#agent-settings-groups"));
+  assert.equal(agent.root.hidden, true, "loaded detail cards stay out of the master/detail view");
+  assert.equal(role.root.hidden, true);
+  assert.match(text(profile.summary), /worker-inherited/, "template summaries show resolved inherited model, not an empty override");
+  assert.match(text(role.summary), /fast/);
+  assert.doesNotMatch(text(role.summary), /native-model/, "role overrides are not replaced by the Agent native default");
+  for (const emptySummary of [text(emptyRole.summary), text(emptyProfile.summary)]) {
+    assert.doesNotMatch(emptySummary, /settings.summaryUnavailable/,
+      "a resolved group with empty overrides is not misreported as unreadable");
+    assert.match(emptySummary, /settings.summaryNativeDefault/);
+  }
+  assert.match(text(emptyRole.summary), /settings.roleDefaults/);
+  assert.equal(requests.some(url => url.includes("capabilities")), false, "group summaries do not trigger capability discovery");
+  const accessText = text(vm.runInContext("agentIndex", context));
+  assert.match(accessText, /fast/, "index rows expose the Role's model evidence");
+  assert.match(accessText, /worker-inherited/, "index rows expose a resolved Profile's inherited model");
+  const findAccess = id => {
+    const visit = node => typeof node === "object" ? [node, ...(node.children || []).flatMap(visit)] : [];
+    return visit(vm.runInContext("agentIndex", context)).find(node => node.dataset?.agentId === id);
+  };
+  const timestampState = { content: element("div"), pending: false };
+  context.renderGroup(timestampState, currentGroups["agent/fixture"]);
+  assert.match(text(timestampState.content), /settings.source.observed · 2026-10-27T08:00:00Z/,
+    "a Native overview reports the actual observation timestamp");
+  context.renderGroup(timestampState, { ...currentGroups["agent/fixture"],
+    observation: { native: { model: "native-model", effort: "medium", models: [] } } });
+  assert.match(text(timestampState.content), /settings.source.observationUnknown/,
+    "an absent Native observation time is labelled unknown rather than presented as a blank timestamp");
+  const roleDraft = role.editors[0].control;
+  roleDraft.value = "unlisted-draft"; roleDraft.handlers.input();
+  findAccess("role/worker").handlers.click();
+  context.showSection("agents");
+  assert.match(text(vm.runInContext("agentIndex", context)), /native-model/, "the Agents page lists the Agent's native default");
+  assert.match(text(vm.runInContext("agentIndex", context)), /Worker/, "an Agent row names the Roles that use it");
+  findAccess("agent/fixture").handlers.click();
+  context.showSection("roles");
+  findAccess("role/worker").handlers.click();
+  assert.equal(role.editors[0].control, roleDraft, "switching pages and members preserves a mounted draft");
+  assert.equal(roleDraft.value, "unlisted-draft");
+  const indexText = text(vm.runInContext("agentIndex", context));
+  assert.match(indexText, /settings.unsavedShort/, "an input event updates the index's unsaved badge immediately");
+  const focusBefore = findAccess("role/worker");
+  activeElement = focusBefore;
+  context.renderAgentIndex();
+  const restoredAccess = findAccess("role/worker");
+  assert.equal(activeElement, restoredAccess, "index rerender restores focus to the same member control");
+  assert.equal(restoredAccess.focused, true, "index rerender restores keyboard focus to the selected member");
+  const close = role.inspectorContent.querySelectorAll("button").find(button => button["aria-label"] === "settings.closeInspector");
+  activeElement = close;
+  close.handlers.click();
+  assert.equal(vm.runInContext("accessLayout.dataset.detail", context), "closed",
+    "closing the detail returns the list to full width instead of reopening the first member");
+  assert.equal(vm.runInContext("selectedAccess()", context), null);
+  assert.equal(activeElement, findAccess("role/worker"), "closing moves focus to the row for the member that was closed");
+  const externalButton = element("button");
+  activeElement = externalButton;
+  context.renderAgentIndex();
+  assert.equal(activeElement, externalButton, "an index redraw never steals focus from an unrelated button");
+  findAccess("role/worker").handlers.click();
+  assert.equal(role.editors[0].control, roleDraft, "selecting after close retains the mounted draft");
+  assert.equal(roleDraft.value, "unlisted-draft");
+  context.showSection("server");
+  assert.equal(panels.find(panel => panel.dataset.section === "server").hidden, false);
+  assert.equal(panels.find(panel => panel.dataset.section === "agents").hidden, true);
+  assert.equal(panels.find(panel => panel.dataset.section === "roles").hidden, true);
+  const serverGroup = uiGroups.find(group => group.meta.id === "system");
+  assert.equal(serverGroup?.root.parent, shell.get("#server-settings-groups"), "server group cards are attached to the visible server section");
+  assert.equal(serverGroup?.loaded, true);
+  const serverControl = serverGroup?.editors[0]?.control;
+  assert.equal(serverControl?.disabled, false, "system fields remain editable through the actual server entry");
+  assert.equal(typeof serverControl?.handlers.input, "function", "system fields keep their editable input listener");
+  const serverText = text(serverGroup.content);
+  assert.match(serverText, /translated:settings.notice.server|settings.notice.server/,
+    "Server cards use the shared CLI source/reset notice, not the Role launch notice");
+  assert.doesNotMatch(serverText, /settings.notice.role/);
+  const serverSections = serverGroup.content.querySelectorAll("section").filter(section => section.children[0]?.tagName === "H3");
+  const sectionFor = key => serverSections.find(section => text(section.children[0]).includes(key));
+  assert.match(text(sectionFor("settings.group.defaults")), /settings.field.default-agent/);
+  assert.match(text(sectionFor("settings.group.defaults")), /settings.field.default-workspace/);
+  assert.match(text(sectionFor("settings.group.defaults")), /settings.field.time-zone/);
+  assert.doesNotMatch(text(sectionFor("settings.group.defaults")), /settings.group.permissions/);
+  assert.match(text(sectionFor("settings.group.runtime")), /settings.field.delivery-timeout-seconds/);
+  assert.match(text(sectionFor("settings.group.defaults")), /settings.takesEffect.time-zone/,
+    "the time-zone field keeps its distinct next-render effect text");
+  const compare = serverGroup.content.querySelectorAll("button").find(button => button.children.includes("settings.compare"));
+  await compare.handlers.click();
+  const compareText = text(serverGroup.content);
+  assert.match(compareText, /settings.compare.server/);
+  assert.doesNotMatch(compareText, /server settings/, "the raw backend notice is not shown in the localized comparison");
+  assert.match(compareText, /settings.field.time-zone/);
+  const roleWithProfiles = { content: element("div"), pending: false };
+  context.renderGroup(roleWithProfiles, { ...roleGroup, profiles: [{ id: "reader", available: true }] });
+  const roleText = text(roleWithProfiles.content);
+  assert.equal((roleText.match(/settings\.notice\.role/g) || []).length, 1,
+    "Role guidance has one notice rather than repeating the same later-launch warning");
+  assert.match(roleText, /settings\.profileAcknowledge/,
+    "Profile application has a one-time-copy acknowledgement distinct from ordinary Save");
+  assert.match(roleText, /settings\.acknowledge\.role/,
+    "ordinary Role Save retains its live-session safeguard");
+  const assertLocalizedCompare = async (state, group, key, backendNotice) => {
+    context.renderGroup(state, group);
+    const button = state.content.querySelectorAll("button").find(item => item.children.includes("settings.compare"));
+    await button.handlers.click();
+    const compared = text(state.content);
+    assert.match(compared, new RegExp(key), `${group.id} compare uses its localized explanation`);
+    assert.doesNotMatch(compared, new RegExp(backendNotice), `${group.id} compare does not leak the backend notice`);
+  };
+  await assertLocalizedCompare({ content: element("div"), pending: false }, roleGroup,
+    "settings.compare.roles", "next launch");
+  await assertLocalizedCompare({ content: element("div"), pending: false }, currentGroups["agent/fixture"],
+    "settings.compare.agents", "native configuration");
+  await assertLocalizedCompare({ content: element("div"), pending: false }, currentGroups["profile/reader"],
+    "settings.compare.profiles", "Template only");
+  context.showSection("roles");
+  assert.equal(panels.find(panel => panel.dataset.section === "roles").hidden, false);
+  assert.equal(role.editors[0].control, roleDraft, "navigation retains the existing editor");
+  assert.equal(roleDraft.value, "unlisted-draft");
+  assert.equal(role.dirty, true);
+  language = "translated:";
+  translations.forEach(update => update());
+  assert.match(text(role.summary), /translated:settings.roleDefaults/);
+  assert.match(text(vm.runInContext("agentIndex", context)), /translated:access.block.roles/);
+  assert.equal(role.editors[0].control, roleDraft, "translation updates summaries without rebuilding draft controls");
+  assert.equal(roleDraft.value, "unlisted-draft");
+  context.renderGroup(profile, { ...currentGroups["profile/reader"],
+    fields: [{ key: "enabled", kind: "boolean", value: false }],
+    observation: { source: "global-worker", status: "unavailable", reason: "Worker is unavailable" } });
+  assert.match(text(profile.summary), /Worker is unavailable/);
+  assert.match(text(profile.summary), /settings.summaryDisabled/);
+  assert.doesNotMatch(text(profile.summary), /settings.summaryNativeDefault/, "an unresolved template is not presented as a native-default choice");
+
+  // A saved Worker changes what inheriting Profiles launch with. Their runtime
+  // projection is re-read; another member's unsaved draft is kept.
+  const rowText = id => text(findAccess(id));
+  const profileDraft = emptyProfile.editors.find(editor => editor.field.key === "model").control;
+  profileDraft.value = "profile-draft"; profileDraft.handlers.input();
+  const workerSaved = { ...currentGroups["role/worker"], revision: "role-saved",
+    fields: currentGroups["role/worker"].fields.map(field => field.key === "effort" ? { ...field, value: "high" } : field) };
+  currentGroups["profile/reader"] = { ...currentGroups["profile/reader"],
+    observation: { source: "global-worker", status: "resolved", workerRevision: 2, binding: { agentId: "fixture", config: { model: "worker-inherited", effort: "high" } } } };
+  context.submitMutation = async () => ({ group: workerSaved, output: "saved" });
+  const saveWorker = async () => {
+    const effortEditor = role.editors.find(editor => editor.field.key === "effort");
+    effortEditor.control.value = effortEditor.control.value === "high" ? "max" : "high"; effortEditor.control.handlers.change();
+    await role.form.handlers.submit({ preventDefault() {} });
+    await new Promise(resolve => setTimeout(resolve, 0));
+  };
+  await saveWorker();
+  assert.match(rowText("profile/reader"), /worker-inherited\s+· high/, "an inheriting Profile shows the saved Worker effort");
+  assert.doesNotMatch(rowText("profile/reader"), /Worker is unavailable|access.unresolved/);
+  assert.equal(emptyProfile.editors.find(editor => editor.field.key === "model").control, profileDraft, "other drafts are not rebuilt");
+  assert.equal(profileDraft.value, "profile-draft");
+  assert.equal(emptyProfile.dirty, true);
+  const read = context.requestJson;
+  context.requestJson = async url => { if (url.includes("profile")) throw new Error("offline"); return read(url); };
+  await saveWorker();
+  assert.match(rowText("profile/reader"), /access.unresolved/, "a failed re-read is unknown, not the previous Worker value");
+  assert.doesNotMatch(rowText("profile/reader"), /worker-inherited/);
+  assert.equal(profileDraft.value, "profile-draft");
+  context.requestJson = read;
+  findAccess("profile/reader").handlers.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(rowText("profile/reader"), /worker-inherited\s+· high/, "selecting the template again retries the re-read");
+
+  // An Agent whose native file could not be read is not titled "Native default".
+  const unreadAgent = { content: element("div"), pending: false };
+  context.renderGroup(unreadAgent, { ...currentGroups["agent/fixture"],
+    observation: { adapterId: "codex", native: { status: "unavailable", model: null, effort: null, models: [] } } });
+  assert.match(text(unreadAgent.headerFacts), /access.nativeUnread.*access.nativeUnreadLong/);
+  assert.doesNotMatch(text(unreadAgent.headerFacts), /access.nativeDefault/);
+  assert.match(text(unreadAgent.content), /access.nativeUnreadFile/, "the native card says its file could not be read");
 });
