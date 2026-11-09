@@ -17,6 +17,7 @@ import {
   resolveAgentLaunchInactivityTimeoutSeconds,
   resolveControllerTaskConcurrency,
   resolveDeliveryTimeoutSeconds,
+  resolveMigrationBackupKeep,
   resolveGitLocalTimeoutSeconds,
   resolveGitRemoteInactivityTimeoutSeconds,
   resolveGitRemoteTimeoutSeconds,
@@ -140,6 +141,7 @@ export type YuiConfig = Readonly<{
   gitRemoteInactivityTimeoutSeconds?: number;
   gitRemoteTimeoutSeconds?: number;
   resourcesQuarantineTtlHours?: number;
+  migrationBackupKeep?: number;
   /**
    * Path to the tmux binary. Defaults to `tmux` on PATH.
    */
@@ -596,6 +598,7 @@ export function validateYuiConfig(config: YuiConfig): void {
       "gitRemoteInactivityTimeoutSeconds",
       "gitRemoteTimeoutSeconds",
       "resourcesQuarantineTtlHours",
+      "migrationBackupKeep",
       "tmuxBin",
       "tmuxHistoryLimit",
       "telemetryEnabled",
@@ -623,6 +626,7 @@ export function validateYuiConfig(config: YuiConfig): void {
     resolveResourcesGcMode(config.resourcesGcMode);
     resolveResourcesGcAutoQuarantine(config.resourcesGcAutoQuarantine);
     resolveResourcesQuarantineTtlHours(config.resourcesQuarantineTtlHours);
+    resolveMigrationBackupKeep(config.migrationBackupKeep);
     resolveRuntimeHealth(config.runtimeHealth);
     resolveControllerTaskConcurrency(config.controllerTaskConcurrency);
     resolveAgentLaunchInactivityTimeoutSeconds(config.agentLaunchInactivityTimeoutSeconds);

@@ -15,6 +15,14 @@ Task Role 是 Task 局部的；global Role 提供已配置的默认值和全局�
 的 global Role。只有当请求的 Task Role 不存在时，global Role 才作为创建模板。
 可用性、producer 分离和冻结的审查候选仍然适用。
 
+## 迁移备份保留数量
+
+`yui config resources set migration-backup-keep <1-1000>` 设置保留的最近成功受管
+迁移备份集合数，默认 3。`yui config resources show` 查看有效值，`clear` 恢复默认。
+修改配置不删除文件、无需重启；仅在下一次 `upgrade` 或 `update` 的存储迁移成功且
+校验通过后执行清理，恢复依赖和无法确认的历史备份即使超限也保护。
+详见[保留与保护规则](storage-baseline.zh-CN.md#迁移备份数量保留)。
+
 ## Git 操作预算
 
 三项 Git 超时均有正式配置。本地命令（包括本地 ref 复制和产物仓库）使用总耗时上限；

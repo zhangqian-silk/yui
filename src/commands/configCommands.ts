@@ -21,6 +21,7 @@ import {
   resolveAgentLaunchInactivityTimeoutSeconds,
   resolveControllerTaskConcurrency,
   resolveDeliveryTimeoutSeconds,
+  resolveMigrationBackupKeep,
   resolveGitLocalTimeoutSeconds,
   resolveGitRemoteInactivityTimeoutSeconds,
   resolveGitRemoteTimeoutSeconds,
@@ -148,6 +149,7 @@ export function effectiveConfigData(
     resourcesGcMode: resolveResourcesGcMode(config.resourcesGcMode),
     resourcesGcAutoQuarantine: resolveResourcesGcAutoQuarantine(config.resourcesGcAutoQuarantine),
     resourcesQuarantineTtlHours: resolveResourcesQuarantineTtlHours(config.resourcesQuarantineTtlHours),
+    migrationBackupKeep: resolveMigrationBackupKeep(config.migrationBackupKeep),
     runtimeHealth: {
       quietAfterSeconds: health.quietAfterMs / 1_000,
       diagnosticAfterSeconds: health.diagnosticAfterMs / 1_000,
@@ -403,6 +405,27 @@ const CONFIG_KEY_HANDLERS: readonly ConfigKeyHandler[] = [
         return rest;
       });
       return `Resource quarantine TTL reset to ${DEFAULT_RESOURCES_QUARANTINE_TTL_HOURS} hours\n`;
+    }
+  },
+  {
+    key: "migration-backup-keep",
+    showLabel: "Migration backup keep",
+    showValue: (config) => String(resolveMigrationBackupKeep(config.migrationBackupKeep)),
+    set(args, store) {
+      const usage = "Resources config set usage: yui config resources set migration-backup-keep <1-1000>.";
+      if (args.length !== 1) throw usageError(usage);
+      const migrationBackupKeep = validatedConfigValue(
+        () => resolveMigrationBackupKeep(Number(args[0])), usage
+      );
+      saveConfigKey(store, config => ({ ...config, migrationBackupKeep }));
+      return `Migration backup keep set to ${migrationBackupKeep}; applies after the next successful storage migration.\n`;
+    },
+    clear(store) {
+      saveConfigKey(store, config => {
+        const { migrationBackupKeep: _removed, ...rest } = config;
+        return rest;
+      });
+      return "Migration backup keep reset to 3; no files deleted.\n";
     }
   },
   {

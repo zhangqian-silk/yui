@@ -53,6 +53,7 @@ import { parseControllerIdentity, type ControllerIdentity } from "../core/contro
 import { isMinorStorageUpgrade, isStorageVersion, storageVersionParts } from "../storage/storageVersions.js";
 import { STORAGE_DOCTOR_CHECK_NAMES } from "../doctor/doctor.js";
 import { acquireHandoverLock } from "../release/runtimeRelease.js";
+import { isBackupRetentionReport } from "../storage/upgrade/backupRetention.js";
 import { updateStagingRoot } from "../storage/homeLayout.js";
 import { resolveYuiHome } from "../storage/taskStore.js";
 import {
@@ -1231,7 +1232,12 @@ function interpretStorageMigration(
   if (typeof backupPath !== "string" || backupPath.length === 0) {
     throw runtimeError("The staged binary did not report the required storage backup path.");
   }
-  return { backupPath };
+  const report = data.report.backupRetention;
+  if (report === undefined) return { backupPath };
+  return isBackupRetentionReport(report)
+    ? { backupPath, backupRetention: report }
+    : { backupPath, cleanupWarning: "Storage migration succeeded, but the backup retention report was invalid. "
+      + "Inspect the backup files; do not replay the successful migration." };
 }
 
 function isStorageMigrationStep(value: unknown): boolean {

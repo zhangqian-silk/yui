@@ -18,6 +18,10 @@ export const DEFAULT_RESOURCES_QUARANTINE_TTL_HOURS = 24;
 export const MIN_RESOURCES_QUARANTINE_TTL_HOURS = 1;
 export const MAX_RESOURCES_QUARANTINE_TTL_HOURS = 720;
 
+export function resolveMigrationBackupKeep(value?: unknown): number {
+  return resolveBoundedPositiveInteger(value, 3, 1, 1000, "migrationBackupKeep");
+}
+
 /**
  * Resolves the Resource GC mode. `report` (default) only reports candidates;
  * `quarantine` allows `yui resources gc --apply` to quarantine releasable

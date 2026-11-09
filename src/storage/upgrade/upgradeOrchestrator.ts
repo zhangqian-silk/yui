@@ -3,14 +3,22 @@ import {
 } from "node:path";
 import {
   copyFileSync,
+  closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   rmdirSync,
   rmSync,
   unlinkSync
 } from "node:fs";
 
 import Database from "../../sqlite/driver.js";
+import { resolveMigrationBackupKeep } from "../../config/yuiConfig.js";
+import {
+  captureBackupIdentity, checkedBackupRoot, recordSuccessfulBackup,
+  retainMigrationBackups, type BackupRetentionReport
+} from "./backupRetention.js";
 import { SqliteTaskStore } from "../sqliteStore.js";
 import { storageBackupRoot } from "../homeLayout.js";
 import type { ContentMigrationEffects } from "../taskContent.js";
@@ -61,6 +69,7 @@ export type StorageUpgradeReport = Readonly<{
   targetVersion: StorageVersion;
   steps: readonly StorageMinorUpgrade[];
   backupPath?: string;
+  backupRetention?: BackupRetentionReport;
 }>;
 
 export type UpgradeBlockerStage = "uninitialized" | "unsupported" | "corruption";
@@ -111,6 +120,7 @@ export type RunStorageUpgradeOptions = Readonly<{
   home: string;
   mode: "dry-run" | "execute" | "update-preflight";
   now?: Date;
+  maintenanceOwnerPid?: number;
 }>;
 
 /**
@@ -234,12 +244,14 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
   }
 
   let backupPath: string;
+  let backupIdentity: ReturnType<typeof captureBackupIdentity>;
   try {
     backupPath = await createDatabaseBackup(
       options.home,
       state.currentVersion,
       options.now ?? new Date()
     );
+    backupIdentity = captureBackupIdentity(backupPath);
   } catch (error) {
     return {
       outcome: "failed",
@@ -333,6 +345,26 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
       sceneUnchanged: restoration.restored && directoryCleanupError === undefined
     };
   }
+  // This is deliberately outside migration/restore handling. Cleanup warnings
+  // must never restore or replay a successfully committed, validated migration.
+  let backupRetention: BackupRetentionReport = {
+    keep: resolveMigrationBackupKeep(), deleted: [], protected: [], warnings: []
+  };
+  try {
+    const store = new SqliteTaskStore(options.home, { readonly: true });
+    let homeId: string;
+    try {
+      homeId = store.getHomeIdentity().homeId;
+      backupRetention.keep = resolveMigrationBackupKeep(store.getConfig().migrationBackupKeep);
+    } finally { store.close(); }
+    recordSuccessfulBackup(options.home, homeId, backupPath, backupIdentity);
+    backupRetention = retainMigrationBackups({
+      home: options.home, homeId, keep: backupRetention.keep,
+      protectedPaths: [backupPath], maintenanceOwnerPid: options.maintenanceOwnerPid
+    });
+  } catch (error) {
+    backupRetention.warnings.push({ path: backupPath, message: messageOf(error) });
+  }
   return {
     outcome: "upgraded",
     classification: currentClassification(),
@@ -342,7 +374,8 @@ export async function runStorageUpgrade(options: RunStorageUpgradeOptions): Prom
       sourceVersion: state.currentVersion,
       targetVersion: CURRENT_STORAGE_VERSION,
       steps: plan,
-      backupPath
+      backupPath,
+      backupRetention
     }
   };
 }
@@ -370,13 +403,24 @@ async function createDatabaseBackup(
   // Backups live inside Home so a single canonical root contains every
   // self-managed artifact; the upgrade fence still protects them from the
   // live database because they are a distinct partition from yui.db.
-  const backupDirectory = storageBackupRoot(home);
-  mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
+  mkdirSync(storageBackupRoot(home), { recursive: true, mode: 0o700 });
+  const backupDirectory = checkedBackupRoot(home);
   const timestamp = now.toISOString().replaceAll(":", "-");
   const backupPath = join(
     backupDirectory,
     `pre-storage-v${sourceVersion}-${timestamp}.db`
   );
+  // Never overwrite an older backup (including a dangling link), nor reuse
+  // an incomplete SQLite set. A collision is a backup failure before migration.
+  for (const suffix of ["-wal", "-shm", "-journal", ".retention.json", ".pin"]) {
+    try {
+      lstatSync(`${backupPath}${suffix}`);
+      throw new Error(`Backup set already exists: ${backupPath}${suffix}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  closeSync(openSync(backupPath, "wx", 0o600));
   const database = new Database(source, { readonly: true, fileMustExist: true });
   try {
     await database.backup(backupPath);

@@ -17,6 +17,7 @@ import {
   isForeignHandoverLockHeld,
   isHandoverLockHeld
 } from "../release/runtimeRelease.js";
+import { renderBackupRetention } from "../output/backupRetentionPresentation.js";
 
 export type UpgradeCommandResult = Readonly<{
   output: string;
@@ -157,7 +158,7 @@ async function runUpdateOwnedUpgrade(
         + "Controller handover lock."
     );
   }
-  return runStorageUpgrade({ home, mode: "execute" });
+  return runStorageUpgrade({ home, mode: "execute", maintenanceOwnerPid: ownerPid });
 }
 
 /** Render an {@link UpgradeResult} as concise, CLI-style text. */
@@ -178,7 +179,8 @@ export function renderUpgradeResult(
       return [
         header,
         `Storage upgraded through ${renderSteps(result.report.steps)}.`,
-        `Backup: ${result.report.backupPath ?? "none"}`
+        `Backup: ${result.report.backupPath ?? "none"}`,
+        ...renderBackupRetention(result.report.backupRetention)
       ].join("\n");
     case "update-preflight":
       return `${header}\nUpdate preflight: ${result.status} (${result.stepCount} steps). Storage was not modified.`;

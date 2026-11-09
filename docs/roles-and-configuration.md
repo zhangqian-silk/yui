@@ -18,6 +18,16 @@ requiring a same-named global Role. A global Role is a creation template only
 when the requested Task Role does not exist. Availability, producer separation
 and the frozen review candidate still apply.
 
+## Migration backup retention
+
+`yui config resources set migration-backup-keep <1-1000>` sets the number of recent
+successful managed migration backup sets to retain (default 3).
+`yui config resources show` displays the effective value; `clear` restores the
+default. A setting change never deletes files or needs a restart. Cleanup runs
+only after the next successful, validated storage migration under `upgrade` or
+`update`, preserving recovery and unverified historical backups even above the
+limit. See [retention and protection rules](storage-baseline.md#migration-backup-retention).
+
 ## Git operation budgets
 
 All three Git timeout budgets have durable settings. Local commands (including
