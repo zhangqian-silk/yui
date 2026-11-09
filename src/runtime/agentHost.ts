@@ -4,7 +4,7 @@ import { createConnection, createServer, type Server } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { withSessionContextPointer } from "../context/sessionBootstrapManifest.js";
+import { createSessionSkillNotice, createSessionSkillLifecycleCheck } from "../context/sessionSkillNotice.js";
 
 
 import type { AgentAdapterId } from "../agent/adapterCatalog.js";
@@ -56,6 +56,10 @@ import type { AgentHostEventDelivery } from "./agentHostProtocol.js";
 import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 import { AGENT_HOST_IMPLEMENTATION } from "./agentHostImplementation.js";
 import { closeAgentHostEndpoints } from "./agentHostCleanup.js";
+import { createHostUpgradeGate, type HostUpgradeFence, type HostUpgradeObservation } from "./hostUpgradeGate.js";
+import { createHostSessionLifecycle, type HostSessionLifecycleEvent, type HostSessionLifecycleState,
+  type HostSessionLifecycleTransition } from "./hostSessionLifecycle.js";
+import { createNonBlockingChecks } from "./lifecycleChecks.js";
 import {
   readAgentRunConfigurationObservation,
   unknownAgentRunConfiguration,
@@ -170,6 +174,7 @@ export type AgentHostCancelControl = Readonly<{
 }>;
 
 export type AgentHostControl =
+  | AgentHostUpgradeControl
   | AgentHostReconcileTurnControl
   | AgentHostLaunchControl
   | AgentHostStatusControl
@@ -178,6 +183,11 @@ export type AgentHostControl =
   | AgentHostCancelControl
   | AgentHostSetAuthorityControl
   | AgentHostNativeControl;
+
+export type AgentHostUpgradeControl = HostUpgradeFence & Readonly<{
+  protocol: typeof AGENT_HOST_CONTROL_PROTOCOL;
+  type: "prepare-upgrade" | "finish-upgrade";
+}>;
 
 export type AgentHostNativeControl = Readonly<{
   protocol: typeof AGENT_HOST_CONTROL_PROTOCOL;
@@ -189,18 +199,11 @@ export type AgentHostNativeControl = Readonly<{
   model?: string;
 }>;
 
-export type AgentHostProviderState =
-  | "idle"
-  | "starting"
-  | "ready"
-  | "settling"
-  | "delivery-unknown"
-  | "busy"
-  | "rejected"
-  | "failed"
-  | "exited";
+export type AgentHostProviderState = HostSessionLifecycleState;
 
 export type AgentHostSnapshot = Readonly<{
+  /** Confirmed native naming effect of this Provider connection. */
+  appliedGeneratedTitle?: string;
   nativeTui?: boolean;
   nativeRequests?: readonly CodexNativeRequest[];
   nativeRequestsOmitted?: boolean;
@@ -222,6 +225,7 @@ export type AgentHostSnapshot = Readonly<{
   endpointImplementation?: ImplementationRef;
   /** Loaded Host bridge, distinct from the native Endpoint and disk install. */
   hostImplementation?: ImplementationRef;
+  hostUpgrade?: HostUpgradeObservation;
   /** Additive v1 operations. Missing advertisement means support is unknown. */
   controlCapabilities?: readonly string[];
   /** Live-only status reading, rebuilt on each query and never persisted. */
@@ -345,6 +349,9 @@ export async function runAgentHost(input: Readonly<{
     return runCodexInteractiveHost(input.home, payload, openAgentHostControl);
   }
   let session: AgentEndpoint | undefined;
+  const skillNotice = createSessionSkillNotice(input.home);
+  const upgrade = createHostUpgradeGate();
+  let upgradeDetaching = false;
   // This process really holds the Endpoint code its Session runs on. The lease
   // spans the Session's Turns, so installing a newer generation does not change
   // the implementation under a Session that is still using this one.
@@ -380,6 +387,14 @@ export async function runAgentHost(input: Readonly<{
     });
   };
   let snapshot = hostSnapshot("idle");
+  const lifecycleChecks = createNonBlockingChecks<HostSessionLifecycleTransition>([
+    createSessionSkillLifecycleCheck(input.home, () => (sessionPayload ?? payload).environment), {
+    id: "controller-lifecycle-hint",
+    run: (_transition, signal) => {
+      if (!signal.aborted) return signalRoleMailbox(input.home, sessionPayload ?? payload);
+    }
+  }], error => process.stderr.write(`Session lifecycle check failed: ${errorText(error)}\n`));
+  const lifecycle = createHostSessionLifecycle({ after: lifecycleChecks });
   let dispatchTail = Promise.resolve();
   let promptHuman = (): void => {};
   let humanConsole: ReturnType<typeof createInterface> | undefined;
@@ -392,8 +407,26 @@ export async function runAgentHost(input: Readonly<{
   }>();
   await replayExitOutbox(input.home);
 
-  const updateSnapshot = (next: AgentHostSnapshot): void => {
-    snapshot = validateSnapshot(next);
+  type SnapshotFields = Omit<AgentHostSnapshot, "schemaVersion" | "state" | "updatedAt">;
+  const hostEvent = (event: HostSessionLifecycleEvent, fields: SnapshotFields) => ({
+    event: { ...event, processInstanceId: fields.processInstanceId, nativeSessionId: fields.nativeSessionId,
+      attemptId: fields.attemptId, nativeTurnId: fields.nativeTurnId } as HostSessionLifecycleEvent,
+    fields
+  });
+  const updateSnapshot = (next: ReturnType<typeof hostEvent>): void => {
+    // Validate the payload before committing the FSM; an invalid observation
+    // must not leave the public snapshot and lifecycle on different states.
+    validateSnapshot(hostSnapshot(lifecycle.state, next.fields));
+    const result = lifecycle.send(next.event);
+    if (result.status === "ignored") return;
+    if (result.status === "invalid") throw new Error(result.reason);
+    const { appliedGeneratedTitle: _oldTitle, ...rest } = next.fields;
+    snapshot = validateSnapshot({
+      ...hostSnapshot(result.state, rest),
+      ...(session?.appliedGeneratedTitle === undefined ? {} : {
+        appliedGeneratedTitle: session.appliedGeneratedTitle
+      })
+    });
   };
 
   const authorityFields = (): Pick<
@@ -419,7 +452,7 @@ export async function runAgentHost(input: Readonly<{
       await publishStructuredProviderAccepted({
         home: input.home, environment: observedPayload.environment, receipt
       });
-      updateSnapshot(hostSnapshot("ready", {
+      updateSnapshot(hostEvent({ type: "accepted" }, {
         adapterId: session!.adapterId,
         processInstanceId: session!.processInstanceId,
         nativeSessionId: receipt.nativeSessionId,
@@ -449,7 +482,7 @@ export async function runAgentHost(input: Readonly<{
   ): void => {
     if (started.clientOwned || observedPayload === undefined) return;
     const observedAuthority = authority === undefined ? undefined : { ...authority };
-    updateSnapshot(hostSnapshot("busy", {
+    updateSnapshot(hostEvent({ type: "native-started" }, {
       adapterId: observedPayload.providerControl?.adapterId,
       processInstanceId: session?.processInstanceId,
       nativeSessionId: started.nativeSessionId,
@@ -512,7 +545,7 @@ export async function runAgentHost(input: Readonly<{
           terminal
         });
         if (session !== undefined && terminal.conversationId === session.conversationId) {
-          updateSnapshot(hostSnapshot(session.inspect().activeNativeTurnId === undefined ? "idle" : "busy", {
+          updateSnapshot(hostEvent({ type: "settled", occupancy: session.inspect().activeNativeTurnId === undefined ? "idle" : "busy" }, {
             adapterId: session.adapterId,
             processInstanceId: session.processInstanceId,
             nativeSessionId: session.nativeSessionId,
@@ -553,7 +586,7 @@ export async function runAgentHost(input: Readonly<{
       if (activeRunPayload !== terminalPayload
         || activeRunAttemptId !== terminalAttemptId) return;
       if (session !== undefined) {
-        updateSnapshot(hostSnapshot("settling", {
+        updateSnapshot(hostEvent({ type: "terminal" }, {
           adapterId: terminalPayload.providerControl!.adapterId,
           processInstanceId: session.processInstanceId,
           nativeSessionId: terminal.nativeSessionId,
@@ -575,7 +608,7 @@ export async function runAgentHost(input: Readonly<{
         activeNativeTurnId = undefined;
         if (session === undefined) return;
         const currentPayload = sessionPayload ?? terminalPayload;
-        updateSnapshot(hostSnapshot(session.inspect().activeNativeTurnId === undefined ? "idle" : "busy", {
+        updateSnapshot(hostEvent({ type: "settled", occupancy: session.inspect().activeNativeTurnId === undefined ? "idle" : "busy" }, {
           adapterId: currentPayload.providerControl!.adapterId,
           processInstanceId: session.processInstanceId,
           nativeSessionId: terminal.nativeSessionId,
@@ -585,7 +618,7 @@ export async function runAgentHost(input: Readonly<{
         signalRoleMailbox(input.home, currentPayload);
         promptHuman();
       } catch (error) {
-        updateSnapshot(hostSnapshot("failed", {
+        updateSnapshot(hostEvent({ type: "failure", outcome: "failed" }, {
           adapterId: terminalPayload.providerControl!.adapterId,
           processInstanceId: session?.processInstanceId,
           nativeSessionId: terminal.nativeSessionId,
@@ -653,6 +686,8 @@ export async function runAgentHost(input: Readonly<{
             && currentPayload.environment.YUI_ROLE === "operator")
           ? {}
           : { sessionTitle: previousControl.sessionTitle }),
+        ...(previousControl.previousSessionTitle === undefined
+          ? {} : { previousSessionTitle: previousControl.previousSessionTitle }),
         codexThread: disconnectedSession.configuration.threadOptions!,
         endpointImplementation: disconnectedSession.configuration.implementation,
         ...(ownedTurn === undefined ? {} : { ownedTurn }),
@@ -673,6 +708,7 @@ export async function runAgentHost(input: Readonly<{
           throw new Error("Codex client reconnect lost its Endpoint implementation lease.");
         }
         const started = await endpointLease.resume(reconnectPayload);
+        skillNotice.invalidate();
         session = started.session;
         sessionPayload = currentPayload;
         started.session.events((event) => {
@@ -691,10 +727,10 @@ export async function runAgentHost(input: Readonly<{
         conversationRecoverability = "recoverable";
         codexClientAttachedAt = Date.now();
         observeExit(started.session, currentPayload);
-        const reconnectState = activeRunPayload !== undefined
-          ? ownedTurn === undefined ? "delivery-unknown" : "ready"
+        const occupancy = activeRunPayload !== undefined
+          ? ownedTurn === undefined ? "unknown" : "owned"
           : started.session.inspect().activeNativeTurnId === undefined ? "idle" : "busy";
-        updateSnapshot(hostSnapshot(reconnectState, {
+        updateSnapshot(hostEvent({ type: "connected", occupancy }, {
           adapterId: "codex",
           processInstanceId: started.session.processInstanceId,
           nativeSessionId: started.session.nativeSessionId,
@@ -726,7 +762,7 @@ export async function runAgentHost(input: Readonly<{
         lastError = error;
       }
     }
-    updateSnapshot(hostSnapshot("failed", {
+    updateSnapshot(hostEvent({ type: "failure", outcome: "failed" }, {
       adapterId: "codex",
       processInstanceId: disconnectedSession.processInstanceId,
       nativeSessionId: disconnectedSession.nativeSessionId,
@@ -743,6 +779,9 @@ export async function runAgentHost(input: Readonly<{
     launched: AgentHostLaunchPayload
   ): void => {
     void providerSession.waitForExit().then((result) => enqueueSerialized(async () => {
+      // A drained attachment is not an ended native Session and must not
+      // trigger reconnect, cancellation, or session lifecycle replacement.
+      if (upgradeDetaching) return;
       const ownsCurrentSession = session === providerSession;
       const currentPayload = ownsCurrentSession
         ? activeRunPayload ?? lastTerminalPayload ?? sessionPayload ?? launched : launched;
@@ -761,7 +800,7 @@ export async function runAgentHost(input: Readonly<{
         }
         consecutiveCodexDisconnects += 1;
         if (consecutiveCodexDisconnects > MAX_CONSECUTIVE_CODEX_DISCONNECTS) {
-          updateSnapshot(hostSnapshot("failed", {
+          updateSnapshot(hostEvent({ type: "failure", outcome: "failed" }, {
             adapterId: "codex",
             processInstanceId: result.processInstanceId,
             nativeSessionId: providerSession.nativeSessionId,
@@ -773,7 +812,7 @@ export async function runAgentHost(input: Readonly<{
           }));
           return;
         }
-        updateSnapshot(hostSnapshot("starting", {
+        updateSnapshot(hostEvent({ type: "disconnected" }, {
           adapterId: "codex",
           processInstanceId: result.processInstanceId,
           nativeSessionId: providerSession.nativeSessionId,
@@ -838,7 +877,7 @@ export async function runAgentHost(input: Readonly<{
         } catch (error) { failures.push(`attachment exit: ${errorText(error)}`); }
       }
       if (hostStopRequested || !ownsCurrentSession) return;
-      updateSnapshot(hostSnapshot(failures.length === 0 ? "exited" : "failed", {
+      updateSnapshot(hostEvent(failures.length === 0 ? { type: "exit" } : { type: "failure", outcome: "failed" }, {
         adapterId: currentPayload.providerControl?.adapterId,
         processInstanceId: result.processInstanceId,
         nativeSessionId: providerSession.nativeSessionId,
@@ -850,7 +889,7 @@ export async function runAgentHost(input: Readonly<{
             ? {}
             : { detail: "Provider process exited before the active AgentRun reached a terminal boundary." })
       }));
-    })).catch((error) => updateSnapshot(hostSnapshot("failed", {
+    })).catch((error) => updateSnapshot(hostEvent({ type: "failure", outcome: "failed" }, {
       adapterId: launched.providerControl?.adapterId,
       processInstanceId: providerSession.processInstanceId,
       ...authorityFields(),
@@ -866,7 +905,7 @@ export async function runAgentHost(input: Readonly<{
     if (activeRunPayload !== undefined
       || sessionPayload !== undefined
         && (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
-      || ["starting", "ready", "settling", "delivery-unknown"].includes(snapshot.state)) {
+      || !lifecycle.can({ type: "launch" })) {
       throw new Error("Agent Host still owns an unsettled Provider Turn.");
     }
     const requestedAuthority = validateProviderAuthorityFence(providerControl.authority);
@@ -881,7 +920,7 @@ export async function runAgentHost(input: Readonly<{
       && !sameProviderAuthorityFence(authority, requestedAuthority)) {
       throw new Error("Agent Host launch carries a stale Provider authority fence.");
     }
-    updateSnapshot(hostSnapshot("starting", {
+    updateSnapshot(hostEvent({ type: "launch" }, {
       adapterId: providerControl.adapterId,
       ...(session === undefined ? {} : {
         processInstanceId: session.processInstanceId,
@@ -918,6 +957,7 @@ export async function runAgentHost(input: Readonly<{
         session = started.session;
         sessionPayload = next;
         await recordProviderConnection(input.home, next, started.session);
+        skillNotice.invalidate();
         lastTerminalPayload = undefined;
         lastTerminal = undefined;
         directObservation = undefined;
@@ -980,10 +1020,10 @@ export async function runAgentHost(input: Readonly<{
       const restoredOwnedRun = providerControl.kind === "restore"
         ? providerControl.ownedTurn
         : undefined;
-      const providerState = restoredOwnedRun !== undefined
-        ? "ready"
+      const occupancy = restoredOwnedRun !== undefined
+        ? "owned"
         : session.inspect().activeNativeTurnId === undefined ? "idle" : "busy";
-      updateSnapshot(hostSnapshot(providerState, {
+      updateSnapshot(hostEvent({ type: "connected", occupancy }, {
         adapterId: providerControl.adapterId,
         processInstanceId: session.processInstanceId,
         nativeSessionId: session.nativeSessionId,
@@ -1014,7 +1054,7 @@ export async function runAgentHost(input: Readonly<{
       const state = error instanceof ProviderTurnBusyError
           ? "busy"
           : error instanceof ProviderTurnRejectedError ? "rejected" : "failed";
-      updateSnapshot(hostSnapshot(state, {
+      updateSnapshot(hostEvent({ type: "failure", outcome: state }, {
         adapterId: providerControl.adapterId,
         processInstanceId: session?.processInstanceId,
         nativeSessionId: session?.nativeSessionId ?? providerControl.nativeSessionId,
@@ -1042,6 +1082,7 @@ export async function runAgentHost(input: Readonly<{
     request: AgentHostSubmitRunControl,
     operation: { failure?: ProviderDeliveryFailure }
   ): Promise<AgentHostSnapshot> => {
+    if (upgrade.fenced) throw new ProviderTurnBusyError("Host upgrade admission is fenced.", request.run.attemptId);
     if (session === undefined || sessionPayload === undefined) {
       throw new Error("Agent Host has no live Provider Conversation.");
     }
@@ -1052,7 +1093,7 @@ export async function runAgentHost(input: Readonly<{
       || !sameProviderAuthorityFence(authority, request.authority)) {
       throw new Error("Agent Host rejected a stale Provider writer fence.");
     }
-    if (activeRunPayload !== undefined || snapshot.state === "settling"
+    if (activeRunPayload !== undefined || !lifecycle.can({ type: "submit" })
       || (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
       || session.inspect().activeNativeTurnId !== undefined) {
       operation.failure = providerDeliveryFailure({
@@ -1086,7 +1127,7 @@ export async function runAgentHost(input: Readonly<{
     };
     activeRunAttemptId = request.run.attemptId;
     activeNativeTurnId = undefined;
-    updateSnapshot(hostSnapshot("starting", {
+    updateSnapshot(hostEvent({ type: "submit" }, {
       adapterId: session.adapterId,
       processInstanceId: session.processInstanceId,
       nativeSessionId: session.nativeSessionId,
@@ -1102,7 +1143,7 @@ export async function runAgentHost(input: Readonly<{
       request.runId
     ), boundedText: request.run.boundedText,
       retrySupport: session.adapterId === "codex" ? "codex-failed-turn-v1" : "unsupported" };
-    let recoveryInput: { text: string; expectedFailedNativeTurnId?: string } | undefined;
+    let recoveryInput: { text: string; context?: string; expectedFailedNativeTurnId?: string } | undefined;
     // Registration precedes the Provider write, so its failure modes are not
     // the Provider's. A definite failure means the Provider never saw this
     // input and the occupancy must be released; anything unconfirmed leaves
@@ -1111,10 +1152,11 @@ export async function runAgentHost(input: Readonly<{
       const admitted = await beginDurableProviderTurn(input.home, durableRun);
       if (admitted !== null && typeof admitted === "object" && !Array.isArray(admitted)) {
         const retry = (admitted as Readonly<Record<string, JsonValue>>).retryInput as
-          Readonly<{ text?: JsonValue; expectedFailedNativeTurnId?: JsonValue }> | undefined;
+          Readonly<{ text?: JsonValue; context?: JsonValue; expectedFailedNativeTurnId?: JsonValue }> | undefined;
         if (retry !== null && typeof retry === "object" && !Array.isArray(retry)
           && typeof retry.text === "string") recoveryInput = {
           text: retry.text,
+          ...(typeof retry.context === "string" ? { context: retry.context } : {}),
           ...(typeof retry.expectedFailedNativeTurnId === "string"
             ? { expectedFailedNativeTurnId: retry.expectedFailedNativeTurnId } : {})
         };
@@ -1132,8 +1174,8 @@ export async function runAgentHost(input: Readonly<{
       const registrationUnknown = !registrationSettled
         && (error instanceof ControllerAcknowledgementUnknownError
           || error instanceof ProviderDeliveryUnknownError);
-      updateSnapshot(hostSnapshot(registrationUnknown ? "delivery-unknown"
-        : error instanceof ProviderTurnBusyError ? "busy" : "failed", {
+      updateSnapshot(hostEvent({ type: "failure", outcome: registrationUnknown ? "delivery-unknown"
+        : error instanceof ProviderTurnBusyError ? "busy" : "failed" }, {
         adapterId: session.adapterId,
         processInstanceId: session.processInstanceId,
         nativeSessionId: session.nativeSessionId,
@@ -1175,9 +1217,24 @@ export async function runAgentHost(input: Readonly<{
     try {
       // beginDurableProviderTurn validated current execution-environment,
       // authority and Session identity before this native write.
+      const notice = skillNotice.prepare(
+        session.adapterId === "codex" ? request.run.boundedText : recoveryInput?.text ?? request.run.boundedText,
+        activeRunPayload.environment,
+        session.nativeSessionId, { contextEpoch: session.contextEpoch }
+      );
       const receipt = endpointReceipt(await session.submit({
         ...request.run,
-        boundedText: withSessionContextPointer(recoveryInput?.text ?? request.run.boundedText, activeRunPayload.environment),
+        boundedText: session.adapterId === "codex" ? notice.inputText : notice.text,
+        ...(session.adapterId !== "codex" || notice.context === undefined && recoveryInput?.context === undefined ? {} : {
+          additionalContext: {
+            ...(notice.context === undefined ? {} : {
+              "yui.session-skills": { kind: "application" as const, value: notice.context }
+            }),
+            ...(recoveryInput?.context === undefined ? {} : {
+              "yui.recovery": { kind: "application" as const, value: recoveryInput.context }
+            })
+          }
+        }),
         ...(recoveryInput === undefined ? {} : { requireQuiescent: true }),
         ...(recoveryInput?.expectedFailedNativeTurnId === undefined ? {} : {
           expectedFailedNativeTurnId: recoveryInput.expectedFailedNativeTurnId
@@ -1186,6 +1243,7 @@ export async function runAgentHost(input: Readonly<{
       }), request.run.attemptId);
       transportAccepted = true;
       providerAccepted = receipt.acceptance === "provider";
+      if (providerAccepted) notice.commit();
       activeNativeTurnId = receipt.nativeTurnId;
       try {
         await publishStructuredProviderAccepted({
@@ -1205,7 +1263,7 @@ export async function runAgentHost(input: Readonly<{
         await resolveProviderTurnSubmission(input.home, durableRun, unknown);
         throw unknown;
       }
-      updateSnapshot(hostSnapshot("ready", {
+      updateSnapshot(hostEvent({ type: "accepted" }, {
         adapterId: session.adapterId,
         processInstanceId: session.processInstanceId,
         nativeSessionId: receipt.nativeSessionId,
@@ -1234,7 +1292,7 @@ export async function runAgentHost(input: Readonly<{
         : error instanceof ProviderTurnBusyError
           ? "busy"
           : error instanceof ProviderTurnRejectedError ? "rejected" : "failed";
-      updateSnapshot(hostSnapshot(state, {
+      updateSnapshot(hostEvent({ type: "failure", outcome: state }, {
         adapterId: session.adapterId,
         processInstanceId: session.processInstanceId,
         nativeSessionId: session.nativeSessionId,
@@ -1310,9 +1368,14 @@ export async function runAgentHost(input: Readonly<{
     }
     try {
       await assertHostExecutionEnvironment(input.home, sessionPayload, session.nativeSessionId);
+      const notice = skillNotice.prepare(request.run.boundedText, sessionPayload.environment, session.nativeSessionId,
+        { contextEpoch: session.contextEpoch });
       const receipt = endpointReceipt(await session.steer({
         ...request.run,
-        boundedText: withSessionContextPointer(request.run.boundedText, sessionPayload.environment),
+        boundedText: session.adapterId === "codex" ? notice.inputText : notice.text,
+        ...(session.adapterId !== "codex" || notice.context === undefined ? {} : {
+          additionalContext: { "yui.session-skills": { kind: "application", value: notice.context } }
+        }),
         inputRef: request.run.attemptId
       }), request.run.attemptId);
       if (receipt.nativeTurnId !== request.nativeTurnId) {
@@ -1321,6 +1384,7 @@ export async function runAgentHost(input: Readonly<{
           request.run.attemptId
         );
       }
+      if (receipt.acceptance === "provider") notice.commit();
     } catch (error) {
       const unknown = error instanceof ProviderDeliveryUnknownError;
       operation.failure = providerDeliveryFailureFrom(error, {
@@ -1342,7 +1406,7 @@ export async function runAgentHost(input: Readonly<{
     if (activeRunPayload !== undefined || session.inspect().activeNativeTurnId !== undefined
       || sessionPayload !== undefined
         && (structuredProviderEventDelivery(input.home, sessionPayload.environment).unpersisted ?? 0) > 0
-      || ["starting", "ready", "settling", "delivery-unknown"].includes(snapshot.state)) {
+      || !lifecycle.can({ type: "authority-changed" })) {
       throw new Error("Agent Host authority cannot transfer while a AgentRun is unsettled.");
     }
     const next = validateProviderAuthorityFence(request.authority);
@@ -1353,7 +1417,7 @@ export async function runAgentHost(input: Readonly<{
       }
     }
     authority = next;
-    updateSnapshot(hostSnapshot("idle", {
+    updateSnapshot(hostEvent({ type: "authority-changed" }, {
       adapterId: session.adapterId,
       processInstanceId: session.processInstanceId,
       nativeSessionId: session.nativeSessionId,
@@ -1408,6 +1472,62 @@ export async function runAgentHost(input: Readonly<{
   };
 
   const handleControl = async (request: AgentHostControl): Promise<AgentHostControlResult> => {
+    if (request.type === "prepare-upgrade" || request.type === "finish-upgrade") {
+      upgrade.request(request, {
+        nativeSessionId: snapshot.nativeSessionId ?? "",
+        processInstanceId: snapshot.processInstanceId ?? "",
+        hostGeneration: AGENT_HOST_IMPLEMENTATION.generation
+      });
+      if (request.type === "prepare-upgrade") {
+        // Fence synchronously, then join the same lane as submission and
+        // terminal publication. No check-then-submit gap on Host-owned paths.
+        await enqueueSerialized(async () => {
+          upgrade.request(request, {
+            nativeSessionId: snapshot.nativeSessionId ?? "", processInstanceId: snapshot.processInstanceId ?? "",
+            hostGeneration: AGENT_HOST_IMPLEMENTATION.generation
+          });
+          await upgrade.drain({
+            busy: session === undefined || activeRunPayload !== undefined || activeNativeTurnId !== undefined
+              || snapshot.state !== "idle" || nativeTui !== undefined || nativeOpening !== undefined
+              || modelChanging || session.inspect().activeNativeTurnId !== undefined
+              || session.inspect().submissions.some(s => s.disposition.status === "unknown"
+                || s.disposition.status === "pending" && s.disposition.reason === "submitting"),
+            events: structuredProviderEventDelivery(input.home, sessionPayload?.environment ?? payload.environment,
+              snapshot.nativeSessionId),
+            checkQuiescent: async () => {
+              if (authority?.owner !== "controller" || conversationRecoverability !== "recoverable") {
+                throw new Error("Upgrade requires an exactly resumable controller-owned native Session.");
+              }
+              return await session!.checkQuiescent()
+                && session!.inspect().activeNativeTurnId === undefined;
+            },
+            release: async () => {
+              const events = structuredProviderEventDelivery(input.home, sessionPayload!.environment, snapshot.nativeSessionId);
+              if (events.pending !== 0 || events.unpersisted !== 0 || events.pendingTerminals !== 0 || events.failure
+                || session!.inspect().activeNativeTurnId !== undefined
+                || session!.nativeSessionId !== request.nativeSessionId
+                || session!.processInstanceId !== request.processInstanceId) {
+                throw new Error("Native execution or event delivery changed before Endpoint release.");
+              }
+              upgradeDetaching = true;
+              session!.detach();
+              await endpointLease?.release();
+              const drain = await endpointOwner.stop(endpointAdapterId!, ENDPOINT_DRAIN_TIMEOUT_MS);
+              if (!drain.quiescent) throw new Error("Endpoint release did not prove owned client/implementation drain.");
+            }
+          });
+        });
+      } else {
+        if (upgrade.observation?.state !== "drained") throw new Error("Host has not drained.");
+        // The Controller persists the drain receipt before this request.
+        // Delay close until this connection has had a chance to receive its ACK.
+        setImmediate(() => { hostStopRequested = true; stopResolve(); });
+      }
+      return controlResult("accepted", { ...snapshot, hostUpgrade: upgrade.observation });
+    }
+    if (upgrade.fenced && ["launch", "submit-turn", "steer-turn", "set-authority", "native-open", "native-model"].includes(request.type)) {
+      return controlResult("busy", { ...snapshot, hostUpgrade: upgrade.observation });
+    }
     if (request.type === "native-model") {
       return enqueueSerialized(async () => {
         const current = session;
@@ -1480,7 +1600,7 @@ export async function runAgentHost(input: Readonly<{
         const persisted = await replayStructuredProviderPersistence(input.home, sessionPayload!.environment);
         if (persisted.length > 0 && activeRunPayload === undefined) {
           const active = session.inspect().activeNativeTurnId;
-          updateSnapshot(hostSnapshot(active === undefined ? "idle" : "busy", {
+          updateSnapshot(hostEvent({ type: "settled", occupancy: active === undefined ? "idle" : "busy" }, {
             adapterId: session.adapterId, processInstanceId: session.processInstanceId,
             nativeSessionId: session.nativeSessionId, conversationId: session.conversationId,
             nativeTurnId: active, ...authorityFields()
@@ -1524,7 +1644,7 @@ export async function runAgentHost(input: Readonly<{
           activeRunPayload = undefined;
           activeRunAttemptId = undefined;
           activeNativeTurnId = undefined;
-          updateSnapshot(hostSnapshot(session!.inspect().activeNativeTurnId === undefined ? "idle" : "busy", {
+          updateSnapshot(hostEvent({ type: "settled", occupancy: session!.inspect().activeNativeTurnId === undefined ? "idle" : "busy" }, {
             adapterId: session!.adapterId, processInstanceId: session!.processInstanceId,
             nativeSessionId: session!.nativeSessionId, conversationId: session!.conversationId,
             ...authorityFields()
@@ -1547,9 +1667,10 @@ export async function runAgentHost(input: Readonly<{
         return requestBytes <= 8000;
       }).slice(0, 8);
       return controlResult("status", session === undefined
-        ? snapshot
+        ? { ...snapshot, hostUpgrade: upgrade.observation }
         : validateSnapshot({
             ...snapshot,
+            hostUpgrade: upgrade.observation,
             nativeTui: !!nativeTui,
             ...(nativeRequests === undefined ? {} : { nativeRequests,
               nativeRequestsOmitted: nativeRequests.length !== session.nativeAccess!.requests.length }),
@@ -1663,7 +1784,7 @@ export async function runAgentHost(input: Readonly<{
     if (request.type !== "launch") throw new Error("Unsupported Host request.");
     const redeemed = await redeem(input.home, request.ticket);
     if (activeRunPayload !== undefined
-      || ["starting", "ready", "settling", "delivery-unknown"].includes(snapshot.state)) {
+      || !lifecycle.can({ type: "launch" })) {
       if (redeemed.providerControl?.mode === "resume"
         && redeemed.providerControl.nativeSessionId === snapshot.nativeSessionId) {
         return controlResult("accepted", snapshot);
@@ -1750,6 +1871,7 @@ export async function runAgentHost(input: Readonly<{
     await stopped;
     return 0;
   } finally {
+    lifecycleChecks.close();
     for (const [signal, handler] of handlers) process.removeListener(signal, handler);
     if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
     humanConsole?.close();
@@ -1877,6 +1999,12 @@ export async function sendAgentHostCancelControl(input: Readonly<{
 
 export async function sendAgentHostNativeControl(input: Readonly<{
   home: string; scope: string; taskId?: string; roleName: string; control: AgentHostNativeControl;
+}>): Promise<AgentHostControlResult> {
+  return sendAgentHostControl(input);
+}
+
+export async function sendAgentHostUpgradeControl(input: Readonly<{
+  home: string; scope: string; taskId?: string; roleName: string; control: AgentHostUpgradeControl;
 }>): Promise<AgentHostControlResult> {
   return sendAgentHostControl(input);
 }
@@ -2111,7 +2239,8 @@ export async function openAgentHostControl(
               hostImplementation: AGENT_HOST_IMPLEMENTATION,
               controlCapabilities: payload.providerControl === undefined ? ["status"] : [
                 "status", "launch", "submit-turn", "steer-turn", "cancel", "set-authority",
-                "native-open", "native-respond", "native-model", "reconcile-turn"
+                "native-open", "native-respond", "native-model", "reconcile-turn",
+                ...(payload.providerControl.adapterId === "codex" ? ["prepare-upgrade", "finish-upgrade"] : [])
               ],
               ...(!["task", "global"].includes(payload.environment.YUI_SESSION_SCOPE ?? "") ? {} : {
                 eventDelivery: structuredProviderEventDelivery(home, payload.environment, result.snapshot.nativeSessionId)
@@ -2277,6 +2406,12 @@ function validateControl(control: AgentHostControl): AgentHostControl {
     throw new Error("Agent Host control protocol is invalid.");
   }
   if (control.type === "status") return Object.freeze({ ...control });
+  if (control.type === "prepare-upgrade" || control.type === "finish-upgrade") {
+    for (const key of ["requestId", "nativeSessionId", "processInstanceId", "hostGeneration"] as const) {
+      validateIdentity(control[key], key);
+    }
+    return Object.freeze({ ...control });
+  }
   if (control.type === "reconcile-turn") {
     validateIdentity(control.nativeSessionId, "native Session id");
     validateIdentity(control.attemptId, "Provider input attempt id");
@@ -2395,6 +2530,12 @@ function validateSnapshot(snapshot: AgentHostSnapshot): AgentHostSnapshot {
       || value.length === 0 || value.length > 64 || value.includes("\0")))) {
     throw new Error("Agent Host control capability advertisement is invalid.");
   }
+  if (snapshot.hostUpgrade !== undefined) {
+    for (const key of ["requestId", "nativeSessionId", "processInstanceId", "hostGeneration"] as const) {
+      validateIdentity(snapshot.hostUpgrade[key], key);
+    }
+    if (!["waiting", "drained", "failed"].includes(snapshot.hostUpgrade.state)) throw new Error("Invalid Host drain state.");
+  }
   const authorityFields = [
     snapshot.authorityEpoch,
     snapshot.authorityOwner,
@@ -2503,14 +2644,14 @@ async function observePendingHostSubmission(
   }
 }
 
-function signalRoleMailbox(home: string, payload: AgentHostLaunchPayload): void {
+function signalRoleMailbox(home: string, payload: AgentHostLaunchPayload): Promise<void> {
   const taskId = payload.environment.YUI_TASK_ID;
   const roleName = payload.environment.YUI_ROLE;
-  if (roleName === undefined) return;
+  if (roleName === undefined) return Promise.resolve();
   const key = taskId === undefined
     ? `global-role:${encodeURIComponent(roleName)}`
     : `role:${encodeURIComponent(taskId)}/${encodeURIComponent(roleName)}`;
-  void callController(home, "scheduler.signal", { key }).catch(() => {
+  return callController(home, "scheduler.signal", { key }).then(() => undefined).catch(() => {
     // This is a low-latency hint. Durable mailbox state and periodic
     // reconciliation remain the recovery path across a Controller handover.
   });

@@ -88,6 +88,11 @@ import {
   validateRun
 } from "../../dist/agentRun/agentRun.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
+import { AsyncTaskStoreClient } from "../../dist/storage/storeRpc.js";
+import { setImmediate as yieldLoop } from "node:timers/promises";
+import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
+import { createGlobalRoleMessage } from "../../dist/message/message.js";
+import { publishStructuredProviderTerminal } from "../../dist/controller/structuredProviderObservation.js";
 import { createRunInput } from "../../dist/context/runInputContract.js";
 import { processActiveRoleRunDeliveries } from "../../dist/scheduler/activeRoleRunDelivery.js";
 import {
@@ -366,7 +371,8 @@ test("update quiesces the exact Controller before replacing a current-contract b
   }, { home: "/tmp/yui-update-home" });
   assert.deepEqual(result, {
     outcome: "updated",
-    version: "0.15.0"
+    version: "0.15.0",
+    controllerStarted: true
   });
   assert.deepEqual(calls, [
     "stage",
@@ -419,6 +425,7 @@ test("update applies a supported storage migration before post-verification", ()
   assert.deepEqual(result, {
     outcome: "updated",
     version: "0.15.0",
+    controllerStarted: true,
     backupPath: "/tmp/yui-backup.db"
   });
   assert.deepEqual(calls, [
@@ -1578,7 +1585,7 @@ test("pre-1.5 Leader resumes after upgrade and settles only its accepted notific
   );
   assert.equal(results[0].status, "dispatched");
   assert.equal(notifications.length, 1);
-  assert.match(notifications[0].text, /yui task wake show task-1 wake-1 --json/u);
+  assert.match(notifications[0].text, /yui inbox show wake-1 --json/u);
   assert.equal(store.listRuns(task.id).length, 0);
   assert.equal(store.getActiveRun(task.id, leader.name), null);
   assert.deepEqual(store.getPendingWakeup(task.id).reasons, ["later-external-message"]);
@@ -3218,13 +3225,39 @@ test("Core freezes writable Lane state without parsing the Producer output", (t)
   assert.equal(wrongBranchSnapshot.cause, "branch-mismatch");
 });
 
-test("runtime terminalization preserves Agent output across dirty and wrong-branch Lane failures", (t) => {
-  const home = mkdtempSync(join(tmpdir(), "yui-lane-result-preservation-"));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  const store = new SqliteTaskStore(home);
-  t.after(() => store.close());
+test("runtime terminalization preserves Agent output without holding the writer during Lane inspection", async (t) => {
+  let home, store, client, observing;
+  const gate = new Int32Array(new SharedArrayBuffer(4));
+  const release = () => { Atomics.store(gate, 0, 2); Atomics.notify(gate, 0); };
+  t.after(async () => {
+    release();
+    await observing?.catch(() => undefined);
+    await client?.close();
+    store?.close();
+    if (home !== undefined) rmSync(home, { recursive: true, force: true });
+  });
+  home = mkdtempSync(join(tmpdir(), "yui-lane-result-preservation-"));
+  store = new SqliteTaskStore(home);
+  const now = new Date("2026-09-04T02:00:00Z");
+  const operatorAgent = createConfiguredAgent("codex", "codex", "codex", [], [], now);
+  store.saveConfiguredAgent(operatorAgent);
+  const operator = createGlobalRole("operator", [createRoleAgentBinding(operatorAgent)], operatorAgent.id, home, now);
+  store.createGlobalRoleIfAbsent(operator);
+  store.saveGlobalRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
+    { scope: "global", roleName: operator.name }, operatorAgent.id, now
+  ), { agentId: operatorAgent.id, adapterId: "codex", nativeSessionId: "operator-native",
+    policy: "fixed", status: "active", effective: resolveEffectiveLaunch({ role: operator, purpose: "execution" })
+  }, now));
+  const inboxEnvironment = {
+    YUI_SESSION_SCOPE: "global", YUI_ROLE: "operator", CODEX_THREAD_ID: "operator-native"
+  };
+  client = new AsyncTaskStoreClient(home, {
+    observerModule: new URL("../helpers/lockedObserver.mjs", import.meta.url)
+  });
+  await client.callStore("getTask", ["none"]);
+  store.databaseHandle().pragma("busy_timeout = 0");
 
-  const runCase = (ordinal, workspaceMutation, expectedReason) => {
+  const runCase = async (ordinal, workspaceMutation, expectedReason) => {
     const startedAt = new Date(`2026-09-04T02:0${ordinal}:00.000Z`);
     const task = activateTask(createTask(
       `task-${ordinal}`,
@@ -3424,30 +3457,86 @@ test("runtime terminalization preserves Agent output across dirty and wrong-bran
     store.saveTaskRoleSessionSet(sessions);
 
     const originalOutput = `\n# Agent result ${ordinal}\n\nThis text must survive.\n`;
-    const observed = new FileSchedulerStoreAdapter(store).observeRuntimeRunTerminal({
-      taskId: task.id,
-      roleName: role.name,
-      agentId: agent.agentId,
-      adapterId: agent.adapterId,
-      nativeSessionId,
-      nativeTurnId,
-      attemptId,
-      runId,
-      providerStatus: "completed",
-      outcome: { status: "completed", output: originalOutput }
-    }, new Date(startedAt.getTime() + 2_000));
-    assert.equal(observed.run.status, "failed");
-    assert.equal(observed.run.result.output, originalOutput);
-    assert.equal(observed.run.result.failureReason, expectedReason);
-    assert.ok(observed.run.result.diagnostic.length > 0);
+    const messageId = store.nextGlobalRoleMessageId();
+    store.saveGlobalRoleMessage(createGlobalRoleMessage(messageId, "operator", "Keep exact receipt",
+      "user", { type: "user" }, now, { inputControl: { action: "queue", requestId: messageId } }));
+    runInboxCommand(["claim", messageId, "--request-id", `claim-${ordinal}`], store, inboxEnvironment, now);
+    let terminalAt = new Date(startedAt.getTime() + 2_000);
+    let observation;
+    if (ordinal === 1) {
+      observation = createRuntimeObservation({
+        schemaVersion: 1, eventId: `terminal-${ordinal}`, semanticKey: `terminal-${ordinal}`,
+        kind: "turn.completed", authority: "provider-structured", receivedAt: terminalAt.toISOString(),
+        fence: { taskId: task.id, roleName: role.name, agentId: agent.agentId,
+          driverId: builtinAgentDriverRegistry().requireByAdapterId("codex").id,
+          conversationId: nativeSessionId, nativeSessionId, nativeTurnId, receiptId: attemptId, runId },
+        payload: { output: originalOutput }
+      });
+    } else {
+      await publishStructuredProviderTerminal({ home, environment: {
+        YUI_SESSION_SCOPE: "task", YUI_TASK_ID: task.id, YUI_ROLE: role.name,
+        YUI_AGENT_ID: agent.agentId, YUI_ADAPTER_ID: "codex", YUI_WORKSPACE: workspace.root
+      }, terminal: { nativeSessionId, conversationId: nativeSessionId, nativeTurnId, attemptId,
+        status: "completed", output: originalOutput, observedAt: terminalAt.toISOString() } });
+      observation = new FileRuntimeEventInbox(home).list().find(event => event.taskId === task.id);
+      assert.ok(observation?.host);
+      terminalAt = new Date();
+    }
+    Atomics.store(gate, 0, 0);
+    observing = client.invokeObserver("observeFixtureTerminal", [observation, terminalAt, gate.buffer, ordinal === 2]);
+    void observing.catch(() => undefined);
+    const deadline = Date.now() + 5_000;
+    while (Atomics.load(gate, 0) !== 1 && Date.now() < deadline) await yieldLoop();
+    assert.equal(Atomics.load(gate, 0), 1, "Real worker reached the external Git inspection");
+    try {
+      // These are the actual inbox and WorkItem command paths on a separate
+      // connection. Only the slow external inspection is paused.
+      runTaskCommand(["work", "edit", `${task.id}/${workItemId}`, "--objective", "Concurrent exact edit"],
+        store, { environment: {}, now: () => terminalAt });
+      runInboxCommand(["ack", messageId, "--request-id", `ack-${ordinal}`, "--reason", "Handled"],
+        store, inboxEnvironment, now);
+      assert.equal(runInboxCommand(["show", messageId], store, inboxEnvironment, now).inbox.ack.requestId,
+        `ack-${ordinal}`, "ACK is durable before terminal inspection resumes");
+      assert.equal(store.getRun(task.id, runId).status, "active", "Terminal has not committed early");
+      assert.equal(store.getWorkItem(task.id, workItemId).objective, "Concurrent exact edit");
+      if (ordinal === 2) {
+        store.saveManagedWorkspace({ ...workspace, root: join(home, "changed-owner") });
+      }
+    } finally {
+      release();
+    }
+    if (ordinal === 2) {
+      await assert.rejects(observing, /workspace ownership changed during result preparation/);
+      assert.equal(store.getRun(task.id, runId).status, "active", "Failed preparation cannot terminalize the Run");
+      assert.equal(store.getTaskRoleSessionSet(task.id, role.name).providerBinding.run.status, "accepted");
+      assert.equal(store.listEventsByType(task.id, ["runtime.observation"]).length, 0,
+        "The rejected fold must not persist a partial terminal observation");
+      store.saveManagedWorkspace(workspace);
+      assert.equal(await client.invokeObserver("observeAgentHostObservation", [observation, terminalAt]), "applied");
+    } else {
+      assert.equal(await observing, "applied");
+    }
+    observing = undefined;
+    const observed = store.getRun(task.id, runId);
+    assert.equal(observed.status, "failed");
+    assert.equal(observed.result.output, originalOutput);
+    assert.equal(observed.result.failureReason, expectedReason);
+    assert.ok(observed.result.diagnostic.length > 0);
+    const committedEvents = store.listEvents(task.id);
+    const revision = store.getWorkItem(task.id, workItemId).revision;
+    assert.equal(await client.invokeObserver(ordinal === 2 ? "observeAgentHostObservation" : "observeRuntimeObservation",
+      [observation, terminalAt]), "applied");
+    assert.deepEqual(store.getRun(task.id, runId), observed, "Duplicate ingress never rewrites the result");
+    assert.equal(store.getWorkItem(task.id, workItemId).revision, revision);
+    assert.deepEqual(store.listEvents(task.id), committedEvents);
   };
 
-  runCase(
+  await runCase(
     1,
     (repositoryPath) => writeFileSync(join(repositoryPath, "dirty.txt"), "dirty\n"),
     "workspace-dirty"
   );
-  runCase(
+  await runCase(
     2,
     (repositoryPath) => execFileSync("git", ["checkout", "-b", "wrong-lane"], {
       cwd: repositoryPath
@@ -3525,7 +3614,7 @@ test("Controller begin-handover accepts a null fromReleaseId", async (t) => {
 
 test("production storage exposes one current version and one migration floor", () => {
   assert.equal(MIN_SUPPORTED_STORAGE_VERSION, "1.0");
-  assert.equal(CURRENT_STORAGE_VERSION, "1.24");
+  assert.equal(CURRENT_STORAGE_VERSION, "1.36");
   for (const retiredExport of [
     "FileTaskStore",
     "STORAGE_STATE_FILE",
@@ -3548,7 +3637,7 @@ test("a new current Home initializes its SQLite authority exactly once", (t) => 
   try {
     assert.deepEqual(
       database.prepare("SELECT major, minor FROM storage_schema").all(),
-      [{ major: 1, minor: 24 }]
+      [{ major: 1, minor: 36 }]
     );
     // The baseline has one Git-artifact authority, not a second DB artifact store.
     assert.deepEqual(

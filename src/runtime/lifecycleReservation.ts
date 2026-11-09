@@ -8,6 +8,9 @@ export const RUNTIME_LIFECYCLE_OWNER = "runtime-lifecycle";
 export const RUNTIME_CLEANUP_REQUIRED_REASON = "runtime-cleanup-required";
 export const RUNTIME_HOST_DETACH_REQUIRED_REASON = "runtime-host-detach-required";
 export const RUNTIME_SESSION_REPLACE_REQUIRED_REASON = "runtime-session-replace-required";
+export const RUNTIME_HOST_UPGRADE_REASON = "runtime-host-upgrade-required";
+export const RUNTIME_HOST_UPGRADE_DRAINED = "runtime-host-upgrade-drained";
+export const RUNTIME_HOST_UPGRADE_FAILED = "runtime-host-upgrade-failed";
 
 /**
  * A Role runtime lifecycle lane already holds an explicit cleanup obligation.
@@ -70,7 +73,7 @@ export function hasRuntimeCleanupObligation(
 /** Explicit Session end dominates a coalesced physical Host detach request. */
 export function runtimeCleanupDisposition(
   mailbox: WorkMailbox | null
-): "replace-session" | "end-session" | "detach-host" | null {
+): "replace-session" | "end-session" | "detach-host" | "upgrade-host" | null {
   const reasons = [
     ...(mailbox?.pending?.reasons ?? []),
     ...(mailbox?.processing?.batch.reasons ?? [])
@@ -78,13 +81,17 @@ export function runtimeCleanupDisposition(
   if (reasons.includes(RUNTIME_SESSION_REPLACE_REQUIRED_REASON)) return "replace-session";
   if (reasons.includes(RUNTIME_CLEANUP_REQUIRED_REASON)) return "end-session";
   if (reasons.includes(RUNTIME_HOST_DETACH_REQUIRED_REASON)) return "detach-host";
+  if (reasons.includes(RUNTIME_HOST_UPGRADE_REASON)) return "upgrade-host";
   return null;
 }
 
 export function isRuntimeCleanupReason(reason: string): boolean {
   return reason === RUNTIME_CLEANUP_REQUIRED_REASON
     || reason === RUNTIME_SESSION_REPLACE_REQUIRED_REASON
-    || reason === RUNTIME_HOST_DETACH_REQUIRED_REASON;
+    || reason === RUNTIME_HOST_DETACH_REQUIRED_REASON
+    || reason === RUNTIME_HOST_UPGRADE_REASON
+    || reason === RUNTIME_HOST_UPGRADE_DRAINED
+    || reason === RUNTIME_HOST_UPGRADE_FAILED;
 }
 
 export function hasRuntimeLifecycleWork(

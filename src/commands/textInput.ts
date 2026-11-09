@@ -6,7 +6,8 @@ export function readCommandText(
   inline: string | undefined,
   file: string | undefined,
   label: string,
-  usage: string
+  usage: string,
+  options: Readonly<{ preserveFileWhitespace?: boolean }> = {}
 ): string {
   if ((inline === undefined) === (file === undefined)) {
     throw usageError(`Specify exactly one of ${label} or ${label}-file.`, usage);
@@ -18,5 +19,5 @@ export function readCommandText(
   if (normalized.length === 0 || normalized.includes("\0")) {
     throw usageError(`${label} is required.`, usage);
   }
-  return normalized;
+  return file !== undefined && options.preserveFileWhitespace ? value : normalized;
 }

@@ -166,7 +166,7 @@ test("quota wire responses distinguish unknown pools, distinct units and all-acc
   assert.equal(full.status, "success");
 });
 
-test("central storage 1.23 migration converts only references and archives original configuration", async () => {
+test("central storage 1.35 migration converts only references and archives original configuration", async () => {
   const root = mkdtempSync(join(tmpdir(), "yui-model-migration-"));
   try {
     const store = new SqliteTaskStore(root);
@@ -176,7 +176,7 @@ test("central storage 1.23 migration converts only references and archives origi
       managementKeyFile: "/not-read/management", catalogKeyFile: "/not-read/client" } };
     const db = new Database(join(root, "yui.db"));
     db.prepare("INSERT OR REPLACE INTO config(id,payload,updated_at) VALUES(1,?,?)").run(JSON.stringify(old), new Date().toISOString());
-    db.prepare("UPDATE storage_schema SET minor=23").run();
+    db.prepare("UPDATE storage_schema SET minor=35").run();
     db.close();
     assert.equal((await runStorageUpgrade({ home: root, mode: "execute" })).outcome, "upgraded");
     const current = new SqliteTaskStore(root);
@@ -186,7 +186,7 @@ test("central storage 1.23 migration converts only references and archives origi
       assert.equal(registry.endpoints.length, 1);
       assert.deepEqual(registry.bindings, []);
       assert.ok(registry.modules.every(m => m.maintenance === "external" && m.quotaAdapter === "none"));
-      const archived = current.databaseHandle().prepare("SELECT payload FROM storage_migration_archive WHERE migration_version=24 AND family='config'").get();
+      const archived = current.databaseHandle().prepare("SELECT payload FROM storage_migration_archive WHERE migration_version=36 AND family='config'").get();
       assert.deepEqual(JSON.parse(archived.payload), old);
     } finally { current.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }

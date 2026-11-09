@@ -4,7 +4,7 @@ import { modelFields, modelObject, modelUrl } from "../../models/modelManagement
 import type { ModelConnection } from "../../models/modelManagementTypes.js";
 import { emptyModelRegistry, validateModelRegistry } from "../../models/modelRegistry.js";
 
-/** Historical reader, only admitted by the centralized 1.23 -> 1.24 step. */
+/** Historical reader, only admitted by the centralized 1.35 -> 1.36 step. */
 function validateModelConnection(value: unknown): ModelConnection {
   const row = modelObject(value);
   const fields = ["bridgeUrl", "bridgeConfigFile", "cpaUrl", "managementKeyFile", "catalogKeyFile"] as const;
@@ -41,6 +41,6 @@ export function migrateModelRegistry(db: Database.Database): void {
     maintenance: "external", quotaAdapter: "none" });
   config.modelManagement = validateModelRegistry(registry);
   db.prepare("INSERT INTO storage_migration_archive(migration_version,family,record_key,payload) VALUES(?,?,?,?)")
-    .run(24, "config", "1", row.payload);
+    .run(36, "config", "1", row.payload);
   db.prepare("UPDATE config SET payload=? WHERE id=1").run(JSON.stringify(config));
 }

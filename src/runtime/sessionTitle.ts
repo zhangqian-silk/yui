@@ -1,4 +1,5 @@
 import { resolveTimeZone } from "../config/timeZone.js";
+import { validateInstanceCode } from "../role/instanceCode.js";
 
 const TITLE_SEPARATOR = " · ";
 export const MAX_SESSION_TITLE_LENGTH = 80;
@@ -8,42 +9,54 @@ type TaskSessionIdentity = Readonly<{
   id: string;
   title: string;
 }>;
+export type SessionTitleOptions = Readonly<{
+  executionAuthority?: "planning" | "delivery";
+  instanceCode?: string;
+  /** Last title emitted by Yui; absence never implies ownership of an old title. */
+  generatedTitle?: string;
+}>;
 
 export function taskRoleSessionTitle(
   task: TaskSessionIdentity,
-  roleName: string
+  roleName: string,
+  options: SessionTitleOptions = {}
 ): string {
-  const prefix = `Yui ${roleLabel(roleName)} ${normalizeSegment(task.id)}`;
+  const prefix = `Yui ${roleLabel(roleName)} ${normalizeSegment(task.id)}`
+    + (roleName === "leader" && options.executionAuthority === "planning" ? " Draft" : "")
+    + instanceSegment(options.instanceCode);
   const title = displayTitle(normalizeSegment(task.title), TASK_TITLE_MAX_LENGTH);
   const full = `${prefix}${TITLE_SEPARATOR}${title}`;
   if (full.length <= MAX_SESSION_TITLE_LENGTH) return full;
   if (prefix.length + TITLE_SEPARATOR.length + 1 > MAX_SESSION_TITLE_LENGTH) {
-    return truncate(prefix, MAX_SESSION_TITLE_LENGTH);
+    throw new Error("Session title identity exceeds the maximum length; shorten the Role name or instance code.");
   }
   const titleLength =
-    MAX_SESSION_TITLE_LENGTH - prefix.length - TITLE_SEPARATOR.length - 1;
+    MAX_SESSION_TITLE_LENGTH - prefix.length - TITLE_SEPARATOR.length;
   return `${prefix}${TITLE_SEPARATOR}${displayTitle(title, Math.max(titleLength, 1))}`;
 }
 
 export function resolveTaskRoleSessionTitle(
   existingTitle: string | undefined,
   task: TaskSessionIdentity,
-  roleName: string
+  roleName: string,
+  options: SessionTitleOptions = {}
 ): string {
   if (
     existingTitle !== undefined
     && existingTitle.length > 0
     && existingTitle.length <= MAX_SESSION_TITLE_LENGTH
     && !/[\r\n\0]/u.test(existingTitle)
+    && existingTitle !== options.generatedTitle
   ) {
     return existingTitle;
   }
-  return taskRoleSessionTitle(task, roleName);
+  return taskRoleSessionTitle(task, roleName, options);
 }
 
 export function operatorSessionTitle(
   now: Date,
-  configuredTimeZone?: unknown
+  configuredTimeZone?: unknown,
+  instanceCode?: string
 ): string {
   if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
     throw new TypeError("Operator session title date is invalid.");
@@ -56,7 +69,27 @@ export function operatorSessionTitle(
   if (parts.month === undefined || parts.day === undefined) {
     throw new TypeError("Operator session title date is unavailable.");
   }
-  return `Yui${TITLE_SEPARATOR}Operator${TITLE_SEPARATOR}${parts.month}${parts.day}`;
+  const prefix = instanceCode === undefined
+    ? `Yui${TITLE_SEPARATOR}Operator`
+    : `Yui Operator${instanceSegment(instanceCode)}`;
+  return `${prefix}${TITLE_SEPARATOR}${parts.month}${parts.day}`;
+}
+
+export function globalRoleSessionTitle(
+  roleName: string,
+  now: Date,
+  configuredTimeZone?: unknown,
+  instanceCode?: string
+): string | undefined {
+  if (roleName === "operator") return operatorSessionTitle(now, configuredTimeZone, instanceCode);
+  if (instanceCode === undefined) return undefined;
+  const title = `Yui ${roleLabel(roleName)}${instanceSegment(instanceCode)}`;
+  if (title.length > MAX_SESSION_TITLE_LENGTH) throw new Error("Session title identity exceeds the maximum length.");
+  return title;
+}
+
+function instanceSegment(value: string | undefined): string {
+  return value === undefined ? "" : ` @${validateInstanceCode(value)}`;
 }
 
 function displayTitle(value: string, maxLength: number): string {

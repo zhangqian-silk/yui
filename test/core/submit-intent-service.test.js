@@ -279,7 +279,8 @@ test("an operator submission carries user authority and enters planning like a u
   const output = submitOperatorMessage("plan via operator", task.id, store,
     { environment: userEnv, now }, "discuss");
 
-  assert.ok(output.includes(task.id));
+  assert.ok(output.output.includes(task.id));
+  assert.equal(output.data.taskId, task.id);
   const entered = events(store, task.id, "task.planning-entered");
   assert.equal(entered.length, 1);
   // The saved message is an operator message, not a user message.
@@ -292,7 +293,7 @@ test("submitOperatorMessage with no task creates a fresh Draft and routes its fi
   provisionLeader(store, store.workspaceRoot);
   const output = submitOperatorMessage("brand new requirement", undefined, store,
     { environment: userEnv, now }, "discuss");
-  assert.match(output, /Created Draft task/);
+  assert.match(output.output, /Created Draft task/);
   // The first submission on the brand-new Draft is routed through the shared
   // service exactly as the §2.1 table prescribes for an unplanned Draft: discuss
   // enters planning and records the fact in the same transaction.

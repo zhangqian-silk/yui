@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { validateInstanceCode, type RoleDisplaySettings } from "./instanceCode.js";
 import { assertRoleEnabled, validateEnabled } from "./availability.js";
 import { requireKnownFields } from "../domain/validation.js";
 import { jobScopeKey } from "../job/jobDefinition.js";
@@ -56,7 +57,14 @@ export type RoleAgentBinding = {
   config: RoleAgentConfig;
 };
 
-type RoleAgentOwner = RoleProfile & {
+export type LeaderStage = "draft" | "develop";
+export type LeaderStageOverrides = Partial<Record<LeaderStage, {
+  agentId?: string;
+  model?: string;
+  effort?: string;
+}>>;
+
+type RoleAgentOwner = RoleProfile & RoleDisplaySettings & {
   enabled?: boolean;
   /** Monotonic desired configuration revision. It only affects the next launch. */
   launchRevision: number;
@@ -65,6 +73,8 @@ type RoleAgentOwner = RoleProfile & {
   name: string;
   activeAgentId: string;
   agentBindings: Record<string, RoleAgentBinding>;
+  /** Optional runtime selection only; never an authority or a new Role. */
+  leaderStages?: LeaderStageOverrides;
   workspace: string;
   createdAt: string;
   updatedAt: string;
@@ -78,6 +88,8 @@ export type GlobalRole = RoleAgentOwner & {
 export type TaskRole = RoleAgentOwner & {
   schemaVersion: 1;
   taskId: string;
+  /** Logical name stays leader; this adds experiment capabilities, not inheritance. */
+  template?: "experiment-leader";
   /** Explicitly adopted environment for the next native Session. */
   executionEnvironment?: ExecutionEnvironmentSnapshot;
 };
@@ -130,7 +142,7 @@ export function createRole(
   activeAgentId: string,
   workspace: string,
   now: Date,
-  profile: RoleProfile = {},
+  profile: RoleProfile & RoleDisplaySettings = {},
   defaultAccess: WorkerAccess = "write"
 ): Role {
   const owner = createRoleOwner(name, bindings, activeAgentId, workspace, now, profile, defaultAccess);
@@ -147,7 +159,7 @@ export function createGlobalRole(
   activeAgentId: string,
   workspace: string,
   now: Date,
-  profile: RoleProfile = {},
+  profile: RoleProfile & RoleDisplaySettings = {},
   defaultAccess: WorkerAccess = "write"
 ): GlobalRole {
   return validateGlobalRole({
@@ -167,6 +179,7 @@ export function copyGlobalRoleToTaskRole(
   const timestamp = now.toISOString();
   return validateTaskRole({
     ...cloneProfile(globalRole),
+    ...(globalRole.instanceCode === undefined ? {} : { instanceCode: globalRole.instanceCode }),
     schemaVersion: 1,
     enabled: true,
     launchRevision: 1,
@@ -175,6 +188,7 @@ export function copyGlobalRoleToTaskRole(
     name: requireSafeIdentity(name, "Role name"),
     activeAgentId: globalRole.activeAgentId,
     agentBindings: cloneBindings(globalRole.agentBindings),
+    ...(globalRole.leaderStages === undefined ? {} : { leaderStages: cloneJson(globalRole.leaderStages) }),
     workspace: globalRole.workspace,
     createdAt: timestamp,
     updatedAt: timestamp
@@ -189,7 +203,7 @@ export function activeRoleAgentBinding(role: Role | GlobalRole): RoleAgentBindin
 export function updateGlobalRole(
   role: GlobalRole,
   patch: Partial<Pick<GlobalRole,
-    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile,
+    "name" | "activeAgentId" | "agentBindings" | "leaderStages" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings,
   now: Date
 ): GlobalRole {
   validateGlobalRole(role);
@@ -200,6 +214,7 @@ export function updateGlobalRole(
     updatedAt: now.toISOString()
   };
   clearProfileFields(updated, patch);
+  if (Object.hasOwn(patch, "instanceCode") && patch.instanceCode === undefined) delete updated.instanceCode;
   updated.launchRevision = isDeepStrictEqual(desiredBefore, desiredLaunchProjection(updated))
     ? role.launchRevision
     : role.launchRevision + 1;
@@ -209,7 +224,7 @@ export function updateGlobalRole(
 export function updateRole(
   role: Role,
   patch: Partial<Pick<Role,
-    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & {
+    "name" | "activeAgentId" | "agentBindings" | "leaderStages" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings & {
       executionEnvironment?: ExecutionEnvironmentSnapshot | null;
     },
   now: Date
@@ -226,6 +241,7 @@ export function updateRole(
     updated.executionEnvironment = cloneJson(patch.executionEnvironment);
   }
   clearProfileFields(updated, patch);
+  if (Object.hasOwn(patch, "instanceCode") && patch.instanceCode === undefined) delete updated.instanceCode;
   updated.launchRevision = isDeepStrictEqual(desiredBefore, desiredLaunchProjection(updated))
     ? role.launchRevision
     : role.launchRevision + 1;
@@ -406,6 +422,9 @@ export function validateGlobalRole(role: GlobalRole): GlobalRole {
 
 export function validateTaskRole(role: TaskRole): TaskRole {
   requireSafeIdentity(role.taskId, "Task id");
+  if (role.template !== undefined && (role.template !== "experiment-leader" || role.name !== "leader")) {
+    throw new Error("Invalid Task Leader template.");
+  }
   return validateRoleOwner(role);
 }
 
@@ -415,7 +434,7 @@ function createRoleOwner(
   activeAgentId: string,
   workspace: string,
   now: Date,
-  profile: RoleProfile,
+  profile: RoleProfile & RoleDisplaySettings,
   defaultAccess: WorkerAccess
 ): RoleAgentOwner {
   const mappedBindings: Record<string, RoleAgentBinding> = {};
@@ -429,6 +448,7 @@ function createRoleOwner(
   const timestamp = now.toISOString();
   return {
     ...cloneProfile(profile),
+    ...(profile.instanceCode === undefined ? {} : { instanceCode: validateInstanceCode(profile.instanceCode) }),
     enabled: true,
     launchRevision: 1,
     defaultAccess,
@@ -442,6 +462,7 @@ function createRoleOwner(
 }
 
 function validateRoleOwner<T extends GlobalRole | TaskRole>(role: T): T {
+  if (role.instanceCode !== undefined) validateInstanceCode(role.instanceCode);
   validateEnabled(role.enabled);
   if (role.schemaVersion !== 1) {
     throw new Error("Role schema version is invalid.");
@@ -473,7 +494,43 @@ function validateRoleOwner<T extends GlobalRole | TaskRole>(role: T): T {
   if (!Object.hasOwn(role.agentBindings, role.activeAgentId)) {
     throw new Error(`Role active Agent is not bound: ${role.activeAgentId}.`);
   }
+  if (role.leaderStages !== undefined) {
+    if (role.name !== "leader") throw new Error("Only the Leader may configure draft/develop stages.");
+    if (role.leaderStages === null || typeof role.leaderStages !== "object" || Array.isArray(role.leaderStages)) {
+      throw new Error("Leader stages must be an object.");
+    }
+    requireKnownFields(role.leaderStages, ["draft", "develop"], "Leader stages");
+    for (const stage of ["draft", "develop"] as const) {
+      const override = role.leaderStages[stage];
+      if (override === undefined) continue;
+      if (override === null || typeof override !== "object" || Array.isArray(override)) {
+        throw new Error(`Leader ${stage} override must be an object.`);
+      }
+      requireKnownFields(override, ["agentId", "model", "effort"], `Leader ${stage}`);
+      if (override.agentId !== undefined) requireSafeIdentity(override.agentId, "Leader stage Agent");
+      if (override.model !== undefined) requireText(override.model, "Leader stage model");
+      if (override.effort !== undefined) requireText(override.effort, "Leader stage effort");
+      resolveLeaderStageBinding(role, stage);
+    }
+  }
   return role;
+}
+
+/** Cross-Agent fallback always uses that Agent's own frozen binding. */
+export function resolveLeaderStageBinding(
+  role: Pick<RoleAgentOwner, "name" | "activeAgentId" | "agentBindings" | "leaderStages">,
+  stage?: LeaderStage
+): RoleAgentBinding {
+  const override = role.name === "leader" && stage !== undefined ? role.leaderStages?.[stage] : undefined;
+  const agentId = override?.agentId ?? role.activeAgentId;
+  const binding = role.agentBindings[agentId];
+  if (binding === undefined) throw new Error(`Leader stage Agent is not bound: ${agentId}.`);
+  const config = resolveAgentAdapter(binding.adapterId).canonicalizeConfig({
+    ...cloneJson(binding.config),
+    ...(override?.model === undefined ? {} : { model: override.model }),
+    ...(override?.effort === undefined ? {} : { effort: override.effort })
+  } as never) as RoleAgentConfig;
+  return { ...binding, config };
 }
 
 function validateRoleAgentBinding(binding: RoleAgentBinding): RoleAgentBinding {
@@ -511,9 +568,10 @@ function assertSessionOwnerMatchesRole(role: Role | GlobalRole, sessions: RoleSe
 
 function cloneRolePatch(
   patch: Partial<Pick<GlobalRole,
-    "name" | "activeAgentId" | "agentBindings" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile
+    "name" | "activeAgentId" | "agentBindings" | "leaderStages" | "workspace" | "defaultAccess" | "enabled">> & RoleProfile & RoleDisplaySettings
 ): typeof patch {
   return {
+    ...(patch.instanceCode === undefined ? {} : { instanceCode: validateInstanceCode(patch.instanceCode) }),
     ...(patch.enabled === undefined ? {} : { enabled: patch.enabled }),
     ...(patch.name === undefined ? {} : { name: requireSafeIdentity(patch.name, "Role name") }),
     ...(patch.activeAgentId === undefined
@@ -522,6 +580,7 @@ function cloneRolePatch(
     ...(patch.workspace === undefined ? {} : { workspace: requireText(patch.workspace, "Role workspace") }),
     ...(patch.defaultAccess === undefined ? {} : { defaultAccess: patch.defaultAccess }),
     ...(patch.agentBindings === undefined ? {} : { agentBindings: cloneBindings(patch.agentBindings) }),
+    ...(patch.leaderStages === undefined ? {} : { leaderStages: cloneJson(patch.leaderStages) }),
     ...cloneProfile(patch)
   };
 }
@@ -531,6 +590,7 @@ function desiredLaunchProjection(role: GlobalRole | TaskRole): unknown {
     name: role.name,
     activeAgentId: role.activeAgentId,
     agentBindings: role.agentBindings,
+    ...(role.leaderStages === undefined ? {} : { leaderStages: role.leaderStages }),
     workspace: role.workspace,
     defaultAccess: role.defaultAccess,
     ...("taskId" in role && role.executionEnvironment !== undefined

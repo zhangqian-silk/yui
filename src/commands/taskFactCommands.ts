@@ -1,11 +1,12 @@
 import { createTaskBrief, updateTaskBrief } from "../brief/taskBrief.js";
-import { assertContextRecordReadable, resolveContextReader } from "../context/taskContext.js";
+import { assertTaskReadable, resolveContextReader } from "../context/taskContext.js";
 import { taskRecordList } from "./taskContextCommand.js";
 import { materialize } from "../context/taskContext.js";
 import {
   enqueueWork
 } from "../coordination/workMailboxQueue.js";
-import { createDecision, supersedeDecision } from "../decision/decision.js";
+import { createDecision, supersedeDecision, type Decision } from "../decision/decision.js";
+import { readDigest } from "../output/boundedRead.js";
 import {
   dataError,
   usageError
@@ -43,7 +44,7 @@ export function taskBriefCommand(
     exactPositionals(rest, 1, "Task brief show usage: yui task brief show <task>.");
     const { task, brief, writeGuard, phase } = store.readTransaction(reader => {
       const task = requireTask(reader, rest[0]);
-      assertContextRecordReadable(reader, task.id, "task-brief", task.id, options.environment);
+      assertTaskReadable(reader, task.id, options.environment);
       const caller = resolveContextReader(reader, options.environment ?? {});
       const shared = caller === undefined || caller.roleName === "leader";
       return { task, brief: reader.getTaskBrief(task.id),
@@ -145,6 +146,19 @@ export function taskBriefCommand(
 }
 
 
+function decisionReceipt(decision: Decision) {
+  // A short saved value lets the caller inspect the actual effect without
+  // another read. Bound the complete JSON record, including title/reason.
+  const contentOmitted = Buffer.byteLength(JSON.stringify(decision)) > 2048;
+  const value = contentOmitted ? {
+    id: decision.id, taskId: decision.taskId, status: decision.status,
+    createdAt: decision.createdAt, updatedAt: decision.updatedAt
+  } : decision;
+  return { taskId: decision.taskId, effect: "saved", contentOmitted, decision: { ...value,
+    digest: readDigest(decision), rationaleBytes: Buffer.byteLength(decision.rationale)
+  }, ...(contentOmitted ? { read: `yui task decision show ${decision.taskId} ${decision.id} --json` } : {}) };
+}
+
 export function taskDecisionCommand(
   args: string[],
   store: TaskWorkflowStore,
@@ -177,7 +191,7 @@ export function taskDecisionCommand(
     });
     notifyMailbox(options.runtime, taskMailbox(result.task.id));
     if (result.task.status === "active") notifyMailbox(options.runtime, leaderMailbox(result.task.id));
-    return output(`Recorded decision ${result.decision.id} for ${result.task.id}\n`);
+    return output(`Recorded decision ${result.decision.id} for ${result.task.id}\n`, decisionReceipt(result.decision));
   }
   if (command === "list") {
     return taskRecordList(rest, store, "task-decision", options.environment);
@@ -185,7 +199,7 @@ export function taskDecisionCommand(
   if (command === "show") {
     exactPositionals(rest, 2, "Task decision show usage: yui task decision show <task> <decision>.");
     const task = requireTask(store, rest[0]);
-    assertContextRecordReadable(store, task.id, "task-decision", rest[1]!, options.environment);
+    assertTaskReadable(store, task.id, options.environment);
     const decision = store.getDecision(task.id, rest[1]);
     if (decision === null) throw dataError(`Decision not found: ${rest[1]}.`);
     const timeZone = store.getConfig().timeZone;
@@ -228,7 +242,7 @@ export function taskDecisionCommand(
     });
     notifyMailbox(options.runtime, taskMailbox(result.task.id));
     if (result.task.status === "active") notifyMailbox(options.runtime, leaderMailbox(result.task.id));
-    return output(`Superseded decision ${result.decision.id} for ${result.task.id}\n`);
+    return output(`Superseded decision ${result.decision.id} for ${result.task.id}\n`, decisionReceipt(result.decision));
   }
   throw usageError(command === undefined
     ? "Task decision command is required."
@@ -279,7 +293,7 @@ export function taskMilestoneCommand(
   if (command === "show") {
     exactPositionals(rest, 2, "Task milestone show usage: yui task milestone show <task> <milestone>.");
     const task = requireTask(store, rest[0]);
-    assertContextRecordReadable(store, task.id, "task-milestone", rest[1]!, options.environment);
+    assertTaskReadable(store, task.id, options.environment);
     const milestone = store.getMilestone(task.id, rest[1]);
     if (milestone === null) throw dataError(`Milestone not found: ${rest[1]}.`);
     const timeZone = store.getConfig().timeZone;
@@ -310,7 +324,7 @@ export function taskEventCommand(
   if (command === "show") {
     exactPositionals(rest, 2, "Task event show usage: yui task event show <task> <event>.");
     const task = requireTask(store, rest[0]);
-    assertContextRecordReadable(store, task.id, "task-event", rest[1]!, options.environment);
+    assertTaskReadable(store, task.id, options.environment);
     const event = store.queryContextRecords(task.id, {
       family: "task-event", ids: [rest[1]!], limit: 1
     }).records[0]?.value as import("../event/taskEvent.js").TaskEvent | undefined;

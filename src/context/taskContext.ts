@@ -3,25 +3,34 @@ import { isGitArtifactRefString, parseGitArtifactRef } from "../artifacts/gitArt
 import { taskNotFound, usageError } from "../errors/cliError.js";
 import type { TaskEvent } from "../event/taskEvent.js";
 import { expandTaskMessageResult, type TaskMessage } from "../message/message.js";
+import { taskMessagePresentation } from "../interaction/notificationPresentation.js";
 import { currentManagedRuntime, resolveManagedTaskReader } from "../runtime/managedCaller.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
-import { providerRetrySummary } from "../runtime/providerRetry.js";
+import { providerRetryDecision, providerRetrySummary } from "../runtime/providerRetry.js";
 import type { ContextRecordFamily, ContextRecordQuery } from "../storage/contextRecords.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { projectTaskRemoteDeliveryFromStore } from "../task/remoteDeliveryService.js";
 import { retiredTaskRecordIds, TASK_RECORD_RETIRED_EVENT } from "../task/taskRecordRetirement.js";
 import { managedWorkspaceKey } from "../worktree/managedWorkspace.js";
 import { contextContentDigest } from "./contextSnapshot.js";
-import { buildRunContextPack } from "./runContextPack.js";
 import { sourceRunContextValue } from "./sourceRunContext.js";
-import { boundedDocument, fitsReadBudget, summaryText, recordPage, type ReadPageOptions } from "../output/boundedRead.js";
+import { boundedDocument, fitsReadBudget, summaryText, recordPage, readDigest, type ReadPageOptions } from "../output/boundedRead.js";
 import { taskBriefGuard, taskPhase } from "./taskPhase.js";
+import { CONTEXT_FAMILIES } from "./contextFamilies.js";
+import { projectKnowledgeContext, projectPolicyContext } from "./projectContext.js";
 
 const MAX_RECORDS = 64;
 const MAX_VALUE_BYTES = 2048;
 const MAX_PAGE_BYTES = 24 * 1024;
 const MAX_EVENTS = 100;
 const MAX_ATTENTION_REFS = 8;
+// The current read is a working index, not a replay of configuration, workspace
+// inventories and requirements on every wake. Exact bodies use the same scoped,
+// digest-checked inspect path regardless of how small a record happens to be.
+const INDEX_ONLY_FAMILIES = new Set([
+  "task", "task-brief", "remote-delivery", "role", "project-policy",
+  "managed-workspace", "task-decision", "task-message", "run", "work-item", "project-knowledge"
+]);
 type Ref = Readonly<{ store: string; refId: string; revision: string; digest: string }>;
 type Entry = Readonly<{ ref: Ref; value: unknown }>;
 type Cursor = Readonly<{ taskId: string; source: string; sequence: number; revision: number }>;
@@ -51,23 +60,23 @@ export function readTaskContext(
     const sources = authorizedSources(reader, scope, true);
     const count = sources.reduce((total, source) => total + source.count, 0);
     const cursor = currentCursor(reader, taskId);
-    const phase = scope.allow === undefined ? taskPhase(reader, scope.task) : undefined;
+    const phase = taskPhase(reader, scope.task);
     const phaseSource = phase?.activation?.source;
     const priorMessageId = phaseSource?.priorMessageId;
     // Reserve a small, classified view before ordinary history consumes the
     // page. Counts and samples come from the exact same authorized read.
-    const attention = summarizeAttention(reader, taskId, scope.allow);
+    const attention = summarizeAttention(reader, taskId);
     let bytes = Buffer.byteLength(JSON.stringify(attention));
     const records: Array<{ ref: Ref; summary?: string; value?: unknown; omitted: boolean;
-      execution?: ReturnType<typeof runExecutionObservation> }> = [];
+      execution?: ReturnType<typeof currentRunExecution> }> = [];
     let runtimeEvents: TaskEvent[] | undefined;
     page: for (const source of sources) for (const entry of source.read()) {
       if (records.length >= MAX_RECORDS) break page;
       if (records.filter(record => record.ref.store === source.family).length >= 8) continue;
       if (entry.ref.store === "run") runtimeEvents ??= reader.listEventsByType(taskId, ["runtime.agent-error"]);
       const valueBytes = Buffer.byteLength(JSON.stringify(entry.value));
-      const content = valueBytes > MAX_VALUE_BYTES || ["role", "task-message", "run", "work-item", "project-knowledge"].includes(entry.ref.store)
-        ? { ref: entry.ref, summary: summarize(entry.value), omitted: true }
+      const content = valueBytes > MAX_VALUE_BYTES || INDEX_ONLY_FAMILIES.has(entry.ref.store)
+        ? { ref: entry.ref, summary: summarizeEntry(reader, entry), omitted: true }
         : { ...entry, omitted: false };
       const revisedAfterActivation = entry.ref.store === "task-message" && phaseSource?.ref !== undefined
         && reader.queryContextRecords(taskId, {
@@ -83,11 +92,13 @@ export function readTaskContext(
                 ? "recorded-before-activation-request" : "recorded-after-activation-request"
           } : {}),
         ...(entry.ref.store === "run" ? {
-        execution: runExecutionObservation(entry.value as AgentRun,
-          reader.getTaskRoleSessionSet(taskId, (entry.value as AgentRun).roleName)?.providerBinding, runtimeEvents)
+        execution: currentRunExecution(reader, entry.value as AgentRun, runtimeEvents)
       } : {}), ...(entry.ref.store === "role" ? {
+        providerRetryDecision: providerRetryDecision(reader.getTaskRoleSessionSet(taskId,
+          (entry.value as { name: string }).name)?.providerBinding),
         providerRetry: providerRetrySummary(reader.getTaskRoleSessionSet(taskId,
-          (entry.value as { name: string }).name)?.providerBinding)
+          (entry.value as { name: string }).name)?.providerBinding,
+          `yui task role session retry ${taskId} ${(entry.value as { name: string }).name} show --json`)
       } : {}) };
       const size = Buffer.byteLength(JSON.stringify(record));
       if (bytes + size > MAX_PAGE_BYTES) break page;
@@ -97,13 +108,17 @@ export function readTaskContext(
     const result = {
       taskId, coreCursor: encode(cursor), throughCursor: encode(cursor),
       view: "current",
-      ...(scope.allow === undefined ? {
-        phase,
-        briefWriteGuard: taskBriefGuard(reader, scope.task)
-      } : {}),
+      ...(reader.getRole(taskId, "leader")?.template !== "experiment-leader" ? {} : {
+        iteration: { read: `yui task iteration overview ${taskId} --json`,
+          note: "Artifact knowledge is read live, independently of this DB cursor. Keep Task constraints and unresolved inputs; expand exact experimental references only as needed." }
+      }),
+      phase,
+      briefWriteGuard: taskBriefGuard(reader, scope.task),
       caller: scope.caller === undefined ? { kind: "unmanaged-or-global" } : {
+        taskId: scope.caller.taskId,
         role: scope.caller.roleName,
-        executionAuthority: currentManagedRuntime(reader, environment, taskId)?.executionAuthority ?? "historical-read-only"
+        executionAuthority: scope.caller.taskId !== taskId ? "reference-only"
+          : currentManagedRuntime(reader, environment, taskId)?.executionAuthority ?? "historical-read-only"
       },
       collections: Object.entries(sources.reduce((counts, source) => {
         counts[source.family] = (counts[source.family] ?? 0) + source.count;
@@ -140,7 +155,18 @@ export function readTaskContext(
   });
 }
 
-function summarizeAttention(store: TaskStore, taskId: string, allow: Set<string> | undefined) {
+/** Keep live delivery/attempt facts, but do not replay retry diagnostics and
+ * history into the working index. Exact Run inspect below retains the full
+ * observation, under the same authorization and document-pagination contract.
+ */
+function currentRunExecution(store: TaskStore, run: AgentRun, events?: TaskEvent[]) {
+  const binding = store.getTaskRoleSessionSet(run.taskId, run.roleName)?.providerBinding;
+  const execution = runExecutionObservation(run, binding, events);
+  return { ...execution, retry: execution.retry === null ? null : providerRetrySummary(binding,
+    `yui task role session retry ${run.taskId} ${run.roleName} show --json`) };
+}
+
+function summarizeAttention(store: TaskStore, taskId: string) {
   const group = () => ({ count: 0, refs: [] as Ref[], omittedRefs: 0 });
   const attention = {
     openInputs: group(), pendingOperations: group(), unknownOperations: group(), messages: group()
@@ -153,7 +179,7 @@ function summarizeAttention(store: TaskStore, taskId: string, allow: Set<string>
   ] as const) {
     const page = store.queryContextRecords(taskId, {
       family, statuses, descending: category === "messages",
-      unhandledMessages: category === "messages", ids: allowedIds(allow, family), limit: MAX_ATTENTION_REFS
+      unhandledMessages: category === "messages", limit: MAX_ATTENTION_REFS
     });
     const summary = attention[category];
     summary.count = page.count;
@@ -180,7 +206,7 @@ export function readTaskContextDelta(
   environment: NodeJS.ProcessEnv = {}
 ) {
   return store.readTransaction((reader) => {
-    const { allow } = authorizeContext(reader, taskId, environment);
+    authorizeContext(reader, taskId, environment);
     const start = decode(input.after, taskId);
     const now = currentCursor(reader, taskId);
     const continuation = input.continuation === undefined ? undefined : decodePage(input.continuation, taskId);
@@ -200,7 +226,7 @@ export function readTaskContextDelta(
       throw usageError(`Context delta limit must be between 1 and ${MAX_EVENTS}.`);
     }
     const selected = reader.queryContextRecords(taskId, {
-      family: "task-event", ids: allowedIds(allow, "task-event"),
+      family: "task-event",
       afterSequence: after, throughSequence: bound.sequence, limit
     });
     const page: Array<{ ref: Ref; value?: unknown; omitted: boolean }> = [];
@@ -239,6 +265,47 @@ export function inspectTaskContext(
   return boundedDocument(response, `task:${taskId}/${selector.store}/${selector.refId}`, selector.cursor);
 }
 
+/** CLI spelling shared by explicit dispatch selection and grouped reading. */
+export function parseExactContextRef(selector: string) {
+  const match = /^([^/]+)\/(.+)@([0-9a-f]{64})$/u.exec(selector);
+  if (match === null)
+    throw usageError(`Invalid required Context reference: ${selector}. Use store/refId@digest from the applicable Context pointers or list/inspect.`);
+  return { store: match[1]!, refId: match[2]!, digest: match[3]! };
+}
+
+/** Explicit independent originals, one shared transport budget. Reuse the
+ * single-reference authorization/digest checks on every page. No implicit
+ * discovery, partial success, cached values or read/handling receipts.
+ */
+export function inspectTaskContextBatch(
+  store: TaskStore, taskId: string, selectors: unknown, cursor?: string,
+  environment: NodeJS.ProcessEnv = {}
+) {
+  if (!Array.isArray(selectors) || selectors.length < 1 || selectors.length > 8)
+    throw usageError("Context batch requires 1..8 exact references.");
+  const seen = new Set<string>();
+  const refs = selectors.map((value: unknown) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      throw usageError("Context batch reference requires store, refId and digest.");
+    const ref = value as Record<string, unknown>;
+    if (Object.keys(ref).some(key => !["store", "refId", "digest", "revision"].includes(key))
+      || typeof ref.store !== "string" || !ref.store
+      || typeof ref.refId !== "string" || !ref.refId
+      || typeof ref.digest !== "string" || !/^[a-f0-9]{64}$/.test(ref.digest)
+      || ref.revision !== undefined && typeof ref.revision !== "string")
+      throw usageError("Context batch reference requires exact store, refId and digest; revision is optional metadata.");
+    const key = JSON.stringify([ref.store, ref.refId]);
+    if (seen.has(key)) throw usageError("Duplicate Context batch reference.");
+    seen.add(key);
+    return { store: ref.store, refId: ref.refId, digest: ref.digest };
+  });
+  // All-or-error: a stale/forbidden source cannot be silently skipped. Each
+  // source is independently digest-pinned; this is not a new cross-record
+  // snapshot. A continuation is additionally bound to the complete response.
+  const items = refs.map(ref => readTaskContextResource(store, taskId, ref, environment));
+  return boundedDocument({ taskId, items }, `task:${taskId}/context-batch:${readDigest(refs)}`, cursor);
+}
+
 /** The same authorized read as inspect, before transport pagination. */
 export function readTaskContextResource(
   store: TaskStore, taskId: string, selector: Readonly<{ store: string; refId: string; digest?: string }>,
@@ -246,8 +313,7 @@ export function readTaskContextResource(
 ) {
   return store.readTransaction((reader) => {
     const scope = authorizeContext(reader, taskId, environment);
-    const value = isAllowed(scope.allow, selector.store, selector.refId)
-      ? inspectValue(reader, scope, selector) : null;
+    const value = inspectValue(reader, scope, selector);
     if (value === null) throw usageError("Context reference is unavailable in the caller's current scope.");
     const entry = materialize(selector.store, selector.refId, value);
     if (selector.digest !== undefined && entry.ref.digest !== selector.digest) {
@@ -295,7 +361,7 @@ export function listTaskContext(
           if (options.status !== undefined && value.status !== options.status
             || options.workItemId !== undefined && value.workItemId !== options.workItemId
             || options.after !== undefined && Date.parse(String(value.createdAt)) <= Date.parse(options.after)) continue;
-          records.push({ ref: entry.ref, summary: summarize(value),
+          records.push({ ref: entry.ref, summary: summarizeEntry(reader, entry),
             ...(retired === undefined ? {} : { history: retired.has(entry.ref.refId) ? "retired" : "active" }),
             ...Object.fromEntries(["status", "kind", "type", "createdAt", "roleName", "assignee", "purpose", "workItemId", "reviewRoundId"]
               .filter(key => typeof value[key] === "string").map(key => [key, value[key]])) });
@@ -308,20 +374,12 @@ export function listTaskContext(
   });
 }
 
-export const CONTEXT_FAMILIES = [
-  "task", "task-brief", "remote-delivery", "role", "role-profile",
-  "project-policy", "project-knowledge", "input-request", "work-item",
-  "accepted-work-item", "candidate", "environment-preparation", "managed-workspace",
-  "change-set", "task-message", "run", "source-run", "review-round", "mailbox",
-  "task-decision", "task-milestone", "job", "publication", "task-event"
-];
 export function listContextMessages(
   store: TaskStore, taskId: string, environment: NodeJS.ProcessEnv = {}
 ): TaskMessage[] {
   return store.readTransaction((reader) => {
-    const { allow } = authorizeContext(reader, taskId, environment);
+    authorizeContext(reader, taskId, environment);
     return reader.listMessages(taskId)
-      .filter((message) => isAllowed(allow, "task-message", message.id))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   });
 }
@@ -374,7 +432,11 @@ export async function withContextObservations(
   return { ...result, omittedObservations: observations.length - result.observations.length };
 }
 
-/** Shared current/historical Session read identity; discovery may only narrow it. */
+/** Authenticate ordinary reads of the local user's resource. Task/Assignment
+ * ownership is execution scope, not a confidentiality boundary. This does not
+ * switch Home, impersonate a target Role, or relax explicit global Job limits.
+ * Filesystem access and the authenticated Web/Controller transport remain the
+ * resource boundary of this single-user local product. */
 export function resolveContextReader(store: TaskStore, environment: NodeJS.ProcessEnv) {
   const caller = resolveManagedTaskReader(store, environment);
   if (caller === undefined && environment.YUI_SESSION_SCOPE === "global" && environment.YUI_ROLE !== "operator") {
@@ -392,57 +454,14 @@ export function resolveContextReader(store: TaskStore, environment: NodeJS.Proce
 
 function authorizeContext(store: TaskStore, taskId: string, environment: NodeJS.ProcessEnv) {
   const caller = resolveContextReader(store, environment);
-  if (caller !== undefined && caller.taskId !== taskId) throw usageError("Context is outside the caller's Task.");
   const task = store.getTask(taskId);
   if (task === null) throw taskNotFound(taskId);
-  let allow: Set<string> | undefined;
-  if (caller !== undefined && caller.roleName !== "leader") {
-    if (caller.currentRunId === undefined) throw usageError("A managed Role needs a current AgentRun to read its scoped Context.");
-    const pack = buildRunContextPack(store, taskId, caller.currentRunId);
-    allow = new Set(pack.pointers.map((ref) => `${ref.store}:${ref.refId}`));
-    allow.add(`role:${caller.roleName}`);
-    allow.add(`turn:${caller.currentRunId}`);
-    // Shared current user intent and this exact Assignment's live steers augment
-    // the frozen refs. Query identities only: another Role's results, ordinary
-    // addressed messages and Leader steers remain outside this scope.
-    const run = store.getRun(taskId, caller.currentRunId);
-    const current = store.contextInputReferences(taskId, {
-      roleName: caller.roleName, workItemId: run?.workItemId, reviewRoundId: run?.reviewRoundId
-    });
-    for (const id of current.messages) allow.add(`task-message:${id}`);
-    for (const id of current.events) allow.add(`task-event:${id}`);
-    if (run?.workItemId !== undefined) {
-      for (const job of store.listDurableJobs(taskId)) {
-        if (job.owner.kind === "work-item" && job.owner.workItemId === run.workItemId) allow.add(`job:${job.id}`);
-      }
-    }
-  }
-  return { task, allow, caller };
+  return { task, caller };
 }
 
-/** Independent record commands share Context's exact read boundary, not a
- * second role-based approximation of Assignment visibility. */
-export function contextRecordReader(store: TaskStore, taskId: string, environment: NodeJS.ProcessEnv = {}) {
-  const { allow } = authorizeContext(store, taskId, environment);
-  return (family: string, id: string) => isAllowed(allow, family, id);
-}
-
-export function assertContextRecordReadable(
-  store: TaskStore, taskId: string, family: string, id: string, environment: NodeJS.ProcessEnv = {}
-) {
-  if (!contextRecordReader(store, taskId, environment)(family, id)) {
-    throw usageError("Context reference is outside the caller's Assignment.");
-  }
-}
-
-function isAllowed(allow: Set<string> | undefined, family: string, id: string): boolean {
-  return allow === undefined || allow.has(`${family}:${id}`);
-}
-
-function allowedIds(allow: Set<string> | undefined, family: string): string[] | undefined {
-  const prefix = `${family}:`;
-  return allow === undefined ? undefined : [...allow]
-    .filter(ref => ref.startsWith(prefix)).map(ref => ref.slice(prefix.length));
+/** Independent record commands authenticate against the same resource boundary. */
+export function assertTaskReadable(store: TaskStore, taskId: string, environment: NodeJS.ProcessEnv = {}) {
+  authorizeContext(store, taskId, environment);
 }
 
 function roleProfile(role: NonNullable<ReturnType<TaskStore["getRole"]>>) {
@@ -458,14 +477,14 @@ function roleProfile(role: NonNullable<ReturnType<TaskStore["getRole"]>>) {
  */
 function inspectValue(
   store: TaskStore,
-  { task, allow, caller }: ReturnType<typeof authorizeContext>,
+  { task, caller }: ReturnType<typeof authorizeContext>,
   { store: family, refId }: Readonly<{ store: string; refId: string }>
 ): unknown | null {
   const taskId = task.id;
   switch (family) {
     case "task": return refId === taskId ? task : null;
     case "task-brief": return refId === taskId ? store.getTaskBrief(taskId) : null;
-    case "remote-delivery": return refId === taskId && allow === undefined
+    case "remote-delivery": return refId === taskId
       ? projectTaskRemoteDeliveryFromStore(store, task) : null;
     case "role": return store.getRole(taskId, refId);
     case "role-profile": {
@@ -479,15 +498,16 @@ function inspectValue(
       if (binding === undefined) return null;
       const project = store.getProject(binding.projectId);
       if (project === null) return null;
-      const { knowledge, ...policy } = project;
-      if (family === "project-policy") return policy;
-      const entry = knowledge.find((item) => item.status === "active" && `${project.id}:${item.id}` === refId);
-      return entry === undefined ? null : { projectId: project.id, ...entry };
+      if (family === "project-policy") return projectPolicyContext(project);
+      const entry = project.knowledge.find((item) => item.status === "active" && `${project.id}:${item.id}` === refId);
+      return entry === undefined ? null : projectKnowledgeContext(project.id, entry);
     }
     case "input-request": return store.getInputRequest(taskId, refId);
     case "work-item": return store.getWorkItem(taskId, refId);
-    case "accepted-work-item":
-      return allow?.has(`accepted-work-item:${refId}`) ? store.getWorkItem(taskId, refId) : null;
+    case "accepted-work-item": {
+      const item = store.getWorkItem(taskId, refId);
+      return item?.status === "accepted" ? item : null;
+    }
     case "candidate": {
       const parts = refId.split("/");
       if (parts.length !== 2) return null;
@@ -500,7 +520,6 @@ function inspectValue(
       return store.queryContextRecords(taskId, { family, ids: [refId], limit: 1 }).records[0]?.value ?? null;
     case "run": return store.getRun(taskId, refId);
     case "source-run": {
-      if (!allow?.has(`source-turn:${refId}`)) return null;
       const run = store.getRun(taskId, refId);
       return run === null ? null : sourceRunContextValue(run);
     }
@@ -526,14 +545,13 @@ function inspectValue(
     case "managed-workspace": {
       // Existing frozen AgentRun overlays use the Task/Role alias; owner keys
       // identify the durable workspace in current Task reads.
-      if (caller?.currentRunId !== undefined && refId === `${taskId}/${caller.roleName}`) {
+      if (caller?.taskId === taskId && caller.currentRunId !== undefined && refId === `${taskId}/${caller.roleName}`) {
         return store.getRun(taskId, caller.currentRunId)?.workspace ?? null;
       }
       return store.listManagedWorkspaces(taskId)
         .find((workspace) => managedWorkspaceKey(workspace.owner) === refId) ?? null;
     }
     case "mailbox": {
-      if (allow !== undefined) return null;
       if (refId === "task") return store.getWorkMailbox({ kind: "task", taskId });
       const roleName = refId.startsWith("role:") ? refId.slice("role:".length) : undefined;
       return roleName !== undefined && store.getRole(taskId, roleName) !== null
@@ -548,28 +566,37 @@ function inspectValue(
 
 type EntrySource = { family: string; count: number; read(offset?: number): Iterable<Entry> };
 
-function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType<typeof authorizeContext>,
+function authorizedSources(store: TaskStore, { task, caller }: ReturnType<typeof authorizeContext>,
   current = false, requestedFamily?: string, discovery = false): EntrySource[] {
   const taskId = task.id;
   const sources: EntrySource[] = [];
   const add = (family: string, id: string, value: unknown) => {
-    if ((requestedFamily === undefined || requestedFamily === family) && value !== null && isAllowed(allow, family, id)) {
+    if ((requestedFamily === undefined || requestedFamily === family) && value !== null) {
       sources.push({ family, count: 1, read: () => [materialize(family, id, value)] });
     }
   };
   const query = (family: ContextRecordFamily, options: Partial<ContextRecordQuery> = {}) => {
     if (requestedFamily !== undefined && requestedFamily !== family) return;
-    const selection = { ...options, family, ids: allowedIds(allow, family) };
+    const selection = { ...options, family };
     const { count } = store.queryContextRecords(taskId, { ...selection, limit: 0 });
+    // The bounded current index must not bury Task main behind alphabetically
+    // earlier integration/review history. Full discovery keeps its stable order.
+    const taskWorkspaceKey = managedWorkspaceKey({ type: "task", taskId });
+    const preferredWorkspace = current && !discovery && family === "managed-workspace"
+      ? store.getManagedWorkspace({ type: "task", taskId }) : null;
     sources.push({ family, count, *read(offset = 0) {
+      if (preferredWorkspace !== null) yield materialize(family, taskWorkspaceKey, preferredWorkspace);
       for (const { id, value } of store.queryContextRecords(taskId, {
         ...selection, offset, limit: current && !discovery ? 8 : MAX_RECORDS
-      }).records) yield materialize(family, id, value);
+      }).records) {
+        if (preferredWorkspace !== null && id === taskWorkspaceKey) continue;
+        yield materialize(family, id, value);
+      }
     } });
   };
   add("task", taskId, task);
   add("task-brief", taskId, store.getTaskBrief(taskId));
-  if (allow === undefined && (requestedFamily === undefined || requestedFamily === "remote-delivery")) {
+  if (requestedFamily === undefined || requestedFamily === "remote-delivery") {
     add("remote-delivery", taskId, projectTaskRemoteDeliveryFromStore(store, task));
   }
   for (const role of store.listRoles(taskId)) {
@@ -579,18 +606,14 @@ function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType
   for (const binding of task.projectBindings) {
     const project = store.getProject(binding.projectId);
     if (project === null) continue;
-    const { knowledge, ...policy } = project;
-    add("project-policy", project.id, policy);
-    for (const entry of knowledge.filter((k) => k.status === "active")) {
-      add("project-knowledge", `${project.id}:${entry.id}`, { projectId: project.id, ...entry });
+    add("project-policy", project.id, projectPolicyContext(project));
+    for (const entry of project.knowledge.filter((k) => k.status === "active")) {
+      add("project-knowledge", `${project.id}:${entry.id}`, projectKnowledgeContext(project.id, entry));
     }
   }
   // Current responsibilities and unanswered inputs precede historical bulk.
   query("input-request", { statuses: ["open"] });
   query("work-item", current ? { excludeStatuses: ["accepted", "retired"] } : {});
-  for (const id of allowedIds(allow, "accepted-work-item") ?? []) {
-    add("accepted-work-item", id, store.getWorkItem(taskId, id));
-  }
   if (!current) query("candidate");
   // File artifacts are not enumerated into the synchronous Context listing: the
   // core cursor does not cover file edits and an ambient directory index here
@@ -598,21 +621,18 @@ function authorizedSources(store: TaskStore, { task, allow, caller }: ReturnType
   // listed on demand via the async `artifact.list` capability; frozen Candidate
   // artifacts remain reachable as commit-pinned pointers under their Candidate.
   if (!current) query("environment-preparation");
-  query("managed-workspace");
-  if (caller?.currentRunId !== undefined) {
+  if (!current || discovery) query("managed-workspace");
+  if (caller?.taskId === taskId && caller.currentRunId !== undefined) {
     add("managed-workspace", `${taskId}/${caller.roleName}`,
       store.getRun(taskId, caller.currentRunId)?.workspace ?? null);
   }
+  if (current && !discovery) query("managed-workspace");
   if (!current) query("change-set");
   query("task-message", { descending: true, unhandledMessages: current });
   query("run", { descending: true, ...(current ? { statuses: ["active"] } : {}) });
-  for (const id of allowedIds(allow, "source-turn") ?? []) {
-    const run = store.getRun(taskId, id);
-    if (run !== null) add("source-run", id, sourceRunContextValue(run));
-  }
   query("review-round", { descending: true, ...(current ? { statuses: ["pending", "running"] } : {}) });
   if (!current) query("input-request", { excludeStatuses: ["open"] });
-  if (!current && allow === undefined) {
+  if (!current) {
     add("mailbox", "task", store.getWorkMailbox({ kind: "task", taskId }));
     for (const role of store.listRoles(taskId)) {
       add("mailbox", `role:${role.name}`, store.getWorkMailbox({ kind: "role", taskId, roleName: role.name }));
@@ -672,8 +692,32 @@ function freeze<T>(value: T): T {
 }
 function summarize(value: unknown): string {
   const record = value as Record<string, unknown>;
-  return summaryText(["title", "name", "activeAgentId", "scope", "expiresWhen", "version", "objective", "question", "summary", "body", "status", "type"]
+  return summaryText(["title", "name", "status", "type", "currentFocus", "root", "activeAgentId", "scope", "expiresWhen", "version", "objective", "question", "summary", "body"]
     .flatMap((key) => typeof record[key] === "string" || (key === "version" && typeof record[key] === "number")
       ? [`${key}: ${record[key]}`] : [])
     .join("; "));
+}
+
+/** Reuse producer-authored navigation, never generate a verdict or copy a
+ * report. The authorized Message already permits its matching terminal result
+ * through exact inspect; unrelated/malformed links cannot supply summaries.
+ */
+function summarizeEntry(store: TaskStore, entry: Entry): string {
+  if (entry.ref.store === "task-message") {
+    const message = entry.value as TaskMessage;
+    const presentation = taskMessagePresentation(message, (taskId, runId) => {
+      const run = store.getRun(taskId, runId);
+      return run !== null && run.taskId === message.taskId
+        && message.author.type === "role" && run.roleName === message.author.roleName
+        && run.status !== "active" && run.result !== undefined ? run : null;
+    });
+    if (presentation.summary !== undefined) {
+      // Include attribution in the existing budget without clipping qualifiers.
+      const label = `Author summary (${presentation.summarySource})`;
+      const text = `${label}: ${presentation.summary}`;
+      return Buffer.byteLength(text) <= 512 ? text
+        : `${label} omitted: exceeds discovery budget; read original.`;
+    }
+  }
+  return summarize(entry.value);
 }

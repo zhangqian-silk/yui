@@ -1,62 +1,9 @@
 # Record external delivery
 
-Use this when routing authorized follow-up delivery or after creating, updating,
-closing, reopening or merging a PR/MR. This procedure does not grant permission
-to push, publish, merge, query an external provider or archive.
-
-## Post-completion routing boundary
-
-An explicit user request to continue implementation or delivery of the same
-completed, unarchived result authorizes its necessary reopening within that
-request's scope. The current matching Leader may call `task reopen <task>` for
-its own Task and continue that request; an Operator handoff is not mandatory,
-and neither Role needs the user to additionally say “reopen.” Read the original
-completion, fixed heads/reports, Publication, new request and current authority
-first. Inspect the reopen result and current Context before executing; delivery
-still requires the current Session's delivery authority, legal workspace and an
-enabled execution gate.
-
-If the Leader already received the request, use its original durable input and
-continue after reopening; do not resend it or create a self-wake. Preserve a
-direct-conversation request and its boundaries in Task records when needed,
-without impersonating user/Operator input. When the Operator or user is routing
-new input, use the existing two operations:
-
-```sh
-yui task reopen <task>
-yui operator submit "<new request, authority, boundaries and prior evidence>" \
-  --task <task> --intent develop --request-id <id>
-```
-
-Unaddressed `task message send` with the same intent/key options is an alternative
-to the second command, not an additional send. Ordinary send/queue/submit still
-refuses completed Tasks before saving new input; no intent implicitly changes
-lifecycle and there is no auto-reopen option. `--to leader` instead requires an existing
-WorkItem/ReviewRound Assignment.
-
-Reopen returns the Task to active and clears its current completion fields;
-original completion events, fixed commits/artifacts and Publication history stay
-intact. The Leader must assess the new request and separately accept any new
-result, not pretend old validation proves changed work. Reopen does not replay
-historical Messages/Runs, change the Role's Agent/model/permissions, or lift an
-independent execution stop. Queries, ordinary record/discussion input and Session
-recovery do not authorize resumption. Cancelled intent needs explicit
-user/Operator restoration authority and cannot be restored by the Leader;
-archived Tasks cannot reopen. A stopped gate still needs
-the separately authorized start/cleanup path.
-
-These are two atomic operations, not one transaction. Read the reopen result and
-the submission's saved/queued receipt separately. If the second step fails,
-inspect current Task/Message facts and continue only the unapplied step within
-unchanged authority. Keep the same submission key on a matching retry; unknown
-native or external effects are never replay permission. Do not reopen again just
-to retry input after another completion, cancellation or stop. A lifecycle-only
-notification may precede the new Message: the Leader waits for the actual request,
-without rerunning old work or immediately completing the reopened Task.
-
-Publication recording, diff/adopt and verification remain separately authorized
-atomic operations on completed, unarchived results. They need no reopening when
-no further execution is requested, and never grant authority for code changes.
+Read after an authorized PR/MR operation or before recording, verifying or
+adopting its evidence. This does not authorize push, publish, merge, external
+reads or archive. Reopening and archive have separate action-specific routes
+in [yui-runtime](../SKILL.md).
 
 ## Record and verify the owning Task's publication
 
@@ -135,50 +82,3 @@ decision. Archived history is read-only to these adopt/verify operations.
 
 Use `yui task remote-delivery <task>` to explain external delivery. Publication
 is not Candidate acceptance, Review, Integration or Task completion.
-
-## Archive separately
-
-Completion does not authorize archive. A delivery Leader with original user
-authorization may use [ordinary archive](../../yui-leader/references/authorization.md);
-this grants no force or abandonment authority. Otherwise the Operator obtains authorization for
-the exact Task, checks archive eligibility, then uses `--integrated` for verified
-merged delivery or `--abandon` for deliberate non-delivery. General archive
-approval never implies `--force` authority. Preserve the Task record.
-
-Ordinary archive requires settled business, exact delivery (or authorized
-abandonment), and proven stopped execution. It commits logical archive before
-one foreground resource cleanup. Safe physical retention—dirty diagnostics,
-missing-path recovery gaps, or remaining Git registrations—is not a reason to
-force archive or rewrite old Integration outcomes. Terminal failed/superseded
-Integration history stays readable; an active/conflicted attempt or unknown
-execution still requires settlement.
-
-With explicit force authorization for a completed or cancelled (retired) Task, use
-`yui task archive <task> (--integrated|--abandon) --force`. Force commits the
-archive and stops new Task scheduling before attempting safe foreground cleanup.
-Missing/stale delivery evidence, unresolved execution and cleanup errors become
-warnings with retained resource references; they do not block that commit.
-Authority, lifecycle, identity and mandatory audit persistence still fail closed.
-
-Force does not verify a merge, accept work, stop unknown execution, discard dirty
-data or imply abandonment. Keep the requested disposition and original
-Publication/completion evidence. Unverified local commits and resources that
-cannot be safely released stay owned and traceable. Late runtime events remain
-source evidence, not authority to resume or settle unknown input.
-
-Read `task show <task> --json` for `data.archive.warnings`,
-`data.archive.retainedResources` and `data.archive.cleanupEvents`. These bounded
-views include counts and inspection actions; read the existing paginated
-`task event list` and Task context resource inventory for omitted evidence.
-A successful archive
-exit means `archived=true`, not that cleanup fully succeeded. `cleanupFinished`
-means the foreground pass finished, not that every resource was removed.
-`allResourcesReleased` separately requires release evidence and no retained
-resources. Historical warnings do not disappear after a successful later pass.
-If cleanup was interrupted, the Task stays archived. Repeating archive only
-reports current facts. After inspecting the exact retained owner/reason, use
-`task archive-cleanup <task>` for one new bounded pass, or the reported
-WorkItem/Review/Integration cleanup entry. Every pass rechecks current identity,
-runtime and Git registration facts; it is not an atomic batch and does not
-discard unknown material. Registry-only remnants require the existing resource
-inspection route, not a global `worktree prune`. No background retry is implied.

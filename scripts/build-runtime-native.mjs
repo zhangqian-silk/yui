@@ -13,7 +13,7 @@ if (compilerFlags === null) {
   throw new Error(`Yui's native process owner does not support ${process.platform}.`);
 }
 const targetPlatform = `${process.platform}-${process.arch}`;
-if (!["linux-x64", "darwin-x64", "darwin-arm64"].includes(targetPlatform)) {
+if (!["linux-x64", "darwin-arm64"].includes(targetPlatform)) {
   throw new Error(`Unsupported native build target: ${targetPlatform}.`);
 }
 const output = fileURLToPath(new URL(`../dist/runtime/native/${targetPlatform}/`, import.meta.url));

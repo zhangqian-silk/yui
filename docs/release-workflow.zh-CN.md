@@ -36,6 +36,274 @@ Agent 选择一个预先声明的计划，设施从持久状态驱动该计划�
 不能将不兼容冒称为兼容，也不为回避版本选择新增历史兼容机制。包版本与协议、
 持久存储契约仍然独立：兼容性检查和必要迁移要求不变，下文存储规则不授予发版权限。
 
+### 2.29.0 兼容性及迁移说明
+
+存储使用集中升级路径 **1.32 → 1.33 → 1.34**。第一步将实验 Leader 配置复制为
+普通 Task 自有配置，后续全局配置变化不再动态改变它。第二步将冻结 Context 的
+身份、摘要和引用保留在 SQLite，精确 resource 值放入 Task 自有的不可变
+`task-data` 文件；既有冻结值与摘要不变。
+
+升级保留 Task 工作区及未提交文件，不执行历史清理。历史工作区、Artifact 或
+Context 正文文件缺失时，不自动重建或备份；具体读取返回真实的文件不存在或
+完整性错误，由 Agent 判断后续动作。无关的新任务创建及 Home 启动不再以全部
+历史记录可读为前提。Task 目录可能返回 `recordError` 和空读取引用；
+显式完整记录审计仍报告历史损坏。
+
+`task process-cleanup` 通过预览摘要和持久回执显式清理已归档 Task 的遥测明细，
+不是完整 Task 删除、Artifact 删除或工作区清理。可移植 Project 上下文不再携带
+本机注册路径和完整 Knowledge 历史，仍可显式读取 Project；已冻结 Context 不变。
+
+离线 `repair inspect`、`repair config`、`repair identity` 向获授权的用户或
+Operator 提供有界修复。应用要求新鲜预览摘要且无活跃运行时；配置修复只修改指定
+字段，身份恢复要求已有有效备份与仍保留的 Home 身份匹配，不猜测凭据、不静默
+创建新身份、不启动 Controller，也不自动新增备份。
+
+使用正常升级／迁移流程，迁移保留原有数据库备份机制，不额外自动备份或恢复
+历史文件。1.34 之后若自行选择完整备份，需同时包含数据库、Task 数据与 Artifact。
+不要用旧二进制打开升级后的 Home。Controller/Host 协议仍为 v1，支持平台不变。
+发布本身不更新全局 CLI、不迁移生产数据，也不重启共享服务。
+
+### 2.28.0 兼容性及迁移说明
+
+Task 可显式选择 `--mode experiment`，与项目定义的类型独立。
+专用 Leader 继承当前全局 Leader 配置；既有普通 Task 保留原有配置行为。
+创建仍只产生 Draft，不授予测量、模型或共享资源权限。
+参见 [实验任务](experiments.md)。
+
+方向显式选择当前实验与结论。计划、实验、执行和分析使用不可变的 Git 固定引用；
+失败或未知测量保留为证据，不计为成功样本。类型化读取与当前选择校验本地引用完整性。
+打包的实验 Leader 包含记录契约和有界、按需加载的上下文指引。
+
+评测工具固定使用当前 checkout CLI 和隔离 Home，检查原生工作目录归属，
+并支持通往 fixture Controller 的有界 Linux 沙箱桥接。这只是评测传输，
+不是生产 Controller 的兜底通道；无法确认的观测证据仍保持 unknown。
+
+存储通过集中迁移从 **1.31 → 1.32**，支持显式 Task 模式和实验 Leader 继承元数据，
+保留既有历史。升级前备份 Home，使用正常升级／迁移路径，
+不要用旧二进制打开已迁移的 Home。Controller/Host 协议仍为 v1。
+
+支持平台仍为 Linux x64（glibc）和使用原生 arm64 Node.js 的 macOS Apple Silicon。
+发布要求确切合并提交的 Core CI，以及同一归档在 Node 20/22/24/26 上的八行全新安装
+矩阵通过。发布本身不升级全局 CLI、不迁移生产数据，也不重启共享服务。
+
+### 2.27.0 兼容性及迁移说明
+
+Provider 错误采用统一分类与有界重试策略。未分类错误现在最多获得一次自动兜底；
+已知瞬态错误仍最多五次且总时限十分钟，共享持久化尝试历史、退避和服务端等待提示。
+认证、配额等永久不可重试错误优先拦截。自动恢复仍要求确切的已接收失败原生 Turn，
+以及 Provider/Host 的恢复能力；输入投递未知、存在更新 Turn 或后台工作未结清时仍禁止。
+不支持恢复的 Provider 不会因此获得自动恢复能力。诊断展示选用策略、剩余预算和拒绝原因。
+参见 [Provider 重试](provider-retry.md)。
+
+Leader 可分别为 draft 和 develop 启动配置可选的 Agent/model/effort 覆盖。
+未设置时沿用既有绑定；新 Task 冻结模板，既有 Task 必须显式更新。
+期望配置不会改变运行中的 Turn，也不会重放输入。
+参见 [Leader 阶段配置](roles-and-configuration.md#optional-leader-draftdevelop-configuration)。
+
+存储通过集中增量迁移从 **1.30 → 1.31**，支持 Leader 阶段设置与启动来源，
+保留既有历史。重试改动不新增存储字段。升级前备份 Home，使用正常升级／迁移路径，
+不要用旧二进制打开已迁移的 Home。Controller/Host 协议仍为 v1。
+
+支持平台仍为 Linux x64（glibc）和使用原生 arm64 Node.js 的 macOS Apple Silicon。
+发布要求确切合并提交的 Core CI，以及同一归档在 Node 20/22/24/26 上的八行全新安装
+矩阵通过。确定性检查不证明真实模型行为。发布本身不升级全局 CLI、不迁移生产数据，
+也不重启共享服务。
+
+### 2.26.0 兼容性及迁移说明
+
+WorkItem 可通过 `yui task work continue` 在原生会话中继续同范围修改。
+Core 将已接收的当前 Turn 关联到新的 Run，不重发输入，也不创建替代会话。
+提问保持只读；已验收 WorkItem 返修时清除当前验收和 Candidate 指针，保留历史证据，
+新成果须重新经过正常 Review 和验收。`yui task role session resume` 可恢复保留的
+空闲 WorkItem Host，不提交输入。Task 停止／完成、身份撤权或被后继替代、
+工作区已释放、范围变化、执行未结清或投递效果未知时，仍保留安全边界。
+希望保留直接返修能力时应保留工作区。参见 [WorkItem 续作](workitem-continuation.md)。
+
+本版还包含不打断现有 Agent 会话的 Project 绑定更新。范围变更仍须显式操作并校验
+当前权限；保留会话不等于授予额外 Project 访问权。
+
+存储通过集中迁移从 **1.29 → 1.30**，声明 WorkItem 续作契约；既有历史逐字节保留，
+无需改变 SQL schema。升级前备份 Home，使用正常升级／迁移路径，
+不要用旧二进制打开已迁移的 Home。Controller/Host 协议仍为 v1；
+Runtime/Leader/Worker Skills 分别升级到 47/17/5。
+
+支持平台仍为 Linux x64（glibc）和使用原生 arm64 Node.js 的 macOS Apple Silicon。
+发布前要求确切合并提交的 Core CI，以及同一包在 Node 20/22/24/26 上的全新安装矩阵
+通过。确定性检查不证明真实模型行为。发布本身不升级全局 CLI、不迁移生产数据，
+也不重启共享服务。
+
+### 2.25.0 兼容性及迁移说明
+
+本次 minor 版本移除 macOS Intel 支持。仅支持 Linux x64（glibc）和使用原生
+arm64 Node.js 的 macOS Apple Silicon。macOS x64（包括 Apple Silicon 上通过
+Rosetta 运行的 x64 Node.js）会在加载任一 CLI 产品或打开 Home 前明确拒绝。
+Intel Mac 用户须停留在 2.23.0；Apple Silicon 用户须先切换到原生 arm64 Node.js。
+合并 npm 包的 OS/CPU 字段不能表达平台配对，因此不支持的组合仍可能安装成功，
+但启动时会明确失败；不新增安装脚本、备用 helper 或首次使用下载。
+既有 updater 的目标包预检也会在停止 Controller、替换全局二进制或迁移存储前拒绝。
+
+原生构建、包内容、Core CI 和发布冒烟同步收敛到上述两个平台。
+保留全部受支持 Node 20/22/24/26 的全新安装门禁（8 组），各平台 Node 24
+仍验证真实进程生命周期。保留 `v2.24.0` tag 作为未发布证据：
+必需的 Intel 冒烟作业未能获得 hosted runner，npm 和 GitHub Release 均未发布。
+2.25.0 包含下文完整的 Git 预算配置及错误保真变更。
+
+存储仍为 **1.29**，移除平台本身不新增迁移；从 2.23.0 升级仍执行已声明的
+Git 配置 **1.28 → 1.29** 迁移。升级前备份 Home，使用正常升级／迁移路径，
+不要用旧二进制打开已迁移的 Home。Controller/Host 协议仍为 v1。
+发布本身不更新全局 CLI、不迁移生产数据，也不重启共享服务。
+确定性安装包及 OS 检查不证明真实模型或真实远端服务器行为。
+
+### 2.24.0 未发布 tag：Git 预算及迁移
+
+Git 工作区和产物操作使用可配置的本地总耗时预算，与 clone、远程 fetch 和需要连接
+远端的 `ls-remote` 分离。在 `yui config tools` 或 Web 设置中配置
+`git-local-timeout-seconds`（默认 30）、
+`git-remote-inactivity-timeout-seconds`（默认 120）及
+`git-remote-timeout-seconds`（默认 1800）；三项均接受 1–86400 的整数秒。
+保存后下一条命令生效，包含 Controller 发起的命令，已启动命令保持原预算。
+参见 [Git 操作预算](roles-and-configuration.zh-CN.md#git-操作预算)。
+
+clone/fetch 无终端时也请求进度。输出只重置无进展计时，不延长总耗时上限；
+有输出不等于传输实际推进。远程 stderr 保留有界尾部。错误保留超时类型和预算、
+实际耗时、退出码、信号及 stderr，不再只显示最后一行进度。预算耗尽时终止本次调用
+自己的传输 helper；不引入自动 Git 重试或回滚。
+
+存储通过集中式增量迁移从 **1.28 → 1.29**，声明三项可选配置。
+既有配置逐字节保留，缺失字段采用运行时默认值。升级前备份 Home，使用正常升级／迁移
+路径，不要用旧二进制打开已迁移的 Home。Controller/Host 协议仍为 v1。
+发布前要求确切合并提交的 Core CI 及同一 runtime 包的全新安装矩阵通过；
+确定性检查不证明真实远端服务器或真实模型行为。发布本身不更新全局 CLI、
+不迁移生产数据，也不重启共享服务。
+
+### 2.23.0 兼容性及迁移说明
+
+Host 升级使用明确的生命周期信号及安全排空／重新挂接边界，不重放业务输入、
+不替换原生会话身份。常规 Skill 检查保留在 Host 内，未变化的 Turn 不携带
+Skill 提示；仅首次挂接、明确上下文丢失／压缩及 Skill 变化提供当前加载指针。
+
+Codex 的 start／steer 将用户原文与应用上下文分离。失败 Turn 恢复不复制原文，
+也不视为 Skill 上下文丢失。此路径要求原生 `additionalContext` 契约，已核对
+Codex CLI 0.159.2；旧原生实现不在验证范围内，不提供把元信息塞回用户输入的回退。
+
+原生标题复用 Role／Task／Draft／实例格式，通过独立、有界的元数据进程同步，
+不阻塞 Startup、Goal 或 Turn。精确身份、持久化意图和原生读回区分成功与未知效果。
+保留已观测到的手动命名，未知写入不重放；缺乏归属证据的历史污染标题只诊断、不改名。
+原生命名 API 没有 compare-and-swap，无法原子保护最后读写窗口内的外部并发改名。
+
+存储升级至 **1.28**：保留 **1.26 → 1.27** Host 升级信号迁移，追加
+**1.27 → 1.28** 原生标题回执，不改写历史。升级前备份 Home，使用正常升级／迁移
+路径，不要用旧二进制打开已迁移的 Home。Controller/Host 协议仍为 v1。
+发布本身不更新全局 CLI、不迁移生产数据，也不重启共享服务。
+
+### 2.22.0 兼容性及迁移说明
+
+上下文读取增加有界发现、精确批量原文读取、正文传输回执及聚焦通知。
+Runtime／Role Skill 按动作组织必需材料，并明确上下文压缩后的恢复路径；
+指针和传输回执不证明语义阅读，也不自动 ACK。完整原文仍可获取。
+自动化调用方应遵循明确的分页和原文入口，不再假定默认返回包含全部正文。
+help 默认聚焦当前命令；需要完整递归命令树时须明确请求递归 help，
+使用 JSON 的调用方也应适配子命令投影变化。
+
+Host 恢复、Controller 调度及 SQLite 事务边界改为有界处理，不重放未知效果。
+Codex Host 在可能阻塞执行的路径省略原生标题变更；Yui 展示保留 Role 实例码及
+planning 标记，但不会将未应用的原生标题记为成功。Codex 临时目录排除选项
+贯穿配置及启动链路保留。
+
+存储通过集中式 **1.25 → 1.26** 迁移升级至 **1.26**；已发布的 1.24 → 1.25
+迁移不变。升级前备份 Home，并使用正常升级／迁移路径；不要用旧二进制打开
+已迁移的 Home。Controller/Host 协议仍为 v1。发布本版本本身不更新全局 CLI、
+不迁移生产 Home，也不重启服务。
+
+受维护的评测入口为 `scripts/eval/`，公共基础设施与上下文专属逻辑分离；
+上下文指导及历史分析位于 `docs/evaluations/context/`，旧
+`scripts/collaboration-eval/` 入口退役。工程负责数据统计，Agent 根据实验和
+线上实际轨迹分析，包括压缩边界及证据缺失；局部输出减量不代表普遍 token 收益。
+
+### 2.21.0 兼容性及迁移说明
+
+普通 Task、Assignment 和冻结上下文证据读取改按本地资源边界处理，不再将 Task
+归属本身作为保密边界。目录、搜索及相关记录可读，但不借用目标 Task 身份或执行权；
+跨 Task Context 明确标记 `reference-only`。调用方不得将可读记录、返回的指令或
+冻结包当作写入、领取输入、派发或控制执行的授权。真实用户／租户、文件系统、
+认证传输及明确阅读限制仍保留；原生会话读取复用合法原生工具，不增加专用网关。
+
+Leader 可依据同结果用户请求或明确未履行承诺，为需要跟踪的诊断、证据交接、
+必要协调或交付使用既有 reopen。简单问答保持 completed，诊断保持只读；重开
+不解除停止、归档、撤销意图、Session、工作区或外部效果限制。reopen 与 InputRequest
+仍是独立操作，不新增 completed 写入例外或自动重放。
+
+存储仍为 **1.25**，Controller/Host 协议仍为 v1，不新增迁移。Runtime 与 Role Skill
+版本独立递增。npm 发布仍要求准确合入 commit 的 Core CI，以及同一 runtime archive
+的全新安装矩阵通过；这些确定性检查不证明模型语义行为。发布不授权全局安装更新
+或生产重启。
+
+### 2.20.0 兼容性及迁移说明
+
+本 minor 增加按 Role 独立可选的实例码（`--instance-code` /
+`--clear-instance-code`），以及持有 planning 权限的 Leader Session 的 `Draft`
+标识。仅设置 Operator 不会传播到 Leader 或其他 Role；Task Role 模板副本保持
+独立。实例码仅供展示，不改变身份、权限、启动配置版本或完整小写 Task ID。
+详见 [Role 配置](roles-and-configuration.zh-CN.md)。
+
+新会话采用配置，正常 Codex Host 启动/恢复可刷新确认由 Yui 管理的标题，不强停或替换会话。
+旧的无来源标记标题和已记录的用户标题保留。Codex 恢复时仅在原生名字仍匹配上次
+生成标题时改名；原生信息缺失或用户已改名则跳过。标题来源仅在原生命名成功回执后
+推进，不因预启动登记或存活 Host 复用而变化。其他 Provider 仅在新建时传入生成名，
+恢复时不传入。Provider 命名仍为尽力能力。
+
+存储通过中央连续迁移从 **1.24 → 1.25**，只增加可选实例码和标题来源，
+不改写历史记录。较早的受支持 Home 沿既有迁移链升级，不可用旧程序打开升级后的
+Home。Controller/Host 协议仍为 v1。发布不授权安装升级、迁移生产 Home、
+重启共享服务、替换会话或为现有 Role 选择实例码。
+
+发布门禁要求准确合入 commit 的 Core CI 和同一 runtime tarball 的全平台
+fresh-install 矩阵通过后才向 npm `latest` 发布；这些确定性验证不证明真实模型行为。
+
+### 2.19.0 兼容性及迁移说明
+
+本 minor 新增消息积压、投递阻塞监测及 Operator 告警（PR #492）。观测区分正常执行、
+暂停、有界重试与投递停滞，保留原始证据，并跨 Controller 重启去重告警。
+告警包含按证据匹配的管理恢复引导：先检查精确输入和执行状态，区分明确拒绝后的
+retry 与未知结果的 resolve，并在需要时要求精确停止证明或显式替换授权。
+监测不会自动重试、停止或替换执行；告警本身不是恢复授权，也不证明唯一根因。
+
+存储仍为 **1.24**，Controller/Host 协议仍为 v1。已有消息与事件保留，本版本
+不新增存储迁移；较早受支持 Home 仍通过集中式连续迁移链升级。
+另行获得更新授权后，由 Operator 核验实际发布包，再执行
+`yui update --version 2.19.0`。兼容的存活 Session 保留；发布本身不更新运行安装，
+也不恢复其他 Task。精确 merge commit 的 Core CI 与同一 tarball 的全新安装
+平台／Node 矩阵仍为发布门禁，这些验证不代表真实模型行为验证。
+
+### 2.18.0 兼容性及迁移说明
+
+本 minor 包含已合入的独立 Jobs 工作区和全局 Shell 脚本 Job（PR #490），以及
+Controller 可靠性与诊断改进。精确 Session 停止／替换不再等待无关全局调度排空；
+停止证明、单写者和未知输入防重放仍受保护。Session 健康区分历史故障与当前权限，
+明确拒绝的过期输入可以合法退役，原始证据保留。
+
+Task 局部惰性缓存、索引查询和持久化耗时观测减少投影开销，并区分请求、worker
+和数据库成本。默认持久化 worker 承担周期维护事务的锁等待；空闲 Global 恢复和
+已处分重试检查只读。实际启动准入和其他业务写入仍可能竞争。异步脱敏诊断保存到
+`runtime/controller-diagnostics.jsonl` 及两个有界轮转文件。这些改进解决已复现机制，
+不代表已证明每次历史超时的唯一根因。参见[托管运行时](managed-turn-and-session-runtime.zh-CN.md)。
+
+存储从 **1.22 经 1.23 升至 1.24**：1.23 声明全局 Shell 脚本定义及精确 Run 快照；
+1.24 增加 Task 读取修订号与触发器，不改写历史载荷。生产 1.21 Home 会先执行已有的
+1.22 Role/Profile 启停字段迁移。必须使用集中式同 major 连续迁移，不手工修改数据库。
+Controller RPC、Host control/event 协议仍为 v1；兼容的存活 Host 和 Session 保留，
+而非热更新。Host 未报告能力及未知结果仍明确保留。
+
+另行获得生产授权后，由 Operator 核验实际发布包，再执行
+`yui update --version 2.18.0`。迁移前刷新一致的维护备份，记录当时程序与 Controller
+身份。较早的在线数据库快照不是完整回滚点，不可覆盖后续已接受输入。
+旧二进制不能打开 1.24 Home；回滚需要匹配的旧程序和升级前一致 Home 备份，
+并核对期间发生的效果。
+
+发布门禁要求精确 merge commit 的 Core CI，以及同一运行包的全新安装平台／Node
+矩阵通过后才能发布 npm。本地确定性测试与既有 smoke 不替代这些门禁，也不证明
+真实模型行为。发布本身不更新生产 Home，不代表其他 Task 执行问题已解决。
+
 ### 2.17.0 兼容性及迁移说明
 
 本 minor 在 CLI 和 Web 设置中新增持久化的 Role/Profile 启用、停用控制。
@@ -563,6 +831,10 @@ CLI、Operator Session 和 Controller 替换保持兼容，而不必把每个命
 `dist/cli.js`。因此目标发布拥有完整的交接协议和超时层级。一次无目标的激活、help、
 `--json` 以及其他每个命令都留在全局 CLI 上。激活不新增另一条普通 CLI 路由路径。
 
+激活的两次存储预检在隔离子进程中调用已验证目标包现有的只读升级原语，不经过目标包
+尚未激活的普通 CLI 入口。每次预检前都要求目标已安装于此 Home，且完整性及冒烟回执
+匹配。这既不迁移存储，也不允许 inactive release 或源码 checkout 的普通命令读写 Home。
+
 ## 步骤目录
 
 计划是一个固定、预先声明的操作子集。每个计划条目有一个 id（工作流内唯一）、一个
@@ -689,7 +961,7 @@ yui task grant revoke task-15 capability-grant-1
 确切 commit，只增加发布所需的产物装配、全新安装和 provenance 检查。
 
 业务契约与完整 Jobs/Schedules 链路仅在 Core CI 的 Linux Node 24 执行一次。
-发布仍在三平台 × Node 20/22/24/26 全部安装同一个已校验 tarball：每组都验证
+发布仍在两个受支持平台 × Node 20/22/24/26 全部安装同一个已校验 tarball：每组都验证
 CLI/setup/原生 helper、Doctor/PTY 和真实 SQLite SQL/GC；各平台 Node 24 额外验证
 真实进程生命周期。参见[分层覆盖表](testing/verification-levels.zh-CN.md#ci-与发布)。
 依赖安装不再隐含构建，每个源码作业只构建一次，再验证原生依赖；smoke 输出分段耗时。

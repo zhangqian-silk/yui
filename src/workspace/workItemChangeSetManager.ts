@@ -79,7 +79,7 @@ export class WorkItemChangeSetManager {
     );
     const entries = capturableEntries(context);
     if (context.source === "task-main") {
-      const git = new NodeGitWorkspace();
+      const git = new NodeGitWorkspace(() => this.store.getConfig());
       for (const { entry, expectedHead } of entries) {
         if (!await git.isClean(entry.path)) {
           throw new Error(
@@ -131,7 +131,7 @@ export class WorkItemChangeSetManager {
     }
     const workspace = this.store.getWorkItemWorkspace(item.taskId, item.id);
     if (workspace === null) return { proof: null, checks: [] };
-    const git = new NodeGitWorkspace();
+    const git = new NodeGitWorkspace(() => this.store.getConfig());
     const projects: ProjectIntegrationProof[] = [];
     const checks: CleanupCheck[] = [];
     const sources = [`work-item:${taskId}/${workItemId}`,
@@ -270,7 +270,7 @@ export class WorkItemChangeSetManager {
         `Task has an unresolved Integration Attempt: ${task.id}/${unresolved.id}.`
       );
     }
-    const git = new NodeGitWorkspace();
+    const git = new NodeGitWorkspace(() => this.store.getConfig());
     const remoteHeads = new Map<string, string>();
     const findPublishedCommit = async (
       entry: WorkspaceProjectEntry,

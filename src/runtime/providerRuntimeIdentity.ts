@@ -632,7 +632,7 @@ function orderedRunTimestamp(run: ProviderTurn, value: string, label: string): s
   return normalized;
 }
 
-function providerTurnIsActive(run: ProviderTurn | null): boolean {
+export function providerTurnIsActive(run: ProviderTurn | null): boolean {
   return run !== null && ["submitting", "accepted", "delivery-unknown"]
     .includes(run.status);
 }

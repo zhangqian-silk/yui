@@ -10,6 +10,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  statSync,
   readFileSync,
   readdirSync,
   readlinkSync
@@ -346,7 +347,8 @@ export type ProcessScanResult = Readonly<{
  * scan fails closed: every candidate path receives a protective ref.
  */
 export function scanProcessPathRefs(
-  paths: readonly string[]
+  paths: readonly string[],
+  options: Readonly<{ strictSameUser?: boolean }> = {}
 ): ProcessScanResult {
   if (process.platform === "darwin") return scanDarwinProcessPathRefs(paths);
   const refs = new Map<string, Set<string>>();
@@ -369,6 +371,16 @@ export function scanProcessPathRefs(
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue;
     const pid = Number(entry);
+    if (options.strictSameUser) {
+      try {
+        if (statSync(`/proc/${pid}`).uid !== process.getuid?.()) continue;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          diagnostics.push({ source: "proc", severity: "error", message: `Cannot identify process ${pid}.` });
+        }
+        continue;
+      }
+    }
     let cwd: string | undefined;
     try {
       cwd = readlinkSync(`/proc/${pid}/cwd`);
@@ -385,14 +397,20 @@ export function scanProcessPathRefs(
     let fds: readonly string[] = [];
     try {
       fds = readdirSync(`/proc/${pid}/fd`);
-    } catch {
+    } catch (error) {
+      if (options.strictSameUser && !["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+        diagnostics.push({ source: "proc", severity: "error", message: `Cannot inspect open files for process ${pid}.` });
+      }
       fds = [];
     }
     for (const fd of fds) {
       let target: string | undefined;
       try {
         target = readlinkSync(`/proc/${pid}/fd/${fd}`);
-      } catch {
+      } catch (error) {
+        if (options.strictSameUser && !["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+          diagnostics.push({ source: "proc", severity: "error", message: `Cannot inspect descriptor ${pid}/${fd}.` });
+        }
         continue;
       }
       if (target.startsWith("socket:") || target.startsWith("pipe:")

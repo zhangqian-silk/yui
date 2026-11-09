@@ -47,6 +47,7 @@ import { projectActor } from "../task/taskAuthority.js";
 import type { Decision } from "../decision/decision.js";
 import type { Milestone } from "../milestone/milestone.js";
 import type { Task } from "../task/task.js";
+import type { GitConfig } from "../config/yuiConfig.js";
 
 export type ProjectCommandStore = Readonly<{
   transaction<T>(execute: (store: ProjectCommandStore) => T): T;
@@ -55,7 +56,7 @@ export type ProjectCommandStore = Readonly<{
   saveProject(project: Project): void;
   removeProject(projectId: string): boolean;
   listProjects(): Project[];
-  getConfig(): Readonly<{ defaultWorkspace?: string }>;
+  getConfig(): Readonly<{ defaultWorkspace?: string }> & GitConfig;
   /** The persistent Home root; managed Project repositories live below it. */
   rootDirectory(): string;
   /** Task evidence for Knowledge promotion proposals. */
@@ -192,7 +193,7 @@ async function diagnoseProject(
       data: { project, diagnosis: "no-remote" }
     };
   }
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const releaseMaintenance = await acquireProjectMaintenanceLock(store.rootDirectory(), project.id, { signal: options.signal });
   try {
     requireUnchangedMaintenanceProject(store, project, "diagnose");
@@ -246,7 +247,7 @@ async function discoverProjects(
   const query = args[0]?.trim().toLocaleLowerCase();
   const workspace = store.getConfig().defaultWorkspace;
   if (workspace === undefined) throw usageError("No default workspace is configured; run yui setup.");
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const entries = await readdir(workspace, { withFileTypes: true });
   const discovered: DiscoveredProject[] = [];
   for (const entry of entries) {
@@ -295,7 +296,7 @@ async function cloneProject(
 ): Promise<Project> {
   const usage = "Project clone usage: yui project clone <name> <remote> [--alias <name> ...] [--stable <ref>] [--development <ref>] [--external].";
   const parsed = parseCloneArguments(args, usage);
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const name = validateProjectName(parsed.name);
   const stableRef = parsed.stable ?? "HEAD";
   const developmentRef = parsed.development ?? stableRef;
@@ -408,7 +409,7 @@ async function migrateProject(
   if (project.remoteUrl === undefined) {
     throw usageError(`Project migrate requires a remote URL: ${project.id}.`);
   }
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const destination = managedProjectPath(store.rootDirectory(), project.id);
   // Migration rewrites the Project's Git repository: hold the per-Project
   // maintenance fence so no rebuild/archive/cleanup (or a second migrate)
@@ -590,7 +591,7 @@ async function addProject(
   const usage = "Project add usage: yui project add <name> <path> [--alias <name> ...] [--remote <url>] [--stable <ref>] [--development <ref>].";
   const parsed = parseAddArguments(args, usage);
   assertOutsideManagedWorktrees(parsed.path, store.rootDirectory());
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const head = await git.inspect(parsed.path, "HEAD");
   assertOutsideManagedWorktrees(head.root, store.rootDirectory());
   if (!await git.isClean(head.root)) {
@@ -643,7 +644,7 @@ async function updateProject(
     updateProjectMetadata(current, patch, now),
     current.id
   );
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   if (parsed.stable !== undefined) {
     const head = await git.inspect(current.path, "HEAD");
     if (!await git.isClean(head.root)) {
@@ -745,7 +746,7 @@ async function resetProject(
       `Project reset requires matching stable and development branches: ${project.id}.`
     );
   }
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const releaseMaintenance = await acquireProjectMaintenanceLock(store.rootDirectory(), project.id, { signal: options.signal });
   try {
     // Re-read under the fence so a concurrent catalog change can never drive
@@ -884,7 +885,7 @@ async function replaceProject(
       + "Re-run with --discard-local to acknowledge that the checkout and any uncommitted state will be discarded."
     );
   }
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const releaseMaintenance = await acquireProjectMaintenanceLock(store.rootDirectory(), project.id, { signal: options.signal });
   try {
     const current = requireProject(store, project.id);
@@ -1122,7 +1123,7 @@ async function deleteProjectCommand(
     // Heal a crashed earlier attempt before the prechecks turn.
     await healCheckoutSwap({ currentPath: project.path, backupPath: tombstone });
     if (existsSync(project.path)) {
-      const git = options.git ?? new NodeGitWorkspace();
+      const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
       const worktrees = await git.listWorktrees(project.path);
       const linked = worktrees.filter((path) => path !== project.path);
       if (linked.length > 0) {

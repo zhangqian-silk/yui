@@ -12,6 +12,8 @@ import {
   type UpdateControllerReconciliationResult
 } from "../controller/updateReconciliation.js";
 import { isControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
+import type { HostUpgradeResult } from "../controller/hostUpgrade.js";
+import { isBackupRetentionReport, type BackupRetentionReport } from "../storage/upgrade/backupRetention.js";
 
 /** A side-by-side staged package, isolated from the live global install. */
 export type StagedPackage = Readonly<{
@@ -47,6 +49,8 @@ export type UpdateControllerStopResult = Readonly<{
 
 export type UpdateStorageMigrationResult = Readonly<{
   backupPath?: string;
+  backupRetention?: BackupRetentionReport;
+  cleanupWarning?: string;
 }>;
 
 /** Injected update effects for a binary replacement and optional Home migration. */
@@ -67,6 +71,8 @@ export type UpdatePorts = Readonly<{
   stopController?: (home: string, expectedPid: number) => UpdateControllerStopResult;
   startController?: (home: string) => void;
   restoreController?: (home: string, identity: ControllerIdentity) => void;
+  upgradeHosts?: (home: string) => readonly HostUpgradeResult[];
+  hostStatus?: (home: string) => readonly HostUpgradeResult[];
 }>;
 
 export type UpdateResult = Readonly<
@@ -85,7 +91,11 @@ export type UpdateResult = Readonly<
         backupPath?: string;
       }
   ) & {
+    backupRetention?: BackupRetentionReport;
     cleanupWarning?: string;
+    hosts?: readonly HostUpgradeResult[];
+    hostUpgradeError?: string;
+    controllerStarted?: true;
     controllerReconciliation?: UpdateControllerReconciliationResult;
     controllerRestore?: Readonly<{
       identity: ControllerIdentity;
@@ -216,7 +226,9 @@ function runStagedUpdate(
       cleanupWarning = `Controller handover lock release failed for ${home}: ${messageOf(error)}`;
     }
   }
-  return cleanupWarning === undefined ? result : { ...result, cleanupWarning };
+  return cleanupWarning === undefined ? result : {
+    ...result, cleanupWarning: [result.cleanupWarning, cleanupWarning].filter(Boolean).join(" ")
+  };
 }
 
 function reconcileAndUpdate(ports: UpdatePorts, staged: StagedPackage, home: string): UpdateResult {
@@ -319,9 +331,7 @@ function activateAndVerify(
       action: binaryHealthUncertainAction(),
       recoverable: storageMigrated,
       version: staged.version,
-      ...(migration?.backupPath === undefined
-        ? {}
-        : { backupPath: migration.backupPath })
+      ...migration
     };
     return storageMigrated
       ? failure
@@ -349,9 +359,7 @@ function activateAndVerify(
             : "Verify the activated binary, then start the Controller explicitly.",
         recoverable: storageMigrated && !unknownActive,
         version: staged.version,
-        ...(migration?.backupPath === undefined
-          ? {}
-          : { backupPath: migration.backupPath }),
+        ...migration,
         ...(unknownActive ? { controllerOwnershipUnknown: true } : {})
       };
       return unknownActive || storageMigrated
@@ -360,10 +368,19 @@ function activateAndVerify(
     }
   }
 
+  let hosts: readonly HostUpgradeResult[] | undefined;
+  let hostUpgradeError: string | undefined;
+  if (lifecycle.ensureRunning && ports.upgradeHosts) {
+    try { hosts = ports.upgradeHosts(home); }
+    catch (error) { hostUpgradeError = `Host upgrade request outcome is unknown: ${messageOf(error)}. Inspect existing requests; do not replay inputs.`; }
+  }
   return {
     outcome: "updated",
     version: staged.version,
-    ...(migration?.backupPath === undefined ? {} : { backupPath: migration.backupPath })
+    ...(lifecycle.ensureRunning ? { controllerStarted: true as const } : {}),
+    ...(hosts === undefined ? {} : { hosts }),
+    ...(hostUpgradeError === undefined ? {} : { hostUpgradeError }),
+    ...migration
   };
 }
 
@@ -523,7 +540,9 @@ function hasCompleteControllerLifecycle(ports: UpdatePorts): boolean {
 
 function isStorageMigrationResult(value: unknown): value is UpdateStorageMigrationResult {
   return isRecord(value)
-    && (value.backupPath === undefined || typeof value.backupPath === "string");
+    && (value.backupPath === undefined || typeof value.backupPath === "string")
+    && (value.cleanupWarning === undefined || typeof value.cleanupWarning === "string")
+    && (value.backupRetention === undefined || isBackupRetentionReport(value.backupRetention));
 }
 
 function isPositivePid(value: unknown): value is number {

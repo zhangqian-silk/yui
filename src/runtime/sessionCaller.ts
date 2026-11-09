@@ -9,7 +9,9 @@ type LookupStore = Pick<TaskStore, "findNativeSessionSets">;
  * binding (including revocation, Assignment and captured workspace).
  * Native children with their own Codex thread cannot borrow a parent's hints.
  */
-export function sessionCallerEnvironment(store: LookupStore, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function sessionCallerEnvironment(
+  store: LookupStore, env: NodeJS.ProcessEnv, allowRetainedTask = false
+): NodeJS.ProcessEnv {
   const native = env.CODEX_THREAD_ID ?? env.YUI_NATIVE_SESSION_ID;
   if (native === undefined) {
     if (hasManagedIdentity(env)) throw new ManagedRuntimeDriftError("Managed Session identity has no native session id.");
@@ -32,7 +34,11 @@ export function sessionCallerEnvironment(store: LookupStore, env: NodeJS.Process
   }
   const set = matches[0]!;
   const session = set.sessions[set.activeAgentId];
-  if (session === undefined || session.status !== "active" || !identifies(session)) {
+  // Location hints do not grant mutation authority. A retained Task identity
+  // can read its context and reach the narrowly checked continuation entry;
+  // ordinary writes still require requireManagedTaskCaller.
+  if (session === undefined || (session.status !== "active" && !(allowRetainedTask && set.owner.scope === "task"))
+    || !identifies(session)) {
     throw new ManagedRuntimeDriftError("Managed native Session is no longer current in this YUI_HOME. Use the current Session; historical identity cannot become public.");
   }
   const hints: NodeJS.ProcessEnv = {

@@ -10,6 +10,7 @@ type JobRun = ProcessJobRun | AgentJobRun;
 import { requireCommitId } from "./managedGit.js";
 import { safeRelativeArtifactPath } from "./artifactPaths.js";
 import { openTaskArtifactRepository, openVersionedArtifactRepository } from "./taskArtifactRepository.js";
+import type { GitConfig } from "../config/yuiConfig.js";
 
 /** Explicit owned evidence. A Task artifact remains in its original Task repo.
  * sourceRun records the exact Job execution publishing/selecting this material. */
@@ -65,21 +66,21 @@ export function jobArtifactOwner(run: JobRun): Extract<JobArtifactReference["own
 
 /** Each Run has a distinct working tree and commit fence even for identical paths.
  * The retained storage is unrelated to execution workspaces/logs/checkpoints. */
-export function openJobArtifactRepository(home: string, owner: ReturnType<typeof jobArtifactOwner>, sourceRun: JobRunReference) {
+export function openJobArtifactRepository(home: string, owner: ReturnType<typeof jobArtifactOwner>, sourceRun: JobRunReference, getConfig?: () => GitConfig) {
   validateScope(owner.scope);
   validateScope(sourceRun.scope);
   if (!isDeepStrictEqual(owner.scope, sourceRun.scope)) throw new Error("Artifact scope mismatch.");
   const scopePath = owner.scope.kind === "global" ? ["global"] : ["task", owner.scope.taskId];
   const path = join(home, "job-artifacts", ...scopePath, identity(owner.jobId), identity(sourceRun.runId));
   const lockKey = `job-${createHash("sha256").update(JSON.stringify([jobScopeKey(owner.scope), owner.jobId, sourceRun.runId])).digest("hex")}`;
-  return openVersionedArtifactRepository(home, lockKey, path);
+  return openVersionedArtifactRepository(home, lockKey, path, getConfig);
 }
 
-export async function readJobArtifactReference(home: string, ref: JobArtifactReference) {
+export async function readJobArtifactReference(home: string, ref: JobArtifactReference, getConfig?: () => GitConfig) {
   validateJobArtifactReference(ref);
   const repo = ref.owner.kind === "task"
-    ? openTaskArtifactRepository(home, ref.owner.taskId)
-    : openJobArtifactRepository(home, ref.owner, ref.sourceRun);
+    ? openTaskArtifactRepository(home, ref.owner.taskId, getConfig)
+    : openJobArtifactRepository(home, ref.owner, ref.sourceRun, getConfig);
   const content = await repo.read(ref.relativePath, ref.version);
   if (content.digest !== ref.digest) throw new Error("Artifact digest mismatch; preserved evidence was not replaced.");
   return content;

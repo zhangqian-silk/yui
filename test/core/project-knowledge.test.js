@@ -58,7 +58,14 @@ test("knowledge applicability changes survive approval, versioning, current Cont
   assert.match(shown.output, /Task leaders and reviewers/);
   const core = readTaskContext(store, "task-1");
   const ref = core.records.find(item => item.ref.store === "project-knowledge").ref;
-  assert.deepEqual(inspectTaskContext(store, "task-1", ref).value.history, entry.history);
+  const currentKnowledge = inspectTaskContext(store, "task-1", ref).value;
+  assert.equal(currentKnowledge.history, undefined, "context carries one effective revision, not the full archive");
+  assert.equal(currentKnowledge.version, entry.version);
+  assert.deepEqual(store.getProject("project-1").knowledge[0].history, entry.history);
+  const policyRef = core.records.find(item => item.ref.store === "project-policy").ref;
+  const policy = inspectTaskContext(store, "task-1", policyRef).value;
+  assert.equal(policy.knowledgeProposals, undefined);
+  assert.equal(policy.path, undefined);
   const web = createWebTaskSurface(store);
   assert.equal((await web.inspect("task-1", ref)).value.expiresWhen, entry.expiresWhen);
   const page = await command(["proposals", "list", "project-1", "--all", "--limit", "1"]);
@@ -180,7 +187,19 @@ test(`1.${minor} migration preserves knowledge, frozen Context and input intent 
       ["1.19", "1.20", "job-agent-execution"],
       ["1.20", "1.21", "project-sync-clock"],
       ["1.21", "1.22", "role-profile-availability"],
-      ["1.22", "1.23", "global-shell-scripts"], ["1.23", "1.24", "model-registry"]
+      ["1.22", "1.23", "global-shell-scripts"],
+      ["1.23", "1.24", "task-read-revisions"],
+      ["1.24", "1.25", "role-instance-code-session-titles"],
+      ["1.25", "1.26", "codex-workspace-temp-exclusions"],
+      ["1.26", "1.27", "host-upgrade-lifecycle-signals"],
+      ["1.27", "1.28", "native-title-effect-receipts"],
+      ["1.28", "1.29", "git-command-budgets"],
+      ["1.29", "1.30", "workitem-native-continuation"],
+      ["1.30", "1.31", "leader-stage-launch-configuration"],
+      ["1.31", "1.32", "experiment-knowledge-and-role-inheritance"],
+      ["1.32", "1.33", "experiment-leader-copied-configuration"],
+      ["1.33", "1.34", "task-owned-context-content"],
+      ["1.34", "1.35", "migration-backup-retention"], ["1.35", "1.36", "model-registry"]
     ];
     assert.deepEqual(storageMinorUpgradePlan(`1.${minor}`).map(step =>
       [step.fromVersion, step.toVersion, step.name]), expectedChain.slice(minor));
@@ -188,12 +207,13 @@ test(`1.${minor} migration preserves knowledge, frozen Context and input intent 
     const inputBefore = database.prepare("SELECT payload FROM messages").get();
     assert.throws(() => new SqliteTaskStore(home), /current|upgrade|storage/i);
     applySqliteMinorUpgrades(database, home);
-    assert.equal(inspectSqliteSchema(database).currentVersion, "1.24");
-    assert.deepEqual(database.prepare("SELECT payload,digest FROM context_snapshots").get(), snapshotBefore);
+    assert.equal(inspectSqliteSchema(database).currentVersion, "1.36");
+    assert.equal(database.prepare("SELECT digest FROM context_snapshots").get().digest, snapshotBefore.digest);
     assert.deepEqual(database.prepare("SELECT payload FROM messages").get(), inputBefore);
   } finally { database.close(); }
   const current = new SqliteTaskStore(home);
   try {
+    assert.deepEqual(current.getContextSnapshot("task-1", "snapshot-1"), frozen);
     const project = current.getProject(base.id);
     assert.equal(project.knowledge[0].scope, proposal.scope);
     assert.equal(project.knowledge[0].expiresWhen, proposal.expiresWhen);

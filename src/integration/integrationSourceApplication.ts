@@ -26,6 +26,8 @@ export async function applyIntegrationSource(input: Readonly<{
   git: GitWorkspacePort;
   store: TaskStore;
   now: () => Date;
+  /** Only an explicit integration continue may recover a failed pause write. */
+  continueOwnedOperation?: boolean;
 }>): Promise<IntegrationAttempt> {
   let current = input.attempt;
   const { workspace, store, now } = input;
@@ -147,7 +149,18 @@ export async function applyIntegrationSource(input: Readonly<{
         return pause(unresolved, kind);
       }
       if (!fresh && current.status !== "conflicted") {
-        throw new Error("Git operation is present but no paused conflict is recorded; inspect its execution before continuing.");
+        if (input.continueOwnedOperation !== true) {
+          throw new Error("Git operation is present but no paused conflict is recorded; inspect its execution before continuing.");
+        }
+        // Git can have stopped before the transaction recording its conflict
+        // failed. Existing progress and assertOperation above bind this exact
+        // operation; explicit intent may continue only a staged resolution.
+        // Do not manufacture a conflict record or restart the source command.
+        if (!await succeeds(path, ["diff", "--quiet"])
+          || await succeeds(path, ["diff", "--cached", "--quiet"])
+          || (await command(path, ["ls-files", "--others", "--exclude-standard"])).trim() !== "") {
+          throw new Error("Owned Git recovery requires a fully staged resolution with no unstaged or untracked files.");
+        }
       }
       try {
         if (operation !== undefined) {

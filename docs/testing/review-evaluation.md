@@ -48,8 +48,8 @@ outside this example's contract. The index is a navigation hint, not a finding
 or a claim that all paths were inspected.
 
 Keep evidence roles separate: that contract is the expectation;
-`scripts/review-eval/verify.mjs`'s E03 probes are executable references;
-only an actual `node scripts/review-eval/evaluate.mjs verify` invocation plus its
+`scripts/eval/review/verify.mjs`'s E03 probes are executable references;
+only an actual `node scripts/eval/review/evaluate.mjs verify` invocation plus its
 candidate commit, environment and output establishes a result. The probes use
 the two supplied modules for the counterexample, a one-page normal control,
 and a controlled wait followed by rejection to check pending/failure behavior.
@@ -65,7 +65,7 @@ inspection still covers the complete frozen candidate, not just these hints.
 
 ## Small development corpus
 
-`scripts/review-eval/` is an offline file tool, not a scheduler, model adapter or
+`scripts/eval/review/` is an offline file tool, not a scheduler, model adapter or
 new Core store. It never calls a provider. No historical Task cases or results
 are inputs. All eight examples are newly constructed from explicit contracts.
 
@@ -86,8 +86,8 @@ prove exhaustive correctness, independent authorship verification or Agent
 effectiveness. Additional valid findings require adjudication.
 
 ```sh
-node scripts/review-eval/evaluate.mjs verify
-node scripts/review-eval/evaluate.mjs export E03 basic /absolute/new-participant-directory
+node scripts/eval/review/evaluate.mjs verify
+node scripts/eval/review/evaluate.mjs export E03 basic /absolute/new-participant-directory
 ```
 
 Export uses an explicit projection of candidate source and requirements; indexed
@@ -112,8 +112,8 @@ does not fabricate a holdout or claim one has been evaluated.
 ## Freeze a comparison before running it
 
 ```sh
-node scripts/review-eval/evaluate.mjs plan protocol.json
-node scripts/review-eval/evaluate.mjs score plan.json records.json
+node scripts/eval/review/evaluate.mjs plan protocol.json
+node scripts/eval/review/evaluate.mjs score plan.json records.json
 ```
 
 Capture stdout as separate files using your normal artifact workflow. The

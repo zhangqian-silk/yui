@@ -9,6 +9,8 @@ import { blockingProviderContinuations } from "../runtime/runtimeContinuationPro
 import { validateExactRunReviewRound } from "../lifecycle/exactRunTerminalization.js";
 import { isDeepStrictEqual } from "node:util";
 import { isHandlingReminder } from "../message/inboxTurn.js";
+import { roleSessionMayContinue } from "../executor/effectiveLaunch.js";
+import { resolveLeaderStageBinding } from "../role/role.js";
 
 export type OwnedProviderAdmission = Readonly<{
   taskId?: string; roleName: string; runId?: string; agentId: string;
@@ -54,7 +56,8 @@ export function retryIntentBlocker(
   const role = store.getRole(input.taskId, input.roleName);
   if (role !== null && !isEnabled(role)) return "role-disabled";
   const sessions = store.getTaskRoleSessionSet(input.taskId, input.roleName);
-  if (role === null || sessions?.activeAgentId !== role.activeAgentId) return "role-changed";
+  if (role === null || sessions?.activeAgentId !== resolveLeaderStageBinding(role,
+    task.status === "draft" ? "draft" : "develop").agentId) return "role-changed";
   if (sessions.sessions[sessions.activeAgentId]?.effective.sourceDesiredRevision !== role.launchRevision) return "role-configuration-changed";
   if (store.listMessages(input.taskId).some(message =>
     (message.kind === "operator" || message.kind === "user")
@@ -96,8 +99,23 @@ export function admitOwnedProviderInput(
   if (input.taskId !== undefined && input.runId !== undefined) {
     const run = store.getRun(input.taskId, input.runId);
     const sessions = store.getTaskRoleSessionSet(input.taskId, input.roleName);
+    const session = sessions?.sessions[input.agentId];
+    // Session provenance can describe an older ReviewRound. The exact failed
+    // Run, not that first launch, owns this retry's frozen launch configuration.
+    // Continuity still fences the native Session's physical workspace/authority;
+    // exact equality with the failed Run retains model, permission and candidate.
+    const previous = run?.purpose === "review" && retry.previousRunId !== undefined
+      ? store.getRun(input.taskId, retry.previousRunId) : null;
+    const matchesLaunch = run !== null && session !== undefined && (
+      run.purpose === "review"
+        ? previous?.status === "failed" && previous.purpose === "review"
+          && previous.roleName === run.roleName && previous.reviewRoundId === run.reviewRoundId
+          && isDeepStrictEqual(run.effective, previous.effective)
+          && roleSessionMayContinue(session.effective, run.effective)
+        : isDeepStrictEqual(run.effective, session.effective)
+    );
     if (run === null || run.status !== "active"
-      || !isDeepStrictEqual(run.effective, sessions?.sessions[input.agentId]?.effective)) {
+      || !matchesLaunch) {
       throw new Error("Retry execution no longer matches its fixed native Session.");
     }
     if (run.workspace !== undefined && !isDeepStrictEqual(store.getManagedWorkspace(run.workspace.owner), run.workspace)) {

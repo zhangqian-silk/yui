@@ -111,9 +111,16 @@ export function runtimeDiagnosticEvidence(messages: readonly GlobalRoleMessage[]
 export function recordGlobalRuntimeFailure(
   store: TaskStore, roleName: string, identity: string, facts: unknown, now: Date
 ): string {
+  return recordFailure(store, roleName, identity, facts, now, [...store.listGlobalRoleMessages(roleName)]);
+}
+
+function recordFailure(
+  store: TaskStore, roleName: string, identity: string, facts: unknown, now: Date,
+  messages: GlobalRoleMessage[]
+): string {
   const diagnostic = diagnosticIdentity(store, roleName, identity, facts);
   const header = `${FAILURE_HEADER}${hash([identity, diagnostic.key])}\n`;
-  const previous = store.listGlobalRoleMessages(roleName).find(message =>
+  const previous = messages.find(message =>
     message.kind === "system" && message.body.startsWith(header));
   if (previous !== undefined) return `${roleName}/${previous.id}`;
   const message = createGlobalRoleMessage(store.nextGlobalRoleMessageId(), roleName,
@@ -121,6 +128,7 @@ export function recordGlobalRuntimeFailure(
       ...object(facts), diagnostic
     })), "system", { type: "system" }, now);
   store.saveGlobalRoleMessage(message);
+  messages.push(message);
   return `${roleName}/${message.id}`;
 }
 
@@ -136,9 +144,13 @@ export function recordGlobalRuntimeAttention(
   // A Home may have a custom Global Role without an Operator. Keep its own
   // diagnostic readable; never create a Role or launch a substitute Agent.
   const recipient = store.getGlobalRole("operator") === null ? roleName : "operator";
-  const failureRef = recordGlobalRuntimeFailure(store, roleName, identity, facts, now);
+  // These observations run in the caller's transaction. Reuse that exact
+  // history plus our appended record, rather than loading/parsing the whole
+  // Role history twice on every unchanged Host failure.
+  const messages = [...store.listGlobalRoleMessages(roleName)];
+  const failureRef = recordFailure(store, roleName, identity, facts, now, messages);
   const diagnostic = diagnosticIdentity(store, roleName, identity, facts);
-  const group = runtimeDiagnosticGroups(store.listGlobalRoleMessages(roleName))
+  const group = runtimeDiagnosticGroups(messages)
     .reverse().find(group => group.key === diagnostic.key && group.recoveredAt === undefined);
   const requestId = `runtime-attention:${hash([roleName, diagnostic.key, group?.episode ?? identity])}`;
   if (store.queryGlobalRoleMessages(recipient, { requestId, limit: 1 }).messages.length > 0) return;

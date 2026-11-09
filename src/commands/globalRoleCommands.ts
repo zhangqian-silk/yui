@@ -2,7 +2,8 @@ import { roleNotFound, usageError } from "../errors/cliError.js";
 import { hasManagedIdentity } from "../runtime/managedIdentity.js";
 import { requireManagedGlobalCaller } from "../runtime/managedCaller.js";
 import { boundedDocument, recordPage, readOptions, readDigest, messageReceipt, summaryText, summaryMetadata } from "../output/boundedRead.js";
-import { controlProviderRetry, providerRetryProjection, providerRetrySummary, renderProviderRetry } from "../runtime/providerRetry.js";
+import { controlProviderRetry, providerRetryDecision, providerRetryProjection, renderProviderRetry } from "../runtime/providerRetry.js";
+import { globalSessionHealth } from "../runtime/globalSessionHealth.js";
 import { pendingGlobalInboxMessages, inboxHandlingState, globalInboxDeliveryState } from "../message/inboxReceipt.js";
 import { settleGlobalRetryInput } from "../message/globalProviderRetry.js";
 import { globalInputBacklog } from "../message/globalInputBacklog.js";
@@ -60,6 +61,9 @@ import {
   hasNoRoleMutation,
   parseRoleOptions,
   patchRoleAgentBinding,
+  leaderStagePatch,
+  validateLeaderStageConfigurations,
+  leaderStageConfigurationCandidates,
   roleOptionSpecs,
   roleProfileFrom,
   roleProfilePatch
@@ -95,6 +99,7 @@ type GlobalRoleTransactionStore = AgentCommandTransactionStore & RoleRuntimeGuar
 
 type GlobalRoleStore = GlobalRoleTransactionStore & Readonly<{
   transaction<T>(execute: (store: GlobalRoleTransactionStore) => T): T;
+  readTransaction<T>(execute: (store: GlobalRoleTransactionStore) => T): T;
 }>;
 
 export type GlobalInputFailure = Readonly<{ code: string; detail: string; data: unknown }>;
@@ -111,6 +116,7 @@ type GlobalRoleAgentConfigurationMutation = Readonly<{
   agentId: string;
   config: RoleAgentConfig;
   cwd: string;
+  related?: readonly GlobalRoleAgentConfigurationMutation[];
 }>;
 
 /** Preview the complete binding, not just the fields supplied by the caller. */
@@ -120,6 +126,16 @@ export function previewGlobalRoleAgentConfigurationMutation(
   options: GlobalRoleCommandOptions = {}
 ): GlobalRoleAgentConfigurationMutation | undefined {
   const [command, rawName, ...tail] = args;
+  if (command === "bind") {
+    const role = requireRole(roleName(rawName), store);
+    const agent = requireAgent(required(tail[0], "Agent id"), store);
+    const candidates = leaderStageConfigurationCandidates({
+      ...role, activeAgentId: agent.id,
+      agentBindings: { ...role.agentBindings,
+        [agent.id]: role.agentBindings[agent.id] ?? createRoleAgentBinding(definition(agent)) }
+    });
+    return candidates.length === 0 ? undefined : { ...candidates[0]!, related: candidates.slice(1) };
+  }
   if (command === "apply-profile") {
     const { role, binding } = previewGlobalRoleProfileApplication(required(rawName, "Role"), required(tail[0], "Profile"), store);
     return { agentId: binding.agentId, config: binding.config, cwd: role.workspace };
@@ -129,8 +145,14 @@ export function previewGlobalRoleAgentConfigurationMutation(
   const parsed = parseRoleOptions(tail, roleOptionSpecs({
     update: command === "update", includeAgent: true, includeWorkspace: true
   }));
-  if (command === "update" && !hasAgentConfigOptions(parsed)) return undefined;
+  if (command === "update" && !hasAgentConfigOptions(parsed) && !parsed.has("--stage")) return undefined;
   const role = command === "update" ? requireRole(name, store) : undefined;
+  if (role !== undefined && parsed.has("--stage")) {
+    let candidate: GlobalRoleAgentConfigurationMutation | undefined;
+    const patch = leaderStagePatch(role, parsed, id => definition(requireAgent(id, store)),
+      value => { candidate = value; });
+    return { ...candidate!, related: leaderStageConfigurationCandidates({ ...role, ...patch }) };
+  }
   const agentId = command === "add"
     ? required(parsed.one("--agent"), "--agent")
     : parsed.one("--agent")?.trim() || role!.activeAgentId;
@@ -140,6 +162,10 @@ export function previewGlobalRoleAgentConfigurationMutation(
   );
   return {
     agentId, config: binding.config,
+    ...(role?.leaderStages === undefined ? {} : { related: leaderStageConfigurationCandidates({
+      ...role, workspace: trimmed(parsed.one("--workspace")) ?? role.workspace,
+      agentBindings: { ...role.agentBindings, [agentId]: binding }
+    }) }),
     cwd: trimmed(parsed.one("--workspace")) ?? role?.workspace
       ?? (options.yuiHome !== undefined ? managedGlobalRoleWorkspace(options.yuiHome)
         : store.getConfig().defaultWorkspace ?? process.cwd())
@@ -257,7 +283,7 @@ export function runGlobalRoleCommand(
       return updateRole([rest[0]!, "--enabled", String(command === "enable")], store, options);
     }
     case "remove": return removeRole(rest, store);
-    case "bind": return bindRole(rest, store);
+    case "bind": return bindRole(rest, store, options);
     case "unbind": return unbindRole(rest, store);
     case "enter": return enterRole(rest, store);
     case "session": return roleSession(rest, store, options);
@@ -343,6 +369,7 @@ function roleContext(
   const effective = resolveEffectiveLaunch({ role, purpose: "execution" });
   const sessions = store.getGlobalRoleSessionSet(name);
   const session = sessions?.sessions[role.activeAgentId];
+  const health = globalSessionHealth(role, sessions);
   const currentSkills = checkCurrentSkills(options.yuiHome ?? environment.YUI_HOME,
     roleSkillIds(session?.effective.context ?? role, role.name === "operator" ? "operator" : "global"));
   // Native delivery and explicit Agent handling settle the same queued input
@@ -360,6 +387,19 @@ function roleContext(
       historyRead: "yui inbox list --view history --json",
       note: "Historical absence of handling evidence is not new work or permission to replay effects."
     });
+  // Only the managed Turn's exact inputs, not the available queue or history.
+  // Keep pending's cursor lineage unchanged; oversized originals retain their
+  // existing exact detail read. No delivery/claim/ACK is performed here.
+  let originalBudget = 8 * 1024;
+  const visibleIds = new Set(pending.items.map(message => message.id));
+  const category = globalInboxCategory(name, sessions);
+  const currentOriginals = selfRead ? current.filter(message => {
+    if (!visibleIds.has(message.id) || category(message) !== "current") return false;
+    const bytes = Buffer.byteLength(JSON.stringify(message));
+    if (bytes > 4 * 1024 || bytes > originalBudget) return false;
+    originalBudget -= bytes;
+    return true;
+  }) : [];
   const observedAt = new Date();
   const { oldestAgeMs, messages: _backlogMessages, ...backlog } = globalInputBacklog(queued, sessions, observedAt, {
     attention: name === "operator" ? store.getWorkMailbox({ kind: "operator" }) : null,
@@ -375,7 +415,9 @@ function roleContext(
       agentId: binding.agentId,
       adapterId: binding.adapterId,
       workspace: role.workspace,
-      effectiveRevision: role.launchRevision,
+      desiredRevision: health.desiredRevision,
+      effectiveRevision: health.effectiveRevision,
+      configurationDrift: health.configurationDrift,
       ...(session?.nativeSessionId === undefined
         ? {}
         : { nativeSessionId: session.nativeSessionId })
@@ -391,13 +433,14 @@ function roleContext(
     authority: {
       view: role.name === "operator" ? "operator" : "global",
       taskImplementation: false,
-      writableProjectIds: effective.writeProjectIds,
+      writableProjectIds: (session?.effective ?? effective).writeProjectIds,
       allowedActions: role.name === "operator"
         ? ["route-request", "inspect-catalog", "answer-user-boundary"]
         : ["perform-global-role-request"]
     },
     // Reading pending input is neither delivery nor implementation.
     pending,
+    currentOriginals,
     backlog,
     reads: {
       ownInbox: "yui inbox list --view current --json",
@@ -407,17 +450,14 @@ function roleContext(
       diagnostics: `role message list ${name} --diagnostics`,
       retry: `session retry ${name} show`
     },
-    nativeTurn: sessions?.providerBinding?.run == null ? null : {
-      attemptId: sessions.providerBinding.run.attemptId,
-      nativeTurnId: sessions.providerBinding.run.nativeTurnId,
-      status: sessions.providerBinding.run.status
-    },
+    nativeTurn: health.nativeTurn,
+    health,
     ...(role.jobOwner === undefined ? {} : { job: {
       owner: role.jobOwner,
       read: `yui job show ${role.jobOwner.scope.kind === "global" ? "--global" : `--task ${role.jobOwner.scope.taskId}`} --job ${role.jobOwner.jobId} --json`,
       boundary: "Job execution only. This Role is not Operator and owns no Task delivery authority. Read the exact Run from its original message."
     } }),
-    retry: providerRetrySummary(sessions?.providerBinding),
+    retry: health.retry,
     // Historical interrupt receipts are available through Session inspection;
     // only this Turn's exact identity is required at entry.
     sessionManifestPath: environment.YUI_SESSION_MANIFEST,
@@ -444,13 +484,17 @@ function roleContext(
   ].join("\n") };
 }
 
-function currentGlobalInboxMessages(messages: readonly GlobalRoleMessage[], name: string, sessions: GlobalRoleSessionSet | null) {
+function globalInboxCategory(name: string, sessions: GlobalRoleSessionSet | null) {
   const actor = { scope: "global" as const, roleName: name, agentId: sessions?.activeAgentId ?? "",
     nativeSessionId: sessions?.sessions[sessions.activeAgentId]?.nativeSessionId ?? "" };
   const binding = sessions?.providerBinding;
   const turn = binding?.conversations.find(c => c.epoch === binding.currentConversationEpoch)?.conversationId === actor.nativeSessionId
     ? binding?.run : undefined;
-  const category = (message: GlobalRoleMessage) => inboxEntryCategory(message, actor, turn);
+  return (message: GlobalRoleMessage) => inboxEntryCategory(message, actor, turn);
+}
+
+function currentGlobalInboxMessages(messages: readonly GlobalRoleMessage[], name: string, sessions: GlobalRoleSessionSet | null) {
+  const category = globalInboxCategory(name, sessions);
   return pendingGlobalInboxMessages(messages).filter(message => category(message) !== "history")
     .sort((a, b) => Number(category(b) === "current") - Number(category(a) === "current"));
 }
@@ -584,7 +628,7 @@ function updateRole(
     if (parsed.seen.size === 1 && parsed.has("--enabled")
       && isEnabled(role) === roleProfilePatch(parsed).enabled) return role;
     const changesLaunchContext = hasRoleLaunchContextOptions(parsed);
-    const changesAgentConfig = hasAgentConfigOptions(parsed);
+    const changesAgentConfig = hasAgentConfigOptions(parsed) || parsed.has("--stage");
     if (changesLaunchContext || changesAgentConfig) {
       assertRoleRuntimeMutationAllowed(tx, {
         scope: "global",
@@ -600,7 +644,9 @@ function updateRole(
       });
     }
     let bindings = role.agentBindings;
-    if (changesAgentConfig) {
+    const stagePatch = leaderStagePatch(role, parsed,
+      id => definition(requireAgent(id, tx)), options.validateAgentConfiguration);
+    if (changesAgentConfig && stagePatch === undefined) {
       const agentId = parsed.one("--agent")?.trim() || role.activeAgentId;
       const agent = requireAgent(agentId, tx);
       const binding = role.agentBindings[agentId] ?? createRoleAgentBinding(definition(agent));
@@ -613,8 +659,10 @@ function updateRole(
     const updated = updateGlobalRole(role, {
       ...(workspace === undefined ? {} : { workspace }),
       ...(bindings === role.agentBindings ? {} : { agentBindings: bindings }),
-      ...roleProfilePatch(parsed)
+      ...roleProfilePatch(parsed),
+      ...stagePatch
     }, new Date());
+    if (changesAgentConfig) validateLeaderStageConfigurations(updated, options.validateAgentConfiguration);
     if (changesLaunchContext) {
       validateConfiguredRoleSkills(options.yuiHome, updated.skills ?? []);
     }
@@ -627,7 +675,7 @@ function updateRole(
   });
 }
 
-function bindRole(args: string[], store: GlobalRoleStore): string {
+function bindRole(args: string[], store: GlobalRoleStore, options: GlobalRoleCommandOptions): string {
   const [rawName, rawAgentId, ...rest] = args;
   const name = roleName(rawName);
   const agentId = required(rawAgentId, "Agent id");
@@ -644,6 +692,7 @@ function bindRole(args: string[], store: GlobalRoleStore): string {
     const withBinding = updateGlobalRole(role, {
       agentBindings: { ...role.agentBindings, [agentId]: binding }
     }, now);
+    validateLeaderStageConfigurations({ ...withBinding, activeAgentId: agentId }, options.validateAgentConfiguration);
     if (agentId === role.activeAgentId) {
       tx.saveGlobalRole(withBinding);
       return {
@@ -762,12 +811,14 @@ function roleSession(
   const [command, rawName, ...tail] = args;
   if (command === "retry") {
     const name = roleName(rawName);
-    const [action = "show", ...extra] = tail;
+    const parsed = readOptions(tail, ["--cursor"]);
+    const [action = "show", ...extra] = parsed.positionals;
     if (extra.length > 0 || !["show", "cancel", "disable", "enable"].includes(action)) {
       throw usageError("Usage: yui session retry <role> [show|cancel|disable|enable]");
     }
-    return store.transaction(tx => {
-      requireRole(name, tx);
+    if (action !== "show" && parsed.cursor !== undefined) throw usageError("Only retry show accepts --cursor.");
+    return store[action === "show" ? "readTransaction" : "transaction"](tx => {
+      const role = requireRole(name, tx);
       const sessions = tx.getGlobalRoleSessionSet(name);
       let binding = sessions?.providerBinding ?? null;
       if (action !== "show") {
@@ -776,9 +827,18 @@ function roleSession(
         tx.saveGlobalRoleSessionSet({ ...sessions, providerBinding: binding });
         settleGlobalRetryInput(tx, name, binding, new Date());
       }
-      return options.jsonOutput ? JSON.stringify({
-        roleName: name, retry: providerRetryProjection(binding), disabled: binding?.retryDisabled ?? false
-      }) + "\n" : renderProviderRetry(binding) + "\n";
+      const health = globalSessionHealth(role, sessions);
+      const historical = binding?.retry !== undefined && health.retry === null;
+      const detail = {
+        roleName: name, retry: providerRetryProjection(binding), decision: providerRetryDecision(binding),
+        disabled: binding?.retryDisabled ?? false,
+        selectedNativeSessionId: health.nativeSessionId,
+        retryScope: historical ? "historical-session" : "current-session"
+      };
+      return options.jsonOutput ? JSON.stringify(action === "show"
+        ? boundedDocument(detail, `global:${name}/retry`, parsed.cursor) : detail) + "\n"
+        : (historical ? "Historical Session evidence (not the selected Session's current failure): " : "")
+        + renderProviderRetry(binding) + "\n";
     });
   }
   if (command !== "record" && command !== "replace") {
@@ -983,7 +1043,7 @@ function globalRoleMessage(
     ["--request-id", false],
     ...(action === "steer" ? [["--expected-target", false] as const] : [])
   ]));
-  const body = readCommandText(positionalBody, parsed.one("--body-file"), "--body", usage);
+  const body = readCommandText(positionalBody, parsed.one("--body-file"), "--body", usage, { preserveFileWhitespace: true });
   const requestId = required(parsed.one("--request-id"), "--request-id");
   const expectedTarget = action === "steer"
     ? required(parsed.one("--expected-target"), "--expected-target")

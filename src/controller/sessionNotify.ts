@@ -6,10 +6,6 @@ import {
 } from "./runtimeEventInbox.js";
 import { transportAgentResult } from "../domain/agentResultTransport.js";
 import { runtimeLifecycleSignalKey } from "../runtime/lifecycleReservation.js";
-import {
-  setCodexThreadName,
-  type CodexThreadNameRequest
-} from "../execution/codexThreadNaming.js";
 import { openCurrentTaskStore } from "../storage/currentTaskStore.js";
 
 export type CodexSessionNotification = Readonly<{
@@ -31,14 +27,11 @@ type ControllerCall = (
   options?: Readonly<{ timeoutMs?: number }>
 ) => Promise<JsonValue>;
 
-type CodexThreadNameSetter = (request: CodexThreadNameRequest) => Promise<void>;
-
 /** Hidden CLI entrypoint used by Codex's structured notify hook. */
 export async function runSessionNotifyCommand(
   payloadArgument: string | undefined,
   environment: NodeJS.ProcessEnv = process.env,
-  call?: ControllerCall,
-  setThreadName: CodexThreadNameSetter = setCodexThreadName
+  call?: ControllerCall
 ): Promise<void> {
   const params = parseCodexSessionNotification(payloadArgument, environment);
   // Old global TUIs can still emit their invocation-local hook. It is not
@@ -48,7 +41,7 @@ export async function runSessionNotifyCommand(
   const home = requireText(environment.YUI_HOME, "YUI_HOME");
   // The caller reports native identity; durable state supplies the current AgentRun.
   const current = currentNotifyRun(home, params);
-  const enqueued = new FileRuntimeEventInbox(home).enqueueRunTerminal({
+  new FileRuntimeEventInbox(home).enqueueRunTerminal({
     scope: params.scope,
     ...(params.scope === "task" ? { taskId: params.taskId } : {}),
     roleName: params.roleName,
@@ -82,10 +75,9 @@ export async function runSessionNotifyCommand(
     },
     { timeoutMs: 100 }
   ).catch(() => {});
-  if (enqueued.created && shouldSetThreadName(home, params, current.runId)) {
-    const request = threadNameRequest(params, environment);
-    if (request !== null) await setThreadName(request).catch(() => {});
-  }
+  // Title synchronization belongs to the Host's separately fenced metadata
+  // lane. A terminal notification is neither a rename receipt nor permission
+  // to replay an unknown write or overwrite a native user's name.
 }
 
 /**
@@ -173,52 +165,6 @@ function requireText(value: unknown, label: string): string {
   const text = value.trim();
   if (text.length === 0 || text.length > 1_024) throw new Error(`${label} is invalid.`);
   return text;
-}
-
-function shouldSetThreadName(
-  home: string,
-  params: CodexSessionNotification,
-  runId: string | undefined
-): boolean {
-  if (
-    params.scope !== "task"
-    || params.title === undefined
-    || runId === undefined
-  ) return false;
-  try {
-    const store = openCurrentTaskStore(home);
-    return store.getRun(params.taskId!, runId)?.mode === "new";
-  } catch {
-    return false;
-  }
-}
-
-function threadNameRequest(
-  params: CodexSessionNotification,
-  environment: NodeJS.ProcessEnv
-): CodexThreadNameRequest | null {
-  if (params.title === undefined) return null;
-  const command = environment.YUI_AGENT_COMMAND;
-  const encodedBaseArgs = environment.YUI_AGENT_BASE_ARGS;
-  if (command === undefined || encodedBaseArgs === undefined) return null;
-  try {
-    const parsed: unknown = JSON.parse(encodedBaseArgs);
-    if (
-      !Array.isArray(parsed)
-      || parsed.some((value) => typeof value !== "string" || value.includes("\0"))
-    ) {
-      return null;
-    }
-    return {
-      command: requireText(command, "YUI_AGENT_COMMAND"),
-      baseArgs: parsed,
-      environment,
-      threadId: params.nativeSessionId,
-      name: params.title
-    };
-  } catch {
-    return null;
-  }
 }
 
 function isObject(value: unknown): value is Record<string, any> {

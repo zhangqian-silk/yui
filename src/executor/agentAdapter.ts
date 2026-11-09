@@ -38,6 +38,8 @@ export type CodexPermissionConfig =
       strategy: "configured";
       sandbox?: "read-only" | "workspace-write" | "danger-full-access";
       approval?: "untrusted" | "on-request" | "never";
+      excludeTmpdirEnvVar?: boolean;
+      excludeSlashTmp?: boolean;
     }>;
 export type ClaudePermissionConfig =
   | Readonly<{ strategy: "default" }>
@@ -314,7 +316,7 @@ class CodexAdapter extends BaseAdapter<CodexAgentConfig> {
       throw new Error("Codex permission strategy is required.");
     }
     if (config.permission.strategy === "configured") {
-      exact(config.permission, ["strategy", "sandbox", "approval"], "Codex permission config");
+      exact(config.permission, ["strategy", "sandbox", "approval", "excludeTmpdirEnvVar", "excludeSlashTmp"], "Codex permission config");
       if (config.permission.sandbox !== undefined
         && !SANDBOXES.includes(config.permission.sandbox)) {
         throw new Error("Codex sandbox is invalid.");
@@ -322,6 +324,14 @@ class CodexAdapter extends BaseAdapter<CodexAgentConfig> {
       if (config.permission.approval !== undefined
         && !APPROVALS.includes(config.permission.approval)) {
         throw new Error("Codex approval is invalid.");
+      }
+      for (const key of ["excludeTmpdirEnvVar", "excludeSlashTmp"] as const) {
+        const value = config.permission[key];
+        if (value === undefined) continue;
+        if (typeof value !== "boolean") throw new Error(`Codex ${key} must be boolean.`);
+        if (config.permission.sandbox !== "workspace-write") {
+          throw new Error(`Codex ${key} requires an explicit workspace-write sandbox.`);
+        }
       }
       requireConfiguredPermissionOption(config.permission, "Codex");
     } else {
@@ -345,7 +355,9 @@ class CodexAdapter extends BaseAdapter<CodexAgentConfig> {
               ...(config.permission.sandbox === undefined
                 ? [] : ["--sandbox", config.permission.sandbox]),
               ...(config.permission.approval === undefined
-                ? [] : ["--ask-for-approval", config.permission.approval])
+                ? [] : ["--ask-for-approval", config.permission.approval]),
+              ...Object.entries(codexWorkspaceWriteOptions(config)).flatMap(([key, value]) =>
+                ["--config", `sandbox_workspace_write.${key}=${value}`])
             ]
           : []),
       ...(config.search === true ? ["--search"] : []),
@@ -393,7 +405,12 @@ class CodexAdapter extends BaseAdapter<CodexAgentConfig> {
     // A managed Codex thread is an ordinary user thread. Its Yui guidance is
     // part of the durable Task message, not a developer_instructions override
     // that would shadow the user's native project/developer configuration.
-    const argv = withoutCodexConfigOverride(launch.argv, "developer_instructions");
+    let argv = withoutCodexConfigOverride(launch.argv, "developer_instructions");
+    // Managed exclusions belong to thread/start and thread/resume configuration,
+    // never the shared daemon/proxy startup defaults.
+    for (const key of Object.keys(codexWorkspaceWriteOptions(config))) {
+      argv = withoutCodexConfigOverride(argv, `sandbox_workspace_write.${key}`);
+    }
     if (config.model !== undefined) {
       const modelFlag = argv.findIndex((value, index) => (
         value === "--model" && argv[index + 1] === config.model
@@ -735,7 +752,10 @@ function codexThreadOptions(
     // Keep the trust override on this thread instead of mutating global config.
     projects: { [resolve(input.workspace)]: { trust_level: "trusted" } },
     ...(config.effort === undefined ? {} : { model_reasoning_effort: config.effort }),
-    ...(config.search === true ? { web_search: "live" } : {})
+    ...(config.search === true ? { web_search: "live" } : {}),
+    ...(Object.keys(codexWorkspaceWriteOptions(config)).length === 0 ? {} : {
+      sandbox_workspace_write: codexWorkspaceWriteOptions(config)
+    })
   };
   const permission = config.permission.strategy === "bypass"
     ? { approvalPolicy: "never", sandbox: "danger-full-access" }
@@ -754,6 +774,15 @@ function codexThreadOptions(
     ...permission,
     runtimeWorkspaceRoots: roots,
     ...(Object.keys(threadConfig).length === 0 ? {} : { config: threadConfig })
+  };
+}
+
+function codexWorkspaceWriteOptions(config: CodexAgentConfig): Record<string, boolean> {
+  if (config.permission.strategy !== "configured") return {};
+  const { excludeTmpdirEnvVar, excludeSlashTmp } = config.permission;
+  return {
+    ...(excludeTmpdirEnvVar === undefined ? {} : { exclude_tmpdir_env_var: excludeTmpdirEnvVar }),
+    ...(excludeSlashTmp === undefined ? {} : { exclude_slash_tmp: excludeSlashTmp })
   };
 }
 

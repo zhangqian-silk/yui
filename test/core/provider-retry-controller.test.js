@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
+import Database from "../../dist/sqlite/driver.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
 import { createRunInput } from "../../dist/context/runInputContract.js";
@@ -44,6 +45,15 @@ import { ProviderContinuationReconciliationService } from "../../dist/runtime/pr
 import { blockingProviderContinuations } from "../../dist/runtime/runtimeContinuationProjection.js";
 import { createInputRequest, answerInputRequest, cancelInputRequest } from "../../dist/input/inputRequest.js";
 import { CodexAppServerRuntime } from "../../dist/runtime/codexAppServerRuntime.js";
+import { AsyncTaskStoreClient } from "../../dist/storage/storeRpc.js";
+import { workerSchedulerStore } from "../../dist/controller/workerSchedulerStore.js";
+import { terminalizeExactTaskRun } from "../../dist/lifecycle/exactRunTerminalization.js";
+import { prepareMessageContinuations } from "../../dist/message/messageContinuation.js";
+import { createTaskEvent } from "../../dist/event/taskEvent.js";
+import { readRunContextSnapshot } from "../../dist/context/runContextPack.js";
+import { taskRunRecovery, recoveredMessageContinuation } from "../../dist/controller/taskRunRecovery.js";
+import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
+import { readDocument } from "../helpers/read-document.js";
 
 const epoch = Date.parse("2026-09-13T00:00:00Z");
 const rawFailure = JSON.stringify({
@@ -54,6 +64,18 @@ const transient = standardAgentError({
   source: "provider", phase: "turn-execute", message: "Too many requests",
   raw: rawFailure, inputDisposition: "accepted",
   classification: mapCodexAgentError({ message: "Too many requests", raw: rawFailure })
+});
+const unknownFailure = standardAgentError({
+  source: "provider", phase: "turn-execute", message: "Unrecognized native failure",
+  raw: '{"codexErrorInfo":"other"}', inputDisposition: "accepted"
+});
+const streamMessage = "stream disconnected before completion: stream closed before response.completed";
+const streamFailure = standardAgentError({
+  source: "provider", phase: "turn-execute", message: streamMessage,
+  raw: JSON.stringify({ message: streamMessage, codexErrorInfo: "other", additionalDetails: null }),
+  inputDisposition: "accepted",
+  classification: mapCodexAgentError({ message: streamMessage,
+    raw: JSON.stringify({ message: streamMessage, codexErrorInfo: "other", additionalDetails: null }) })
 });
 
 function fixture(t, scope = "task", roleName = scope === "task" ? "leader" : "assistant") {
@@ -179,6 +201,34 @@ function fixture(t, scope = "task", roleName = scope === "task" ? "leader" : "as
   };
 }
 
+test("retry diagnostics remain readable while another connection owns the writer", async t => {
+  for (const scope of ["task", "global"]) await t.test(scope, t => {
+    const f = fixture(t, scope);
+    f.fail();
+    const command = action => scope === "task"
+      ? runTaskCommand(["role", "session", "retry", "task-1", f.roleName, ...action],
+        f.store, { environment: {}, now: f.now })
+      : runGlobalRoleCommand(["session", "retry", f.roleName, ...action],
+        f.store, { env: {}, jsonOutput: true });
+    const before = f.loadSessions();
+    const expected = command(["show"]);
+    const writer = new Database(join(f.home, "yui.db"));
+    try {
+      writer.exec("BEGIN IMMEDIATE");
+      assert.deepEqual(command(["show"]), expected);
+      assert.deepEqual(command([]), expected, "default action is also a read");
+      assert.deepEqual(f.loadSessions(), before, "inspection must not settle or alter retry state");
+    } finally {
+      if (writer.inTransaction) writer.exec("ROLLBACK");
+      writer.close();
+    }
+    command(["disable"]);
+    assert.equal(f.read().retryDisabled, true);
+    command(["enable"]);
+    assert.equal(f.read().retryDisabled, false, "mutations still persist after a read transaction");
+  });
+});
+
 test("a failed retry admission read preserves that Session and lets another Session proceed", async t => {
   const f = fixture(t, "global");
   f.fail(); f.due();
@@ -231,14 +281,23 @@ function reviewFixture(t) {
   const round = attachReviewRoundWorkspace(createTaskReviewRound("review-round-1",
     "task-1", f.roleName, "user", candidate, f.now()), workspace);
   f.store.saveReviewRound("task-1", round);
-  // Seed the initial native Session at this exact frozen review workspace.
+  // A reused review Session retains its first launch provenance, while the
+  // current Run freezes a newer Round and Git candidate in the same workspace.
+  const oldCommit = "b".repeat(40);
   const sessions = recordRoleAgentSession(createRoleSessionSet({
     scope: "task", taskId: "task-1", roleName: f.roleName
   }, "codex", f.now()), {
     agentId: "codex", adapterId: "codex", nativeSessionId: f.nativeSessionId,
     policy: "fixed", status: "active", effective: resolveEffectiveLaunch({
-      role: f.store.getRole("task-1", f.roleName), purpose: "review", workspace,
-      reviewRoundId: round.id, reviewBaseCommit: commit
+      role: f.store.getRole("task-1", f.roleName), purpose: "review",
+      workspace: {
+        ...workspace,
+        owner: { ...workspace.owner, reviewRoundId: "review-round-original" },
+        entries: workspace.entries.map(entry => ({
+          ...entry, baseRef: oldCommit, baseCommit: oldCommit
+        }))
+      },
+      reviewRoundId: "review-round-original", reviewBaseCommit: oldCommit
     })
   }, f.now());
   f.saveSessions(bindTaskRoleProviderRuntime(sessions, f.read(), f.now()));
@@ -247,6 +306,44 @@ function reviewFixture(t) {
   });
   return { ...f, candidate, workspace, round, dispatch };
 }
+
+test("unknown fallback is durable across Task/Global Controller restart and diagnoses exhaustion", async t => {
+  for (const scope of ["task", "global"]) {
+    const f = fixture(t, scope);
+    const work = join(f.home, "unfinished-work.txt");
+    writeFileSync(work, "confirmed tool effect before failure");
+    f.begin();
+    assert.equal(f.observe("turn.accepted"), "applied");
+    assert.equal(f.observe("turn.failed", undefined, "native-original", {
+      failure: { error: unknownFailure }
+    }), "applied");
+    const original = f.read().retry;
+    assert.equal(original.error.sessionDisposition, "unknown", "No synthetic recoverable flag.");
+    f.reopen(); f.due();
+    await f.hooks().reconcile();
+    await f.hooks().reconcile();
+    assert.equal(f.submissions.length, 1);
+    assert.equal(f.read().retry.attempts, 1);
+    assert.equal(f.observe("turn.failed", undefined, "native-retry", {
+      failure: { error: { ...unknownFailure, message: "Changed wording" } }
+    }), "applied");
+    f.reopen();
+    await f.hooks().reconcile();
+    assert.equal(f.submissions.length, 1);
+    assert.equal(f.read().retry.status, "exhausted");
+    assert.equal(f.read().retry.chainId, original.chainId);
+    assert.equal(f.read().retry.deadline, original.deadline);
+    const detail = scope === "task"
+      ? runTaskCommand(["role", "session", "retry", "task-1", f.roleName], f.store,
+        { environment: {}, now: f.now }).data
+      : JSON.parse(runGlobalRoleCommand(["session", "retry", f.roleName], f.store,
+        { env: {}, jsonOutput: true }));
+    assert.equal(detail.decision.source, "unknown-fallback");
+    assert.equal(detail.decision.remaining, 0);
+    assert.equal(detail.decision.reason, "automatic-attempt-limit");
+    assert.equal(readFileSync(work, "utf8"), "confirmed tool effect before failure");
+  }
+});
 
 test("Role disable pauses bounded retry without settling or replacing input; enable retains the retry budget", async t => {
   const f = fixture(t, "global");
@@ -450,6 +547,50 @@ test("cancel, authority revocation and deadline stop waiting recovery without di
   }
 });
 
+test("Global configuration drift cancels retry with zero admissions, preserving exact failure and intent", async t => {
+  const f = fixture(t, "global");
+  f.fail(); f.due();
+  const previous = f.read().retry;
+  const role = f.store.getGlobalRole(f.roleName);
+  f.store.saveGlobalRole({ ...role, launchRevision: role.launchRevision + 1 });
+  await f.hooks().reconcile();
+  assert.equal(f.submissions.length, 0);
+  assert.equal(f.read().retry.status, "cancelled");
+  assert.equal(f.read().retry.reason, "role-configuration-changed");
+  assert.equal(f.read().retry.attempts, 0);
+  assert.equal(f.read().retry.failedNativeTurnId, previous.failedNativeTurnId);
+  assert.equal(f.read().retry.failureRef, previous.failureRef);
+  assert.equal(f.store.listGlobalRoleMessages(f.roleName)[0].body, f.body);
+  const set = f.loadSessions();
+  f.saveSessions({ ...set, sessions: { ...set.sessions,
+    codex: { ...set.sessions.codex, nativeSessionId: "successor-session" } } });
+  const view = JSON.parse(runGlobalRoleCommand(["session", "retry", f.roleName, "show"],
+    f.store, { env: {}, jsonOutput: true }));
+  assert.equal(view.retryScope, "historical-session");
+  assert.equal(view.retry.nativeSessionId, previous.nativeSessionId);
+  assert.equal(view.selectedNativeSessionId, "successor-session");
+  const selected = f.loadSessions();
+  const raw = "完整错误😀\n".repeat(7000);
+  f.saveSessions({ ...selected, providerBinding: { ...selected.providerBinding,
+    retry: { ...selected.providerBinding.retry, error: { ...previous.error, raw } } } });
+  const revision = f.store.getStateRevision();
+  let pages = 0;
+  const detail = readDocument(cursor => {
+    const value = JSON.parse(runGlobalRoleCommand(["session", "retry", f.roleName, "show",
+      ...(cursor === undefined ? [] : ["--cursor", cursor])], f.store, { env: {}, jsonOutput: true }));
+    assert.ok(Buffer.byteLength(JSON.stringify({ ok: true, data: value })) + 1 <= 32768);
+    pages++;
+    return value;
+  });
+  assert.ok(pages > 1);
+  assert.equal(detail.retry.error.raw, raw);
+  assert.equal(detail.retryScope, "historical-session");
+  assert.equal(detail.selectedNativeSessionId, "successor-session");
+  assert.throws(() => runGlobalRoleCommand(["session", "retry", f.roleName, "cancel", "--cursor", "not-a-cursor"],
+    f.store, { env: {}, jsonOutput: true }), /Only retry show/);
+  assert.equal(f.store.getStateRevision(), revision);
+});
+
 test("Global exhausted and unknown recovery hand off exact facts once without replay", async t => {
   for (const outcome of ["deadline", "unknown", "new-input"]) {
     const f = fixture(t, "global");
@@ -591,7 +732,45 @@ test("detached child observation failures hand off once, back off and retain wri
   assert.equal(f.read().run.status, "accepted", "Child metadata never terminalizes the parent.");
 });
 
-test("recommended Input timeout remains a single prior-decision execution, never overriding resolved input", t => {
+test("worker maintenance preserves run fences and idempotent diagnostic results across restart", async t => {
+  const f = fixture(t);
+  const run = createFixtureRun(f.store, f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
+    createRunInput({ source: { type: "yui", channel: "task-dispatch" },
+      directive: f.body, deltaRefIds: [] }), f.now(),
+    { effective: f.loadSessions().sessions.codex.effective });
+  f.store.saveRun(run);
+  f.store.saveActiveRun(run);
+  f.begin(`task-1/turn/${run.id}`, f.body, run.id);
+  f.observe("turn.accepted");
+  const client = new AsyncTaskStoreClient(f.home, {
+    observerModule: new URL("../../dist/controller/fileSchedulerStoreAdapter.js", import.meta.url)
+  });
+  try {
+    const adapter = workerSchedulerStore(new FileSchedulerStoreAdapter(f.store), client);
+    const identity = { taskId: "task-1", roleName: f.roleName, runId: run.id, now: f.now() };
+    const diagnostic = { ...identity, startedAt: f.now().toISOString(), outcome: "observed" };
+    assert.equal(await adapter.recordRoleRunDiagnostic(diagnostic), "recorded");
+    assert.equal(await adapter.recordRoleRunDiagnostic(diagnostic), "already-recorded");
+    const progress = { ...identity, progressAt: f.now().toISOString() };
+    assert.equal(await adapter.recordRoleRunProgress(progress), "recorded");
+    assert.equal(await adapter.recordRoleRunProgress(progress), "already-recorded");
+    const stall = { ...identity, agentId: "codex", adapterId: "codex",
+      session: adapter.getRoleSession("task-1", f.roleName),
+      progressAt: adapter.getRunDurableProgress("task-1", f.roleName, run.id).progressAt,
+      kind: "workflow-not-progressing", classification: "truly-stalled", idleMs: 60_000,
+      evidenceKey: "fixture-progress" };
+    assert.equal(await adapter.recordRoleRunStall(stall), "raised");
+    const committed = f.store.listEvents("task-1");
+    await client.crashForTest();
+    assert.equal(await adapter.recordRoleRunStall(stall), "already-raised");
+    assert.equal(await adapter.recordRoleRunDiagnostic(diagnostic), "already-recorded");
+    assert.equal(await adapter.recordRoleRunProgress({ ...progress, runId: "run-stale" }), "state-changed");
+    assert.deepEqual(f.store.listEvents("task-1"), committed,
+      "worker restart and stale identities do not create duplicate effects");
+  } finally { await client.close(); }
+});
+
+for (const backend of ["direct", "worker"]) test(`recommended Input timeout preserves prior decisions and resolved input (${backend})`, async t => {
   const f = fixture(t);
   const make = (id, recommended = true) => createInputRequest(id, "task-1", {
     taskId: "task-1", roleName: "leader", agentId: "codex", nativeSessionId: f.nativeSessionId
@@ -602,15 +781,21 @@ test("recommended Input timeout remains a single prior-decision execution, never
   f.store.saveInputRequest("task-1", answerInputRequest(make("input-2"), { choiceKey: "b" }, "user", f.now()));
   f.store.saveInputRequest("task-1", cancelInputRequest(make("input-3"), "cancelled", f.now()));
   f.store.saveInputRequest("task-1", make("input-4", false));
-  const adapter = new FileSchedulerStoreAdapter(f.store);
-  assert.deepEqual(adapter.resolveExpiredInputRecommendations(f.now()), []);
-  f.advanceTo(epoch + 1000);
-  assert.equal(adapter.resolveExpiredInputRecommendations(f.now()).length, 1);
-  assert.deepEqual(adapter.resolveExpiredInputRecommendations(f.now()), []);
-  assert.equal(f.store.getInputRequest("task-1", "input-1").resolution.answer.choiceKey, "a");
-  assert.equal(f.store.getInputRequest("task-1", "input-2").resolution.answer.choiceKey, "b");
-  assert.equal(f.store.getInputRequest("task-1", "input-3").status, "cancelled");
-  assert.equal(f.store.getInputRequest("task-1", "input-4").status, "open");
+  const client = backend === "worker" ? new AsyncTaskStoreClient(f.home, {
+    observerModule: new URL("../../dist/controller/fileSchedulerStoreAdapter.js", import.meta.url)
+  }) : undefined;
+  try {
+    const direct = new FileSchedulerStoreAdapter(f.store);
+    const adapter = client ? workerSchedulerStore(direct, client) : direct;
+    assert.deepEqual(await adapter.resolveExpiredInputRecommendations(f.now()), []);
+    f.advanceTo(epoch + 1000);
+    assert.equal((await adapter.resolveExpiredInputRecommendations(f.now())).length, 1);
+    assert.deepEqual(await adapter.resolveExpiredInputRecommendations(f.now()), []);
+    assert.equal(f.store.getInputRequest("task-1", "input-1").resolution.answer.choiceKey, "a");
+    assert.equal(f.store.getInputRequest("task-1", "input-2").resolution.answer.choiceKey, "b");
+    assert.equal(f.store.getInputRequest("task-1", "input-3").status, "cancelled");
+    assert.equal(f.store.getInputRequest("task-1", "input-4").status, "open");
+  } finally { await client?.close(); }
 });
 
 test("an explicit no-Run input supersedes waiting automatic recovery at the same admission boundary", async t => {
@@ -628,8 +813,8 @@ test("an explicit no-Run input supersedes waiting automatic recovery at the same
 });
 
 test("manual and automatic managed Run retries share exact failed proof, including without an automatic chain", async t => {
-  for (const mode of ["automatic", "manual", "manual-without-chain"]) {
-    const manual = mode !== "automatic";
+  for (const mode of ["automatic", "unknown-automatic", "manual", "manual-without-chain"]) {
+    const manual = mode === "manual" || mode === "manual-without-chain";
     const f = fixture(t);
     const previous = createFixtureRun(f.store, f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
       createRunInput({ source: { type: "yui", channel: "task-dispatch" },
@@ -641,7 +826,8 @@ test("manual and automatic managed Run retries share exact failed proof, includi
     f.begin(`task-1/turn/${previous.id}`, f.body, previous.id);
     assert.equal(f.observe("turn.accepted"), "applied");
     f.advanceTo(epoch + 1);
-    const error = mode === "manual-without-chain" ? { ...transient, retryable: undefined } : transient;
+    const error = mode === "manual-without-chain" ? { ...transient, retryable: false }
+      : mode === "unknown-automatic" ? unknownFailure : streamFailure;
     assert.equal(f.observe("turn.failed", undefined, "native-original", { failure: { error } }), "applied");
     assert.equal(f.store.getRun("task-1", previous.id).status, "failed");
     const failedRun = f.store.getRun("task-1", previous.id);
@@ -681,7 +867,11 @@ test("manual and automatic managed Run retries share exact failed proof, includi
     runTaskCommand(["role", "enable", "task-1", f.roleName], f.store, { now: f.now, environment: {} });
     const admission = await dispatch("runtime.provider-turn-begin", admissionInput);
     assert.equal(admission.retryInput?.expectedFailedNativeTurnId, "native-original");
-    assert.match(admission.retryInput.text, /Preserve local changes/);
+    assert.equal(admission.retryInput.text, admissionInput.boundedText,
+      "Recovery preserves original input without a procedural prefix.");
+    assert.match(admission.retryInput.context, /Preserve local changes/);
+    assert.ok(!admission.retryInput.context.includes(admissionInput.boundedText),
+      "Recovery context must not duplicate user content as application instructions.");
     const calls = [];
     const native = new CodexAppServerRuntime({ request: async method => {
       calls.push(method);
@@ -734,7 +924,9 @@ test("Global exhaustion and cancellation settle the original queue entry without
       assert.equal(error.cause, beforeNative);
       assert.match(error.message, new RegExp(f.roleName));
     });
-    await inspectQueue();
+    const transaction = f.store.transaction.bind(f.store);
+    f.store.transaction = () => assert.fail("settled retry polling must not reserve the writer");
+    try { await inspectQueue(); } finally { f.store.transaction = transaction; }
     assert.equal(prepares, 0, "A stopped retry cannot silently return to ordinary delivery.");
     f.advanceTo(f.now().getTime() + 1);
     f.store.saveGlobalRoleMessage(createGlobalRoleMessage(f.store.nextGlobalRoleMessageId(), f.roleName,
@@ -744,6 +936,160 @@ test("Global exhaustion and cancellation settle the original queue entry without
     await inspectQueue();
     assert.equal(prepares, 1, "The stopped original must not strand newer Global Messages.");
   }
+});
+
+test("explicit recovery crosses only proven pre-submission continuations and keeps the current collection input", async t => {
+  const f = fixture(t);
+  runTaskCommand(["work", "create", "task-1", "Experiment", "--role", f.roleName], f.store,
+    { now: f.now, environment: {} });
+  const workspace = createManagedWorkspace({ owner: { type: "task", taskId: "task-1" },
+    root: f.home, entries: [] }, f.now());
+  f.store.saveManagedWorkspace(workspace);
+  const effective = resolveEffectiveLaunch({ store: f.store, role: f.store.getRole("task-1", f.roleName),
+    purpose: "execution", workspace, workItemWriteProjectIds: [] });
+  f.saveSessions({ ...f.loadSessions(), sessions: {
+    codex: { ...f.loadSessions().sessions.codex, effective }
+  } });
+  const original = createFixtureRun(f.store, f.store.nextRunId("task-1"), "task-1", f.roleName, "resume",
+    createRunInput({ source: { type: "yui", channel: "task-dispatch" },
+      directive: "Run the experiment once.", deltaRefIds: [] }), f.now(),
+    { effective, workspace, workItemId: "work-item-1" });
+  f.store.saveRun(original);
+  f.store.saveActiveRun(original);
+  f.begin(`turn:task-1/${original.id}`, f.body, original.id);
+  f.observe("turn.accepted");
+  f.advanceTo(epoch + 1);
+  f.observe("turn.failed", undefined, "native-original", { failure: { error: transient } });
+  const budget = structuredClone(f.read().retry);
+  f.due();
+  await f.hooks().reconcile();
+  const refused = f.store.getActiveRun("task-1", f.roleName);
+  const reject = run => {
+    const adapter = new FileSchedulerStoreAdapter(f.store);
+    const attemptId = `turn:task-1/${run.id}`;
+    f.begin(attemptId, "Read current authorized Run.", run.id);
+    f.advanceTo(f.now().getTime() + 1);
+    adapter.resolveAgentHostProviderTurnSubmission({ ...f.scoped, runId: run.id, attemptId,
+      status: "rejected", noProviderWrite: true, reason: "Native preflight refused", raw: "{}",
+      now: f.now() });
+    adapter.recordAgentError({ ...f.scoped, runId: run.id, attemptId, effective: run.effective,
+      source: "host", phase: "turn-submit", message: "Native preflight refused", raw: "{}",
+      inputDisposition: "not-accepted", errorName: "CodexPreSubmissionError",
+      registrationDisposition: "committed" }, f.now());
+    assert.equal(terminalizeExactTaskRun(f.store, { ...f.scoped, agentId: "codex", runId: run.id,
+      outcome: { status: "failed", failureReason: "runtime-failed", diagnostic: "Preflight refused." }
+    }, f.now()).disposition, "applied");
+    f.store.saveEvent("task-1", createTaskEvent(f.store.nextEventId("task-1"), "task-1",
+      "run.session-prepared", { runId: run.id, roleName: f.roleName, nativeSessionId: f.nativeSessionId }, f.now()));
+  };
+  reject(refused);
+  f.advanceTo(f.now().getTime() + 1);
+  const message = createTaskMessage("message-2", "task-1", "Only collect the already finished experiment.",
+    "operator", { type: "operator" }, f.now(),
+    { recipient: { roleName: f.roleName, ownerRunId: refused.id, workItemId: "work-item-1" } });
+  f.store.saveMessage("task-1", message);
+  prepareMessageContinuations(f.store, "task-1", f.now(), f.roleName);
+  const continuation = f.store.getActiveRun("task-1", f.roleName);
+  assert.ok(continuation);
+  reject(continuation);
+  const retry = run => runTaskCommand(["run", "retry", `task-1/${run.id}`], f.store,
+    { now: f.now, environment: {} });
+  // A prior program version may have produced another rejected retry without
+  // the failed-Turn descriptor. The durable chain must still be usable.
+  const priorBinding = structuredClone(f.read());
+  retry(continuation);
+  const rejectedRetry = f.store.getActiveRun("task-1", f.roleName);
+  f.saveSessions({ ...f.loadSessions(), providerBinding: priorBinding });
+  reject(rejectedRetry);
+  const retained = structuredClone(f.read());
+  const current = f.store.getRun("task-1", rejectedRetry.id);
+  assert.equal(taskRunRecovery(f.store, retained, current)?.failedNativeTurnId, "native-original");
+  for (const changed of [
+    { authority: { ...retained.authority, epoch: 2 } },
+    { authority: { ...retained.authority, owner: "human" } },
+    { conversations: retained.conversations.map(c => ({ ...c, conversationId: "different-session" })) },
+    { run: { ...retained.run, status: "delivery-unknown" } },
+    { run: { ...retained.run, status: "accepted", nativeTurnId: "new-native" } },
+    { retry: { ...retained.retry, failedNativeTurnId: "different-failure" } }
+  ]) assert.equal(taskRunRecovery(f.store, { ...retained, ...changed }, current), undefined);
+  const evidence = f.store.listEventsByType("task-1",
+    ["runtime.agent-error", "runtime.observation", "run.retried", "message.continuation"]);
+  const runs = f.store.listRuns("task-1");
+  const readOnly = (events = evidence, selectedRuns = runs) => ({
+    listEventsByType: (_taskId, types) => events.filter(e => types.includes(e.type)), listRuns: () => selectedRuns,
+    getContextSnapshot: f.store.getContextSnapshot.bind(f.store)
+  });
+  for (const disposition of ["accepted", "unknown"]) {
+    assert.equal(taskRunRecovery(readOnly(evidence.map(e =>
+      e.type === "runtime.agent-error" && e.payload.runId === continuation.id
+        ? { ...e, payload: { ...e.payload, inputDisposition: disposition } } : e)), retained, current), undefined);
+  }
+  assert.equal(taskRunRecovery(readOnly(evidence.filter(e =>
+    !(e.type === "runtime.agent-error" && e.payload.runId === continuation.id))), retained, current), undefined);
+  assert.equal(taskRunRecovery(readOnly(evidence.filter(e =>
+    !(e.type === "run.retried" && e.payload.runId === rejectedRetry.id))), retained, current), undefined);
+  assert.equal(taskRunRecovery(readOnly(evidence, runs.map(r => r.id === continuation.id
+    ? { ...r, workItemId: "work-item-2" } : r)), retained, current), undefined);
+  assert.equal(taskRunRecovery(readOnly(evidence, runs.map(r => r.id === continuation.id
+    ? { ...r, effective: { ...r.effective, model: "different-model" } } : r)), retained, current), undefined);
+  f.advanceTo(epoch + 700_000); // explicit recovery must not renew the automatic window
+  retry(rejectedRetry);
+  const recovered = f.store.getActiveRun("task-1", f.roleName);
+  const dispatch = createRuntimeLifecycleDispatcher(f.store, new FileSchedulerStoreAdapter(f.store), {});
+  const result = await dispatch("runtime.provider-turn-begin", { ...f.scoped, runId: recovered.id,
+    agentId: "codex", nativeSessionId: f.nativeSessionId, attemptId: `turn:task-1/${recovered.id}`,
+    authorityEpoch: 1, authorityOwner: "controller", holderId: "controller",
+    observedAt: f.now().toISOString(), boundedText: "Read the collection Run.", retrySupport: "codex-failed-turn-v1" });
+  assert.equal(result.retryInput?.expectedFailedNativeTurnId, "native-original");
+  assert.deepEqual(f.read().run.input, { kind: "run", taskId: "task-1", runId: rejectedRetry.id });
+  assert.equal(f.read().retry.deadline, budget.deadline);
+  assert.equal(f.read().retry.attempts, 0);
+  assert.match(recovered.inputs[0].input.directive, /message-2/);
+  assert.ok(readRunContextSnapshot(f.store, recovered).resources.some(entry =>
+    entry.ref.store === "task-message" && entry.ref.refId === message.id));
+  f.observe("turn.accepted", undefined, "collection-native");
+  const originalMessage = f.store.listMessages("task-1").find(m => m.id === message.id);
+  assert.equal(recoveredMessageContinuation(f.store, originalMessage, recovered), true);
+  assert.equal(recoveredMessageContinuation(f.store, originalMessage, continuation), false);
+  assert.equal(recoveredMessageContinuation(f.store, { ...originalMessage, body: "Changed intent" }, recovered), false);
+  const acceptedBinding = structuredClone(f.read());
+  const acceptedEvidence = f.store.listEventsByType("task-1",
+    ["runtime.agent-error", "runtime.observation", "run.retried", "message.continuation"]);
+  const acceptedRuns = f.store.listRuns("task-1");
+  const acceptedStore = { ...readOnly(acceptedEvidence, acceptedRuns),
+    getRun: f.store.getRun.bind(f.store), getTaskRoleSessionSet: f.loadSessions };
+  assert.equal(recoveredMessageContinuation(acceptedStore, originalMessage, recovered), true);
+  for (const change of [
+    { authority: { ...acceptedBinding.authority, epoch: 2 } },
+    { run: { ...acceptedBinding.run, status: "delivery-unknown" } },
+    { retry: { ...acceptedBinding.retry, currentAttemptId: "wrong-attempt" } }
+  ]) {
+    const altered = {
+      ...readOnly(acceptedEvidence, acceptedRuns), getRun: f.store.getRun.bind(f.store),
+      getTaskRoleSessionSet: () => ({ ...f.loadSessions(), providerBinding: { ...acceptedBinding, ...change } })
+    };
+    assert.equal(recoveredMessageContinuation(altered, originalMessage, recovered), false);
+  }
+  const env = { YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1", YUI_ROLE: f.roleName,
+    YUI_NATIVE_SESSION_ID: f.nativeSessionId, YUI_WORKSPACE: f.home };
+  const inbox = (...args) => runInboxCommand(args, f.store, env, f.now());
+  assert.ok(inbox("list", "--view", "current").items.some(item => item.id === message.id));
+  const before = f.store.listMessages("task-1").find(m => m.id === message.id);
+  assert.equal(inbox("show", message.id).body, message.body);
+  inbox("claim", message.id, "--request-id", "collect-original");
+  const claimed = f.store.listMessages("task-1").find(m => m.id === message.id).inbox.claim;
+  inbox("claim", message.id, "--request-id", "collect-original");
+  inbox("ack", message.id, "--request-id", "collected-original", "--reason", "Collected existing results only.");
+  const handled = f.store.listMessages("task-1").find(m => m.id === message.id);
+  assert.deepEqual(handled.recipient, before.recipient);
+  assert.deepEqual(handled.continuation, before.continuation);
+  assert.equal(handled.inbox.claim.actor.runId, recovered.id);
+  assert.deepEqual(handled.inbox.claim, claimed);
+  assert.equal(handled.inbox.ack.actor.runId, recovered.id);
+  assert.equal(f.store.listEventsByType("task-1", ["message.continuation"]).length, 1);
+  const count = f.store.listRuns("task-1").length;
+  retry(original);
+  assert.equal(f.store.listRuns("task-1").length, count, "Old retry idempotency must not replay old work.");
 });
 
 test("registration ACK replay and a cancellation racing its reply never strip the recovery descriptor", async t => {
@@ -767,7 +1113,7 @@ test("registration ACK replay and a cancellation racing its reply never strip th
     };
     const original = await dispatch("runtime.provider-turn-begin", params);
     assert.equal(original.retryInput?.expectedFailedNativeTurnId, "native-original");
-    assert.match(original.retryInput.text, /continue only unfinished work/);
+    assert.match(original.retryInput.context, /continue only unfinished work/);
     if (race === "reply-read") {
       assert.equal(f.read().retry.status, "cancelled");
       continue;
@@ -829,7 +1175,7 @@ test("manual recovery after exhaustion retains the original automatic count and 
   });
   assert.equal(disconnected.retryable, undefined);
   failCurrent("manual-disconnected", disconnected);
-  assert.equal(f.read().retry.status, "cancelled");
+  assert.equal(f.read().retry.status, "exhausted");
   runTaskCommand(["run", "retry", `task-1/${run.id}`], f.store, { now: f.now, environment: {} });
   assert.equal(f.read().retry.chainId, chainId);
   assert.equal(f.read().retry.startedAt, startedAt);
@@ -848,7 +1194,7 @@ test("manual recovery after exhaustion retains the original automatic count and 
 });
 
 test("same-Round review recovery preserves its candidate and workspace, and cancellation fences a later-created Run", async t => {
-  for (const mode of ["automatic", "pause", "cancel", "manual-without-chain"]) {
+  for (const mode of ["automatic", "pause", "cancel", "manual-without-chain", "manual-exhausted", "manual-rejected"]) {
     const cancel = mode === "cancel";
     const f = reviewFixture(t);
     const initial = f.dispatch();
@@ -857,7 +1203,7 @@ test("same-Round review recovery preserves its candidate and workspace, and canc
     assert.equal(f.observe("turn.accepted"), "applied");
     f.advanceTo(f.now().getTime() + 1);
     assert.equal(f.observe("turn.failed", undefined, "native-original", {
-      failure: { error: mode === "manual-without-chain" ? { ...transient, retryable: undefined } : transient }
+      failure: { error: mode === "manual-without-chain" ? { ...transient, retryable: false } : transient }
     }), "applied");
     assert.equal(f.store.getReviewRound("task-1", f.round.id).status, "failed");
     if (mode !== "manual-without-chain") f.due();
@@ -882,12 +1228,17 @@ test("same-Round review recovery preserves its candidate and workspace, and canc
       runTaskCommand(["role", "enable", "task-1", f.roleName],
         f.store, { now: f.now, environment: {} });
     }
-    if (mode === "manual-without-chain") runTaskCommand(["run", "retry", `task-1/${initial.id}`], f.store, {
+    if (mode === "manual-exhausted") {
+      f.advanceTo(Date.parse(f.read().retry.deadline) + 1);
+      await hooks.reconcile();
+      assert.equal(f.read().retry.status, "exhausted");
+    }
+    if (mode.startsWith("manual-")) runTaskCommand(["run", "retry", `task-1/${initial.id}`], f.store, {
       now: f.now, environment: {}, actualTaskReviewCandidate: f.candidate
     });
     else await hooks.reconcile();
     const pending = f.store.getReviewRound("task-1", f.round.id);
-    assert.equal(pending.requestedBy, mode === "manual-without-chain" ? "user" : "policy");
+    assert.equal(pending.requestedBy, mode.startsWith("manual-") ? "user" : "policy");
     assert.equal(pending.status, "pending");
     assert.deepEqual(pending.taskCandidate, f.candidate);
     assert.deepEqual(pending.workspace, f.workspace);
@@ -901,6 +1252,21 @@ test("same-Round review recovery preserves its candidate and workspace, and canc
     assert.equal(successor.reviewRoundId, initial.reviewRoundId);
     assert.deepEqual(successor.workspace, initial.workspace);
     assert.equal(f.store.listReviewRounds("task-1").length, 1);
+    if (mode === "manual-rejected") {
+      const originalTurn = f.read().run;
+      assert.equal(terminalizeExactTaskRun(f.store, {
+        taskId: "task-1", roleName: f.roleName, agentId: "codex", runId: successor.id,
+        outcome: { status: "failed", failureReason: "startup-failed", diagnostic: "Registration not committed." }
+      }, f.now()).disposition, "applied");
+      await hooks.reconcile();
+      assert.equal(f.read().retry.status, "cancelled",
+        "A terminal pre-admission successor must not leave explicit recovery waiting forever.");
+      assert.match(f.read().retry.reason, /successor.*failed.*admission/);
+      assert.deepEqual(f.read().run, originalTurn, "No new native Turn or replay may be fabricated.");
+      assert.equal(f.store.listRuns("task-1").length, 2);
+      assert.deepEqual(hooks.deadlines(), []);
+      continue;
+    }
     const admit = () => f.begin(`task-1/turn/${successor.id}`,
       "Continue only the unfinished frozen Review.", successor.id);
     if (cancel) {
@@ -908,9 +1274,50 @@ test("same-Round review recovery preserves its candidate and workspace, and canc
         "Cancelling before the Review Run exists must still fence its eventual native admission.");
       assert.equal(f.read().run.attemptId, `task-1/turn/${initial.id}`);
     } else {
+      if (mode === "automatic") {
+        const before = f.read();
+        const sessions = f.loadSessions();
+        const session = sessions.sessions.codex;
+        f.saveSessions({ ...sessions, sessions: {
+          ...sessions.sessions, codex: { ...session, effective: {
+            ...session.effective, workspace: { ...session.effective.workspace, root: join(f.home, "other") }
+          } }
+        } });
+        assert.throws(admit, /Retry execution no longer matches/);
+        assert.deepEqual(f.read(), before);
+        f.saveSessions(sessions);
+        for (const changed of [
+          { model: "different-model" },
+          { permission: { strategy: "configured", sandbox: "read-only", approval: "never" } },
+          { workspace: { ...successor.effective.workspace, root: join(f.home, "other") } }
+        ]) {
+          f.store.saveRun({
+            ...successor, effective: { ...successor.effective, ...changed },
+            ...(changed.workspace === undefined ? {} : {
+              workspace: { ...successor.workspace, root: changed.workspace.root }
+            })
+          });
+          assert.throws(admit, /Retry execution no longer matches/);
+          assert.deepEqual(f.read(), before, "Rejected admission must not consume the retry or write a native Turn.");
+        }
+        f.store.saveRun(successor);
+        const frozen = f.store.getReviewRound("task-1", f.round.id);
+        f.store.saveReviewRound("task-1", {
+          ...frozen, reviewBaseCommit: "c".repeat(40),
+          taskCandidate: {
+            ...frozen.taskCandidate, projects: [{ projectId: "project-1", commit: "c".repeat(40) }]
+          },
+          workspace: { ...frozen.workspace, entries: frozen.workspace.entries.map(entry => ({
+            ...entry, baseRef: "c".repeat(40), baseCommit: "c".repeat(40)
+          })) }
+        });
+        assert.throws(admit, /exact Round and frozen candidate/);
+        assert.deepEqual(f.read(), before);
+        f.store.saveReviewRound("task-1", frozen);
+      }
       admit();
       assert.equal(f.read().retry.status, "in-flight");
-      assert.equal(f.read().retry.attempts, mode === "manual-without-chain" ? 0 : 1);
+      assert.equal(f.read().retry.attempts, mode.startsWith("manual-") ? 0 : 1);
       assert.equal(f.read().retry.successorRunId, successor.id);
       assert.equal(f.loadSessions().sessions.codex.nativeSessionId, f.nativeSessionId);
     }

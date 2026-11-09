@@ -21,6 +21,10 @@ import {
   resolveAgentLaunchInactivityTimeoutSeconds,
   resolveControllerTaskConcurrency,
   resolveDeliveryTimeoutSeconds,
+  resolveMigrationBackupKeep,
+  resolveGitLocalTimeoutSeconds,
+  resolveGitRemoteInactivityTimeoutSeconds,
+  resolveGitRemoteTimeoutSeconds,
   resolveResourcesGcAutoQuarantine,
   resolveResourcesGcMode,
   resolveResourcesQuarantineTtlHours,
@@ -145,6 +149,7 @@ export function effectiveConfigData(
     resourcesGcMode: resolveResourcesGcMode(config.resourcesGcMode),
     resourcesGcAutoQuarantine: resolveResourcesGcAutoQuarantine(config.resourcesGcAutoQuarantine),
     resourcesQuarantineTtlHours: resolveResourcesQuarantineTtlHours(config.resourcesQuarantineTtlHours),
+    migrationBackupKeep: resolveMigrationBackupKeep(config.migrationBackupKeep),
     runtimeHealth: {
       quietAfterSeconds: health.quietAfterMs / 1_000,
       diagnosticAfterSeconds: health.diagnosticAfterMs / 1_000,
@@ -155,6 +160,9 @@ export function effectiveConfigData(
       config.agentLaunchInactivityTimeoutSeconds
     ),
     deliveryTimeoutSeconds: resolveDeliveryTimeoutSeconds(config.deliveryTimeoutSeconds),
+    gitLocalTimeoutSeconds: resolveGitLocalTimeoutSeconds(config.gitLocalTimeoutSeconds),
+    gitRemoteInactivityTimeoutSeconds: resolveGitRemoteInactivityTimeoutSeconds(config.gitRemoteInactivityTimeoutSeconds),
+    gitRemoteTimeoutSeconds: resolveGitRemoteTimeoutSeconds(config.gitRemoteTimeoutSeconds),
     tmuxBin: resolveTmuxBin(config.tmuxBin),
     tmuxHistoryLimit: resolveTmuxHistoryLimit(config.tmuxHistoryLimit),
     telemetryEnabled: resolveTelemetryEnabled(config.telemetryEnabled),
@@ -400,6 +408,27 @@ const CONFIG_KEY_HANDLERS: readonly ConfigKeyHandler[] = [
     }
   },
   {
+    key: "migration-backup-keep",
+    showLabel: "Migration backup keep",
+    showValue: (config) => String(resolveMigrationBackupKeep(config.migrationBackupKeep)),
+    set(args, store) {
+      const usage = "Resources config set usage: yui config resources set migration-backup-keep <1-1000>.";
+      if (args.length !== 1) throw usageError(usage);
+      const migrationBackupKeep = validatedConfigValue(
+        () => resolveMigrationBackupKeep(Number(args[0])), usage
+      );
+      saveConfigKey(store, config => ({ ...config, migrationBackupKeep }));
+      return `Migration backup keep set to ${migrationBackupKeep}; applies after the next successful storage migration.\n`;
+    },
+    clear(store) {
+      saveConfigKey(store, config => {
+        const { migrationBackupKeep: _removed, ...rest } = config;
+        return rest;
+      });
+      return "Migration backup keep reset to 3; no files deleted.\n";
+    }
+  },
+  {
     key: "controller-task-concurrency",
     showLabel: "Controller Task concurrency",
     showValue: (config) => String(resolveControllerTaskConcurrency(config.controllerTaskConcurrency)),
@@ -502,6 +531,69 @@ const CONFIG_KEY_HANDLERS: readonly ConfigKeyHandler[] = [
         return rest;
       });
       return `Delivery timeout reset to ${DEFAULT_DELIVERY_TIMEOUT_SECONDS} seconds\n`;
+    }
+  },
+  {
+    key: "git-local-timeout-seconds",
+    showLabel: "Git local total timeout",
+    showValue: (config) => `${resolveGitLocalTimeoutSeconds(config.gitLocalTimeoutSeconds)} seconds`,
+    set(args, store) {
+      const usage = "Tools config set usage: yui config tools set git-local-timeout-seconds <1-86400>.";
+      if (args.length !== 1) throw usageError(usage);
+      const gitLocalTimeoutSeconds = validatedConfigValue(
+        () => resolveGitLocalTimeoutSeconds(Number(args[0])), usage
+      );
+      saveConfigKey(store, (config) => ({ ...config, gitLocalTimeoutSeconds }));
+      return `Git local total timeout set to ${gitLocalTimeoutSeconds} seconds\n`;
+    },
+    clear(store) {
+      saveConfigKey(store, (config) => {
+        const { gitLocalTimeoutSeconds: _removed, ...rest } = config;
+        return rest;
+      });
+      return "Git local total timeout reset to default\n";
+    }
+  },
+  {
+    key: "git-remote-inactivity-timeout-seconds",
+    showLabel: "Git remote inactivity timeout",
+    showValue: (config) => `${resolveGitRemoteInactivityTimeoutSeconds(config.gitRemoteInactivityTimeoutSeconds)} seconds`,
+    set(args, store) {
+      const usage = "Tools config set usage: yui config tools set git-remote-inactivity-timeout-seconds <1-86400>.";
+      if (args.length !== 1) throw usageError(usage);
+      const gitRemoteInactivityTimeoutSeconds = validatedConfigValue(
+        () => resolveGitRemoteInactivityTimeoutSeconds(Number(args[0])), usage
+      );
+      saveConfigKey(store, (config) => ({ ...config, gitRemoteInactivityTimeoutSeconds }));
+      return `Git remote inactivity timeout set to ${gitRemoteInactivityTimeoutSeconds} seconds\n`;
+    },
+    clear(store) {
+      saveConfigKey(store, (config) => {
+        const { gitRemoteInactivityTimeoutSeconds: _removed, ...rest } = config;
+        return rest;
+      });
+      return "Git remote inactivity timeout reset to default\n";
+    }
+  },
+  {
+    key: "git-remote-timeout-seconds",
+    showLabel: "Git remote total timeout",
+    showValue: (config) => `${resolveGitRemoteTimeoutSeconds(config.gitRemoteTimeoutSeconds)} seconds`,
+    set(args, store) {
+      const usage = "Tools config set usage: yui config tools set git-remote-timeout-seconds <1-86400>.";
+      if (args.length !== 1) throw usageError(usage);
+      const gitRemoteTimeoutSeconds = validatedConfigValue(
+        () => resolveGitRemoteTimeoutSeconds(Number(args[0])), usage
+      );
+      saveConfigKey(store, (config) => ({ ...config, gitRemoteTimeoutSeconds }));
+      return `Git remote total timeout set to ${gitRemoteTimeoutSeconds} seconds\n`;
+    },
+    clear(store) {
+      saveConfigKey(store, (config) => {
+        const { gitRemoteTimeoutSeconds: _removed, ...rest } = config;
+        return rest;
+      });
+      return "Git remote total timeout reset to default\n";
     }
   },
   {

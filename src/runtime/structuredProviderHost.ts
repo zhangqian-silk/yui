@@ -3,6 +3,7 @@ import {
   type ChildProcessWithoutNullStreams
 } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createNativeTitleSync } from "./nativeTitleSync.js";
 import type { Socket } from "node:net";
 import { Duplex } from "node:stream";
 import { nativeExecutable } from "./nativeExecutable.js";
@@ -47,6 +48,7 @@ import type {
 import { PROVIDER_ACCEPT_TIMEOUT_MS } from "./runtimeDeadlines.js";
 import { foldPublicReply, type PublicReply } from "./publicReply.js";
 import { createCodexNativeAccess, type CodexNativeAccess } from "./codexNativeAccess.js";
+import { isNativeContextRecovery } from "./contextRecovery.js";
 
 const CODEX_PROXY_HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -71,6 +73,7 @@ export type StructuredProviderTurnReceipt = Readonly<{
 }>;
 
 export type StructuredProviderTurnInput = Readonly<{
+  additionalContext?: import("./codexAppServerRuntime.js").CodexAdditionalContext;
   attemptId: string;
   boundedText: string;
   /** Exact failed native Turn whose unfinished work this input continues. */
@@ -150,6 +153,12 @@ export type StructuredProviderDiagnostic = Readonly<{
 }>;
 
 export interface StructuredProviderSession {
+  /** Host-local explicit native compaction observations, not inferred memory. */
+  readonly contextEpoch?: number;
+  /** Read-only native proof, where available; never interrupts background work. */
+  checkQuiescent?(): Promise<boolean>;
+  /** Last generated name this connection actually applied, not launch intent. */
+  readonly appliedGeneratedTitle?: string;
   readonly nativeAccess?: CodexNativeAccess;
   readonly publicReply?: PublicReply;
   /** Exact process whose exit proves the dedicated local execution drained. */
@@ -217,7 +226,7 @@ export async function startStructuredProviderSession(
       const opened = await CodexStructuredProviderSession.open(
         proxy.child, proxy.exit, proxy.processInstanceId, payload, control, proxy.channel,
         input.onStarted, input.onTerminal, input.onGoal, input.onInput,
-        input.onActivity, input.onDiagnostic, mirror
+        input.onActivity, mirror
       );
       return Object.freeze({
         session: opened.session,
@@ -379,6 +388,8 @@ async function connectCodexProxy(
 
 class CodexProxyWebSocketChannel {
   readonly #pending = new Map<string, Readonly<{
+    method: string;
+    requestBytes: number;
     resolve: (value: JsonObject) => void;
     reject: (error: Error) => void;
     timer: NodeJS.Timeout | undefined;
@@ -464,7 +475,10 @@ class CodexProxyWebSocketChannel {
         this.#pending.delete(id);
         reject(new Error(`Provider request timed out: ${method}.`));
       }, PROVIDER_ACCEPT_TIMEOUT_MS);
-      this.#pending.set(id, { resolve: resolvePromise, reject, timer });
+      this.#pending.set(id, {
+        resolve: resolvePromise, reject, timer, method,
+        requestBytes: Buffer.byteLength(JSON.stringify({ id, method, params }), "utf8")
+      });
     });
     try {
       await this.send({ id, method, params });
@@ -507,7 +521,7 @@ class CodexProxyWebSocketChannel {
     if (isBinary || encoded.byteLength > PROVIDER_MESSAGE_MAX_BYTES) {
       this.#close(new Error(isBinary
         ? "Provider returned an unsupported binary WebSocket message."
-        : "Provider response message exceeds its bound."));
+        : `Provider response message exceeds its bound (receivedBytes=${encoded.byteLength}).`));
       terminateProcessGroup(this.child, "SIGTERM");
       return;
     }
@@ -545,6 +559,18 @@ class CodexProxyWebSocketChannel {
 
   #close(error: Error): void {
     if (this.#closedError !== undefined) return;
+    // A rejected WebSocket frame has not reached #receive: its full size and
+    // response/notification identity are unknown. Record pending request
+    // metadata, not parameters or transcript bytes, and never blame a specific
+    // response just because that request was in flight.
+    const pendingMetadata = [...this.#pending].slice(0, 8).map(([id, pending]) => ({
+      id, method: pending.method, requestBytes: pending.requestBytes
+    }));
+    error = new Error(
+      `Codex proxy transport closed: ${error.message}; messageLimitBytes=${PROVIDER_MESSAGE_MAX_BYTES}; `
+      + `pendingRequests=${JSON.stringify(pendingMetadata)}; pendingCount=${this.#pending.size}.`,
+      { cause: error }
+    );
     this.#closedError = error;
     if (!this.#ready) this.#rejectReady(error);
     for (const pending of this.#pending.values()) {
@@ -604,6 +630,21 @@ class ChildProcessDuplex extends Duplex {
 }
 
 class CodexStructuredProviderSession implements StructuredProviderSession {
+  contextEpoch = 0;
+  async checkQuiescent(): Promise<boolean> {
+    const snapshot = await this.runtime.readConversation(this.conversationId, { includeTurns: false });
+    if (snapshot.threadId !== this.conversationId || snapshot.status !== "idle"
+      || snapshot.activeTurnId !== undefined) return false;
+    const backgrounds = await this.nativeAccess.read("thread/backgroundTerminals/list", {
+      threadId: this.conversationId, limit: 1
+    });
+    if (!Array.isArray(backgrounds.data) || !("nextCursor" in backgrounds)) {
+      throw new Error("Native background execution response is invalid.");
+    }
+    return backgrounds.data.length === 0 && backgrounds.nextCursor === null;
+  }
+  appliedGeneratedTitle: string | undefined;
+  #titleSync: ReturnType<typeof createNativeTitleSync> | undefined;
   nativeAccess!: CodexNativeAccess;
   readonly #turnAttempts = new Map<string, string>();
   readonly adapterId = "codex" as const;
@@ -647,7 +688,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     onGoal: ((goal: StructuredProviderGoal | null) => void) | undefined,
     onInput: ((input: StructuredProviderInputObserved) => void) | undefined,
     onActivity: ((activity: StructuredProviderActivity) => void) | undefined,
-    onDiagnostic: ((diagnostic: StructuredProviderDiagnostic) => void) | undefined,
     mirror: (stream: "stdout" | "stderr", text: string) => void
   ): Promise<Readonly<{
     session: CodexStructuredProviderSession;
@@ -662,7 +702,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     let conversationId: string;
     let nativeConfiguration: JsonObject;
     let resumedActiveTurnId: string | undefined;
-    let resumedTurns: import("./codexAppServerRuntime.js").CodexThreadSnapshot["turns"] = [];
     if (control.mode === "new") {
       const opened = await runtime.openConversation({
         cwd: payload.cwd,
@@ -679,7 +718,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         conversationId = resumed.threadId;
         nativeConfiguration = resumed.raw;
         resumedActiveTurnId = resumed.activeTurnId;
-        resumedTurns = resumed.turns;
       } catch (error) {
         if (codexAppServerErrorIsMissing(error)) {
           throw new ProviderConversationMissingError(
@@ -690,23 +728,12 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         throw error;
       }
     }
-    if (control.sessionTitle !== undefined) {
-      try {
-        await runtime.setConversationName({
-          conversationId,
-          name: control.sessionTitle
-        });
-      } catch (error) {
-        onDiagnostic?.({
-          nativeSessionId: conversationId,
-          failure: providerDeliveryFailureFrom(error, {
-            phase: "session-start",
-            inputDisposition: "not-accepted",
-            sessionDisposition: "recoverable"
-          })
-        });
-      }
-    }
+    const ownedTurn = control.kind === "restore" ? control.ownedTurn : undefined;
+    // Keep notifications buffered during paginated recovery. Otherwise a live
+    // terminal can be emitted before open returns and then returned again as a
+    // synthetic recovered terminal, or a newer start can be overwritten.
+    const recoveredOwnedTurn = ownedTurn !== undefined && resumedActiveTurnId !== ownedTurn.turnId
+      ? await runtime.readTurn(conversationId, ownedTurn.turnId) : undefined;
     const session = new CodexStructuredProviderSession(
       child,
       exit,
@@ -723,7 +750,6 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     );
     session.nativeAccess = createCodexNativeAccess(conversationId, initialized, channel, openingMessages, nativeConfiguration);
     session.#activeTurnId = resumedActiveTurnId;
-    const ownedTurn = control.kind === "restore" ? control.ownedTurn : undefined;
     session.#clientOwnedTurnId = ownedTurn?.turnId;
     session.#clientOwnedAttemptId = ownedTurn?.attemptId;
     if (ownedTurn !== undefined) session.#turnAttempts.set(ownedTurn.turnId, ownedTurn.attemptId);
@@ -738,7 +764,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
     });
     if (ownedTurn !== undefined && recoveredTerminal === undefined
       && session.#activeTurnId !== ownedTurn.turnId) {
-      const recovered = resumedTurns.find((turn) => turn.turnId === ownedTurn.turnId);
+      const recovered = recoveredOwnedTurn;
       if (recovered?.status === "completed"
         || recovered?.status === "interrupted"
         || recovered?.status === "failed") {
@@ -770,6 +796,13 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       }
     }
     const goal = await runtime.readGoal(conversationId);
+    session.#titleSync = createNativeTitleSync(payload, conversationId, session.nativeAccountHome, result => {
+      if (result.status === "confirmed") session.appliedGeneratedTitle = result.title;
+      mirror("stderr", `Native title: ${JSON.stringify(result)}\n`);
+    });
+    void exit.then(() => session.#titleSync?.close());
+    // Fresh Threads may not be persisted until their first accepted input.
+    if (control.mode === "resume") session.#titleSync.notify();
     return Object.freeze({
       session,
       ...(recoveredTerminal === undefined ? {} : { recoveredTerminal }),
@@ -783,6 +816,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
   ): StructuredProviderTurnTerminal | undefined {
       const method = typeof message.method === "string" ? message.method : "";
       const params = object(message.params) ?? {};
+      if (isNativeContextRecovery("codex", this.conversationId, message)) this.contextEpoch += 1;
       const threadId = optionalId(params.threadId);
       if (emit) this.publicReply = foldPublicReply(this.publicReply, this.conversationId, method, params);
       if (threadId !== this.conversationId) {
@@ -791,6 +825,11 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         }
         return undefined;
       }
+      if (method === "thread/name/updated") {
+        this.#titleSync?.close();
+        if (params.threadName !== this.appliedGeneratedTitle) this.appliedGeneratedTitle = undefined;
+      }
+      if (method === "turn/started") this.#titleSync?.notify();
       let goal;
       try {
         goal = codexGoalNotification({ method, params });
@@ -917,6 +956,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
         conversationId: this.conversationId,
         attemptId: turn.attemptId,
         text: turn.boundedText,
+        ...(turn.additionalContext === undefined ? {} : { additionalContext: turn.additionalContext }),
         expectedNoActiveTurn: true,
         ...(turn.requireQuiescent ? { requireQuiescent: true } : {}),
         ...(turn.expectedFailedNativeTurnId === undefined ? {} : {
@@ -940,6 +980,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       this.#clientOwnedTurnId = acceptance.turnId;
       this.#clientOwnedAttemptId = turn.attemptId;
       this.#turnAttempts.set(acceptance.turnId, turn.attemptId);
+      this.#titleSync?.notify();
       return Object.freeze({
         attemptId: turn.attemptId,
         conversationId: this.conversationId,
@@ -967,6 +1008,7 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
       conversationId: this.conversationId,
       expectedTurnId: nativeTurnId,
       text: turn.boundedText,
+      ...(turn.additionalContext === undefined ? {} : { additionalContext: turn.additionalContext }),
       clientUserMessageId: turn.attemptId
     });
     if (acceptance.status === "unknown") {
@@ -1038,11 +1080,13 @@ class CodexStructuredProviderSession implements StructuredProviderSession {
   }
 
   terminate(signal: NodeJS.Signals): void {
+    this.#titleSync?.close();
     terminateProcessGroup(this.child, signal);
   }
 }
 
 class ClaudeStructuredProviderSession implements StructuredProviderSession {
+  contextEpoch = 0;
   readonly adapterId = "claude" as const;
   get ownedProcessId(): number | undefined { return this.child.pid; }
   #activeAttemptId: string | undefined;
@@ -1205,6 +1249,7 @@ class ClaudeStructuredProviderSession implements StructuredProviderSession {
     onAccepted: ((receipt: StructuredProviderTurnReceipt) => void) | undefined,
     onActivity: ((activity: StructuredProviderActivity) => void) | undefined
   ): void {
+    if (isNativeContextRecovery("claude", this.conversationId, message)) this.contextEpoch += 1;
     const goal = claudeActiveGoal(message, this.conversationId);
     if (goal !== undefined) {
       const key = JSON.stringify(goal === null ? null : {

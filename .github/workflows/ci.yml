@@ -79,7 +79,7 @@ jobs:
   verify-macos:
     strategy:
       matrix:
-        os: [macos-14, macos-15-intel]
+        os: [macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:

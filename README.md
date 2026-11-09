@@ -5,7 +5,7 @@
 [![Core CI](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/zhangqian-silk/yui/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-20%20%7C%2022%20%7C%2024-brightgreen.svg)
-![Platform](https://img.shields.io/badge/platform-Linux%20x64%20%28glibc%29%20%7C%20macOS%20x64%2Farm64-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20x64%20%28glibc%29%20%7C%20macOS%20arm64-blue.svg)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
 Give your Agents work to carry forward, not just another chat to answer.
@@ -46,15 +46,20 @@ For the self-built coding Agent (without a Controller or Yui Home), see
 [`yui agent`](docs/native-agent.md). Its explicit configuration and product state
 are separate from the orchestration setup below.
 
-You need Linux x64 (glibc) or macOS (x64 or Apple Silicon), Git 2.29.0 or newer, tmux, and
+You need Linux x64 (glibc) or macOS Apple Silicon with native arm64 Node.js, Git 2.29.0 or newer, tmux, and
 Node.js `^20.17.0`, `^22.9.0`, `^24.0.0` or `^26.0.0`. On macOS install tmux with
 `brew install tmux`. For the simplest setup, have Codex CLI or Claude Code CLI
 installed and ready to use with your own account. Yui coordinates those
 Agents; it does not supply model access.
 
-The npm package includes prebuilt Yui helpers for Linux x64, Mac Intel and
-Apple Silicon. The same package is tested on all three platforms before
+The npm package includes prebuilt Yui helpers for Linux x64 and macOS
+Apple Silicon. The same package is tested on both platforms before
 publication; Yui selects only the helper for the running platform.
+Starting with 2.25.0, macOS Intel and x64 Node.js under Rosetta are unsupported.
+Intel Mac users must stay on 2.23.0; Apple Silicon users must switch to native
+arm64 Node.js. npm's OS/CPU fields cannot express these platform pairs, so npm
+installation may succeed on an unsupported combination, but Yui rejects it
+before loading either CLI product or opening the Home. No install scripts are added.
 
 For Claude, Yui passes through your authentication environment and native
 configuration directory; Claude selects the API key or login method using its
@@ -458,6 +463,11 @@ that checkout; run its `setup` before stateful use. Development tooling does not
 manage global installations; do not use the global `yui` to validate local changes.
 Live-model, paid or shared-resource
 tests require an explicit request for those resources.
+
+For topic-specific evaluation and shared evidence tools, see
+[evaluation tooling](scripts/eval/README.md).
+`npm run eval:check` is fast and offline; `eval:context:wiring` is an explicit isolated
+fake-Provider check, outside the default core gate. It is not model validation.
 
 ## Community and support
 

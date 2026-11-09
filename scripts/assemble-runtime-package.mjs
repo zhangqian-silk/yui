@@ -20,12 +20,14 @@ import {
 const root = fileURLToPath(new URL("../", import.meta.url));
 const RUNTIME_SKILLS = [
   "yui-leader",
+  "yui-experiment-leader",
   "yui-worker",
   "yui-operator",
   "yui-reviewer",
   "yui-runtime"
 ];
 const RUNTIME_DOCUMENTS = [
+  "docs/experiments.md",
   "docs/model-connection-tools.md",
   "docs/native-agent.md",
   "docs/model-components.md",
@@ -77,6 +79,7 @@ const RUNTIME_DOCUMENTS = [
   "docs/task-discovery.zh-CN.md",
   "docs/task-local-identity.md",
   "docs/task-local-identity.zh-CN.md",
+  "docs/workitem-continuation.md",
   "docs/testing/verification-levels.md",
   "docs/testing/verification-levels.zh-CN.md",
   "docs/testing/review-evaluation.md",
@@ -105,6 +108,11 @@ const allPlatforms = process.argv[4] === "--all-platforms";
 if (process.argv.length !== (allPlatforms ? 5 : 4)) {
   throw new Error("assemble-runtime-package accepts --output <directory> [--all-platforms].");
 }
+const supportedNativeTargets = ["linux-x64", "darwin-arm64"];
+const nativeTargets = allPlatforms ? supportedNativeTargets : [`${process.platform}-${process.arch}`];
+if (nativeTargets.some(target => !supportedNativeTargets.includes(target))) {
+  throw new Error(`Unsupported runtime assembly target: ${nativeTargets.join(", ")}.`);
+}
 
 const output = resolve(root, process.argv[outputIndex + 1]);
 const outputRelative = relative(root, output);
@@ -131,9 +139,6 @@ for (const sourceName of runtimeSources) {
   cpSync(source, destination);
   chmodSync(destination, builtName === "cli.js" ? 0o755 : 0o644);
 }
-const nativeTargets = allPlatforms
-  ? ["linux-x64", "darwin-x64", "darwin-arm64"]
-  : [`${process.platform}-${process.arch}`];
 const nativeFiles = nativeTargets.flatMap(target => [
   `runtime/native/${target}/claude-process-owner`,
   ...(target.startsWith("darwin-") ? [`runtime/native/${target}/process-identity`] : [])
@@ -163,16 +168,18 @@ for (const name of RUNTIME_DOCUMENTS) {
 const expectedSkills = [];
 for (const skill of RUNTIME_SKILLS) {
   const resources = ["SKILL.md", "VERSION"];
-  const references = resolve(root, "skills", skill, "references");
-  if (existsSync(references)) {
-    if (!lstatSync(references).isDirectory() || lstatSync(references).isSymbolicLink()) {
-      throw new Error(`Runtime Skill references must be a regular directory: ${skill}.`);
-    }
-    for (const name of listRegularFiles(references)) {
-      if (!name.endsWith(".md")) {
-        throw new Error(`Unsupported Runtime Skill reference: ${skill}/references/${name}.`);
+  for (const [directory, extension] of [["references", ".md"], ["scripts", ".mjs"]]) {
+    const resourceRoot = resolve(root, "skills", skill, directory);
+    if (existsSync(resourceRoot)) {
+      if (!lstatSync(resourceRoot).isDirectory() || lstatSync(resourceRoot).isSymbolicLink()) {
+        throw new Error(`Runtime Skill ${directory} must be a regular directory: ${skill}.`);
       }
-      resources.push(`references/${name}`);
+      for (const name of listRegularFiles(resourceRoot)) {
+        if (!name.endsWith(extension)) {
+          throw new Error(`Unsupported Runtime Skill resource: ${skill}/${directory}/${name}.`);
+        }
+        resources.push(`${directory}/${name}`);
+      }
     }
   }
   for (const resource of resources) {
@@ -200,6 +207,8 @@ const runtimePackage = {
   bin: { yui: "./dist/cli.js" },
   files: RUNTIME_PACKAGE_FILES,
   engines: sourcePackage.engines,
+  // npm cannot express OS/CPU pairs: cli.js rejects unsupported combinations
+  // before loading the control plane. Keep the runtime lifecycle-script-free.
   os: allPlatforms ? ["linux", "darwin"] : [process.platform],
   cpu: allPlatforms ? ["x64", "arm64"] : [process.arch],
   // npm applies libc constraints to macOS too, where libc is undefined.

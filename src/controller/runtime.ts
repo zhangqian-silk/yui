@@ -1,5 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
+import { ControllerDiagnosticJournal } from "./diagnosticJournal.js";
+import { reconcileMessageHealth, type MessageHealthSnapshot } from "./messageHealth.js";
+import { monotonicMilliseconds } from "../core/controllerTelemetry.js";
 import { prepareNativeHostSteer } from "./nativeHostInput.js";
+import { retainedWorkItemAssignment } from "../execution/workItemContinuation.js";
 import { archiveLeaderTask } from "../task/leaderArchive.js";
 import { TaskWorkspaceCoordinator } from "../repository/taskWorkspaceCoordinator.js";
 import type { ConfiguredAgent } from "../agent/agent.js";
@@ -75,7 +79,7 @@ import {
   validateRuntimeProcessExitObservation
 } from "../runtime/processExitObservation.js";
 import { replayRuntimeProcessExitOutbox } from "../runtime/processExitOutbox.js";
-import { providerRetryPrompt } from "../runtime/providerRetry.js";
+import { providerRetryContext } from "../runtime/providerRetry.js";
 import {
   createRuntimeObservation,
   runtimeObservationFromTaskEvent
@@ -99,7 +103,7 @@ import { createWebTaskSurface } from "../web/webTaskSurface.js";
 import { createWebConversationSurface } from "../web/webConversation.js";
 import { WebRequestRejected } from "../web/webMutation.js";
 import { inspectAgentHost, sendAgentHostNativeControl, AGENT_HOST_CONTROL_PROTOCOL } from "../runtime/agentHost.js";
-import { recoverTaskHostTerminals } from "./taskHostTerminalRecovery.js";
+import { recoverTaskHostTerminals, type TaskHostTerminalObservation } from "./taskHostTerminalRecovery.js";
 import { archiveOrdinaryTask } from "../task/ordinaryArchive.js";
 import { createWebSettings } from "../web/webSettings.js";
 import { createWebSkills } from "../web/webSkills.js";
@@ -128,11 +132,17 @@ import {
   FileSchedulerStoreAdapter
 } from "./fileSchedulerStoreAdapter.js";
 import { deliverGlobalInputs } from "./globalInputDelivery.js";
+import { HostUpgradeCoordinator } from "./hostUpgrade.js";
+import { createHostLifecycleChecks } from "./hostLifecycleChecks.js";
+import { createControllerHostLifecycle, type ControllerHostTransition } from "./hostLifecycle.js";
+import { createNonBlockingChecks } from "../runtime/lifecycleChecks.js";
+import { AGENT_HOST_IMPLEMENTATION } from "../runtime/agentHostImplementation.js";
+import { builtinAgentEndpointImplementation } from "../runtime/agentEndpointIdentity.js";
+import { sendAgentHostUpgradeControl } from "../runtime/agentHost.js";
 import { authorizeJobStart } from "./jobControl.js";
 import { authorizeGlobalJobStart, createJobDefinitionControl } from "./jobDefinitionControl.js";
 import { reconcileTaskDelegation } from "./jobTaskDelegationControl.js";
 import { createScheduleControl, reconcileSchedules } from "./scheduleControl.js";
-import { reconcileProjectSync } from "../job/projectSync.js";
 import {
   createFileArtifactPort,
   createLinuxProcessPort,
@@ -150,7 +160,8 @@ import { FileRuntimeEventInbox } from "./runtimeEventInbox.js";
 import {
   AsyncRuntimeEventProcessor,
   createAsyncRuntimeObserver,
-  FileRuntimeEventProcessor
+  FileRuntimeEventProcessor,
+  type ProviderLifecycleObservation
 } from "./runtimeEventProcessor.js";
 import {
   RuntimeLaunchCoordinator,
@@ -158,6 +169,8 @@ import {
 } from "./runtimeLaunchCoordinator.js";
 import { SessionOwnerReconciliation } from "./sessionOwnerReconciliation.js";
 import { readTaskAgentCapabilities } from "./agentCapabilities.js";
+import { workerSchedulerStore } from "./workerSchedulerStore.js";
+import { deserializeError, type SerializedError } from "../core/boundedRpc.js";
 
 export type FileTaskControllerFactoryOptions = ControllerRuntimeOptions & Readonly<{
   store?: TaskStore;
@@ -193,6 +206,48 @@ export type RunningFileTaskControllerRuntime = RunningFileTaskController & Reado
 export async function startFileTaskControllerRuntime(
   home: string,
   options: FileTaskControllerFactoryOptions = {}
+): Promise<RunningFileTaskControllerRuntime> {
+  const diagnostics = new ControllerDiagnosticJournal(home);
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const closeDiagnostics = async (): Promise<void> => {
+    if (timer !== undefined) clearInterval(timer);
+    await diagnostics.close();
+  };
+  try {
+    const running = await createFileTaskControllerRuntime(home, {
+      ...options,
+      diagnosticMetrics: () => diagnostics.metrics(),
+      onRequestDiagnostic: record => diagnostics.request(record),
+      onError: error => { diagnostics.error(error); options.onError?.(error); }
+    });
+    let expectedAt = monotonicMilliseconds() + 250;
+    timer = setInterval(() => {
+      const now = monotonicMilliseconds();
+      const lagMs = Math.max(0, now - expectedAt);
+      expectedAt = now + 250;
+      diagnostics.observe({
+        ...running.runtime.runtimeMetrics(),
+        commands: {
+          routes: running.server.commandObserver.snapshot(),
+          eventLoopDelay: running.server.eventLoopDelay.snapshot()
+        }
+      }, lagMs);
+    }, 250);
+    timer.unref();
+    const closed = running.closed.finally(closeDiagnostics);
+    return { ...running, closed, close: async () => {
+      try { await running.close(); } finally { await closeDiagnostics(); }
+    } };
+  } catch (error) {
+    diagnostics.error(error);
+    await closeDiagnostics();
+    throw error;
+  }
+}
+
+async function createFileTaskControllerRuntime(
+  home: string,
+  options: FileTaskControllerFactoryOptions
 ): Promise<RunningFileTaskControllerRuntime> {
   // The current Home always uses SQLite. The persistence worker is enabled by
   // default; YUI_STORE_WORKER=0/false keeps the same database in-process.
@@ -237,6 +292,10 @@ export async function startFileTaskControllerRuntime(
         store,
         telemetry
       );
+    // Injected stores/adapters retain their owner and semantics. Only the
+    // production SQLite adapter shares the worker's exact Home and behavior.
+    const workerMaintenance = asyncStoreClient !== undefined
+      && options.store === undefined && options.schedulerStore === undefined;
     const domainIdentity = options.domainIdentity
       ?? ephemeralDomainFromEnvironment(options.environment ?? process.env);
     const planner = options.planner ?? new FileRoleLaunchPlanner(home, store, {
@@ -277,7 +336,7 @@ export async function startFileTaskControllerRuntime(
       ?? new AgentConfigurationCatalogService(home, {
         environment: options.environment ?? process.env
       });
-    const sessionHost = options.sessionHost ?? new TmuxSessionHost(planner, tmux, {
+    const rawSessionHost = options.sessionHost ?? new TmuxSessionHost(planner, tmux, {
       validateLaunch: async (request) => {
         const agent = store.getConfiguredAgent(request.agentId);
         if (agent === null) return;
@@ -309,7 +368,7 @@ export async function startFileTaskControllerRuntime(
           ) {
             return session.nativeSessionId;
           }
-          for (const event of runtimeEventInbox.list()) {
+          for (const event of await runtimeEventInbox.listAsync()) {
             if (
               event.type === "runtime-observation" && event.observation.kind === "session.started"
               && event.observation.fence.taskId === owner.taskId
@@ -358,17 +417,12 @@ export async function startFileTaskControllerRuntime(
           globalInstallPaths: [process.execPath]
         }
       });
-    const lifecycleHost = {
-      inspectOwner: (owner: Parameters<SessionHostPort["inspectOwner"]>[0]) => (
-        sessionHost.inspectOwner(owner)
-      ),
-      ...(sessionHost.inspectOwners === undefined
-        ? {}
-        : {
-            inspectOwners: (
-              owners: Parameters<NonNullable<SessionHostPort["inspectOwners"]>>[0]
-            ) => sessionHost.inspectOwners!(owners)
-          }),
+    const hostStateChecks = createNonBlockingChecks<ControllerHostTransition>([{
+      id: "host-version-hint",
+      run: (_transition, signal) => { if (!signal.aborted) hostLifecycleChecks.notify("host-observed"); }
+    }], options.onError);
+    const controllerHosts = createControllerHostLifecycle(rawSessionHost, {
+      after: hostStateChecks,
       stopOwner: (owner: Parameters<SessionHostPort["stopOwner"]>[0]) => {
         // Issue 03: the durable `stopped` transition is gated on physical
         // exit proof. A blocked result keeps the Session non-terminal and
@@ -388,7 +442,9 @@ export async function startFileTaskControllerRuntime(
           return result.outcome === "stop-confirmed";
         });
       },
-    };
+    });
+    const sessionHost = controllerHosts.port;
+    const lifecycleHost = sessionHost;
     const resourceActivity = createRuntimeResourceActivityTracker();
     let runningRuntime: RunningFileTaskController["runtime"] | undefined;
     let runningController: RunningFileTaskController | undefined;
@@ -403,6 +459,31 @@ export async function startFileTaskControllerRuntime(
         runtimeIsolation
       }
     );
+    const hostUpgrades = new HostUpgradeCoordinator(store, AGENT_HOST_IMPLEMENTATION, {
+      inspect: owner => inspectAgentHost({ home, ...owner }),
+      control: async (owner, type, request) => {
+        const send = async () => {
+          const result = await sendAgentHostUpgradeControl({
+            home, ...owner, control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type, ...request }
+          });
+          if (result.outcome === "rejected") throw new Error(result.failure?.detail ?? "Host upgrade control rejected.");
+          return result.snapshot;
+        };
+        return type === "finish-upgrade" ? controllerHosts.requestExit(owner, send) : send();
+      },
+      hostState: async owner => (await sessionHost.inspectOwner(owner)).state,
+      endpoint: builtinAgentEndpointImplementation,
+      restore: async (owner, request, effective, assertCurrent) => {
+        const workspace = owner.scope === "task" ? currentDesiredManagedWorkspace(store, owner.taskId, owner.roleName) : undefined;
+        await launchCoordinator.prepare({
+          owner, agentId: request.agentId, adapterId: request.adapterId, effective,
+          workspace: effective.workspace.root, mode: "resume", nativeSessionId: request.nativeSessionId,
+          ...(workspace === undefined ? {} : { managedWorkspace: workspace }),
+          ...(effective.executionAuthority === "planning" ? { workspaceFree: true } : {})
+        }, assertCurrent);
+      }
+    });
+    const hostLifecycleChecks = createHostLifecycleChecks(hostUpgrades, options.onError);
     // One inventory scan per scheduler pass. When the inventory worker is active
     // the blocking /proc scan runs there; otherwise it runs on the main thread.
     const scanInventory = (panes: readonly RuntimePaneFact[]) => inventoryClient !== undefined
@@ -532,7 +613,8 @@ export async function startFileTaskControllerRuntime(
       sessionHost,
       options.dispatcher,
       launchCoordinator,
-      planner
+      planner,
+      workerMaintenance ? asyncStoreClient : undefined
     );
     // Process-exit observations are persisted by the Agent Host before socket
     // delivery. Drain them while this Controller is still the only storage
@@ -700,14 +782,29 @@ export async function startFileTaskControllerRuntime(
           options.continuationMetadata,
           options.onError
         );
+    let messageHealthHosts: TaskHostTerminalObservation[] = [];
     const running = await startFileTaskController(
       home,
-      schedulerStore,
+      workerMaintenance
+        ? workerSchedulerStore(schedulerStore, asyncStoreClient!)
+        : schedulerStore,
       delivery,
-      (method, params) => method === "task.role-capabilities"
+      (method, params) => method === "runtime.host-upgrade-status"
+        ? hostUpgrades.status().then(hosts => ({ hosts }) as unknown as JsonValue)
+        : method === "runtime.upgrade-hosts"
+        ? ((params as { generation?: unknown }).generation === AGENT_HOST_IMPLEMENTATION.generation
+          ? hostUpgrades.request().then(hosts => ({ hosts }) as unknown as JsonValue)
+          : Promise.reject(new Error("Host upgrade target is not this Controller's verified loaded generation.")))
+        : method === "task.role-capabilities"
         ? readTaskAgentCapabilities(store, catalogs, params)
         : method === "web.start" || method === "web.stop" || method === "web.status"
-          ? web.dispatch(method, params) : lifecycleDispatcher(method, params),
+          ? web.dispatch(method, params) : Promise.resolve(lifecycleDispatcher(method, params)).then(result => {
+            if (["runtime.ensure-role-session", "runtime.process-exit-observe",
+              "runtime.host-observation-apply", "runtime.observation-apply"].includes(method)) {
+              hostLifecycleChecks.notify("host-observed");
+            }
+            return result;
+          }),
       {
         intervalMs: options.intervalMs
           ?? reconciliationIntervalMilliseconds(store.getConfig().reconciliationIntervalSeconds),
@@ -724,7 +821,10 @@ export async function startFileTaskControllerRuntime(
           ?? resolveRuntimeHealth(durableConfig.runtimeHealth).diagnosticAfterMs,
         now: options.now,
         onError: options.onError,
+        diagnosticMetrics: options.diagnosticMetrics,
+        onRequestDiagnostic: options.onRequestDiagnostic,
         lifecycleHost,
+        lifecycleChecks: hostLifecycleChecks,
         providerRetry: createProviderRetryHooks(home, store, {
           now: options.now,
           onError: options.onError,
@@ -745,7 +845,13 @@ export async function startFileTaskControllerRuntime(
           }
         }),
         jobSupervisor,
-        hostTerminalRecovery: () => recoverTaskHostTerminals(home, store, options.onError ?? (() => undefined)),
+        messageHealth: async now => workerMaintenance
+          ? await asyncStoreClient!.invokeObserver("reconcileMessageHealth", [now, messageHealthHosts]) as MessageHealthSnapshot
+          : reconcileMessageHealth(store, now, messageHealthHosts),
+        hostTerminalRecovery: async () => {
+          messageHealthHosts = [];
+          messageHealthHosts = await recoverTaskHostTerminals(home, store, options.onError ?? (() => undefined));
+        },
         globalInputDelivery: (deliveryOptions) => deliverGlobalInputs(home, store, async (roleName) => {
           await lifecycleDispatcher("runtime.ensure-role-session", { scope: "global", roleName });
         }, options.onError ?? (() => undefined), deliveryOptions),
@@ -753,8 +859,11 @@ export async function startFileTaskControllerRuntime(
         jobDefinitions: createJobDefinitionControl(store, home),
         schedules: {
           control: createScheduleControl(store, home),
-          reconcile: now => {
-            reconcileProjectSync(store, now, options.onError);
+          reconcile: async now => {
+            const errors = workerMaintenance
+              ? await asyncStoreClient!.invokeObserver("reconcileProjectSync", [now]) as SerializedError[]
+              : schedulerStore.reconcileProjectSync(now);
+            for (const error of errors) options.onError?.(deserializeError(error));
             reconcileSchedules(store, home, now, options.onError);
           }
         },
@@ -776,6 +885,10 @@ export async function startFileTaskControllerRuntime(
               )
             )
             : new FileRuntimeEventProcessor(runtimeEventInbox, schedulerStore)),
+        persistenceMetrics: () => ({
+          worker: asyncStoreClient?.observationMetrics() ?? null,
+          database: store instanceof SqliteTaskStore ? store.storageObservationMetrics() : null
+        }),
         runtimeObserver: options.runtimeObserver
           ?? new AgentRuntimeObserver(store, runtimeEventInbox),
         domainIdentity,
@@ -814,7 +927,9 @@ export async function startFileTaskControllerRuntime(
     }
     let resourceClose: Promise<void> | undefined;
     const closeResources = (): Promise<void> => {
-      resourceClose ??= closeTelemetry().finally(() => Promise.all([
+      hostStateChecks.close();
+      hostLifecycleChecks.close();
+      resourceClose ??= hostUpgrades.close().then(() => closeTelemetry()).finally(() => Promise.all([
         web.close(),
         kernel.close(),
         asyncStoreClient?.close() ?? Promise.resolve(),
@@ -870,7 +985,8 @@ export function createRuntimeLifecycleDispatcher(
   sessionHost: SessionHostPort,
   fallback?: ControllerDispatcher,
   sharedLaunchCoordinator?: RuntimeLaunchPreparationPort,
-  environmentRefresher?: AgentEnvironmentRefreshPort
+  environmentRefresher?: AgentEnvironmentRefreshPort,
+  observationWorker?: Pick<AsyncTaskStoreClient, "invokeObserver">
 ): ControllerDispatcher {
   const launchCoordinator = sharedLaunchCoordinator
     ?? new RuntimeLaunchCoordinator(schedulerStore, sessionHost, {
@@ -890,15 +1006,22 @@ export function createRuntimeLifecycleDispatcher(
       if (event.type !== "runtime-observation" || event.host === undefined) {
         throw applicationError("INVALID_PARAMS", "Expected an Agent Host observation.");
       }
-      return { outcome: schedulerStore.observeAgentHostObservation(event, new Date()) };
+      // Eager Host delivery and the normal Inbox drainer fold the same durable
+      // fact. Share their existing worker writer: a second synchronous writer
+      // here can wait on BEGIN IMMEDIATE and starve even status socket I/O.
+      // Await the original atomic fold; no eager ACK or cursor advancement.
+      return { outcome: observationWorker === undefined
+        ? schedulerStore.observeAgentHostObservation(event, new Date())
+        : await observationWorker.invokeObserver("observeAgentHostObservation",
+          [event, new Date()]) as ProviderLifecycleObservation };
     }
     if (method === "runtime.observation-apply") {
       try {
         return {
-          outcome: schedulerStore.observeRuntimeObservation(
-            createRuntimeObservation(params as never),
-            new Date()
-          )
+          outcome: observationWorker === undefined
+            ? schedulerStore.observeRuntimeObservation(createRuntimeObservation(params as never), new Date())
+            : await observationWorker.invokeObserver("observeRuntimeObservation",
+              [createRuntimeObservation(params as never), new Date()]) as ProviderLifecycleObservation
         };
       } catch (error) {
         throw applicationError(
@@ -954,7 +1077,8 @@ export function createRuntimeLifecycleDispatcher(
       const retry = binding?.retry;
       return { recorded: true, ...(retry?.currentAttemptId === value.attemptId && value.boundedText !== undefined
         ? { retryInput: {
-            text: providerRetryPrompt(retry, value.boundedText),
+            text: value.boundedText,
+            ...(retry.failedNativeTurnId === undefined ? {} : { context: providerRetryContext(retry) }),
             ...(retry.failedNativeTurnId === undefined ? {} : { expectedFailedNativeTurnId: retry.failedNativeTurnId })
           } } : {}) };
     }
@@ -1130,14 +1254,18 @@ export function createRuntimeLifecycleDispatcher(
     const activeRun = request.scope === "task"
       ? store.getActiveRun(request.taskId, request.roleName)
       : null;
-    if (request.scope === "task" && activeRun === null) {
-      throw applicationError(
-        "INVALID_PARAMS",
-        "Task Role runtime attachment requires an admitted active Turn; it cannot create an empty Provider Conversation."
-      );
+    const retained = request.scope === "task" && activeRun === null
+      ? retainedWorkItemAssignment(store, request.taskId, request.roleName) : undefined;
+    if (request.scope === "task" && request.expectedNativeSessionId !== undefined
+      && retained?.session.nativeSessionId !== request.expectedNativeSessionId) {
+      throw new Error("Retained native conversation changed before Host restoration.");
+    }
+    if (retained?.binding.run != null
+      && ["submitting", "accepted", "delivery-unknown"].includes(retained.binding.run.status)) {
+      throw new Error("Original native input is unsettled; inspect its exact effects before restoring the Host.");
     }
     if (request.scope === "task"
-      && (task === null || !runPurposeAdmitsTaskState(activeRun!.purpose, task))) {
+      && (task === null || !runPurposeAdmitsTaskState(activeRun?.purpose ?? "execution", task))) {
       throw applicationError(
         "INVALID_PARAMS",
         task === null
@@ -1190,7 +1318,7 @@ export function createRuntimeLifecycleDispatcher(
       );
     }
     const managedWorkspace = request.scope === "task"
-      ? activeRun?.workspace
+      ? retained?.workspace ?? activeRun?.workspace
         ?? currentDesiredManagedWorkspace(store, request.taskId, request.roleName)
       : undefined;
     assertRoleEnabled(role);
@@ -1202,7 +1330,7 @@ export function createRuntimeLifecycleDispatcher(
     const sessions = request.scope === "task"
       ? store.getTaskRoleSessionSet(request.taskId, request.roleName)
       : store.getGlobalRoleSessionSet(request.roleName);
-    const effective = activeRun?.effective
+    const effective = retained?.session.effective ?? activeRun?.effective
       ?? activeLiveRoleAgentSession(sessions)?.effective
       ?? resolveRuntimeDesiredEffective(store, request, role);
     const binding = role.agentBindings[effective.agentId];
@@ -1347,10 +1475,16 @@ function assertRuntimeLaunchRequestCurrent(
   const sessions = request.owner.scope === "task"
     ? store.getTaskRoleSessionSet(request.owner.taskId, request.owner.roleName)
     : store.getGlobalRoleSessionSet(request.owner.roleName);
-  const expectedEffective = request.owner.scope === "task" && request.runId !== undefined
+  const retained = request.owner.scope === "task" && request.runId === undefined && role.name !== "leader"
+    ? retainedWorkItemAssignment(store, request.owner.taskId, request.owner.roleName) : undefined;
+  if (retained?.binding.run != null
+    && ["submitting", "accepted", "delivery-unknown"].includes(retained.binding.run.status)) {
+    throw new Error("Original native input changed while restoring the Host; no input was replayed.");
+  }
+  const expectedEffective = retained?.session.effective ?? (request.owner.scope === "task" && request.runId !== undefined
     ? activeRun?.effective
     : activeLiveRoleAgentSession(sessions)?.effective
-      ?? currentDesiredEffective(store, request, role);
+      ?? currentDesiredEffective(store, request, role));
   if (
     expectedEffective === undefined
     || !isDeepStrictEqual(expectedEffective, request.effective)
@@ -1361,7 +1495,7 @@ function assertRuntimeLaunchRequestCurrent(
     throw new Error(`Role launch state changed: ${request.owner.roleName}.`);
   }
   if (request.owner.scope === "task" && request.managedWorkspace !== undefined) {
-    const expectedWorkspace = activeRun?.workspace
+    const expectedWorkspace = retained?.workspace ?? activeRun?.workspace
       ?? currentDesiredManagedWorkspace(
         store,
         request.owner.taskId,
@@ -1458,6 +1592,7 @@ type EnsureRoleSessionRequest =
       scope: "task";
       taskId: string;
       roleName: string;
+      expectedNativeSessionId?: string;
       environment?: Readonly<Record<string, string>>;
     }>
   | Readonly<{
@@ -1481,11 +1616,15 @@ function parseEnsureRoleSession(params: JsonValue): EnsureRoleSessionRequest {
       ...(environment === undefined ? {} : { environment })
     };
   }
-  if (value.scope === "task" && Object.keys(value).length === 3 + expectedFields) {
+  if (value.scope === "task" && Object.keys(value).length === 3 + expectedFields
+    + (value.expectedNativeSessionId === undefined ? 0 : 1)) {
     return {
       scope: "task",
       taskId: requiredParam(value.taskId),
       roleName,
+      ...(value.expectedNativeSessionId === undefined ? {} : {
+        expectedNativeSessionId: requiredParam(value.expectedNativeSessionId)
+      }),
       ...(environment === undefined ? {} : { environment })
     };
   }

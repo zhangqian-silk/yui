@@ -1,4 +1,5 @@
 import { openTaskArtifactRepository } from "../artifacts/taskArtifactRepository.js";
+import { runIterationCommand } from "../commands/iterationCommands.js";
 import { compareTextArtifacts, readArtifactPreview } from "./webMaterials.js";
 import { readTaskSearchSource } from "../context/taskSearch.js";
 import { applyGlobalInputControl } from "../commands/globalRoleCommands.js";
@@ -102,6 +103,7 @@ export function createWebTaskSurface(
         core: readTaskContext(tx, taskId, environment),
         task: {
           id: task.id, title: clip(task.title), status: task.status, updatedAt: task.updatedAt,
+          mode: tx.getRole(taskId, "leader")?.template === "experiment-leader" ? "experiment" : "ordinary",
           source: task.source,
           executionGate: task.executionGate, priority: task.priority, tags: task.tags?.slice(0, 16).map(value => clip(value)),
           projectBindings: task.projectBindings.slice(0, 32),
@@ -142,7 +144,7 @@ export function createWebTaskSurface(
       return { projects: page.map(({ id, name }) => ({ id, name: name.slice(0, 200) })),
         total: projects.length, nextCursor: remaining.length > page.length ? page.at(-1)!.id : null };
     },
-    create: (input: { title: string; requirements: string; projectIds: string[]; plan: boolean; requestId: string }) => {
+    create: (input: { title: string; requirements: string; projectIds: string[]; plan: boolean; requestId: string; mode?: "experiment" }) => {
       const result = webLocalMutation(store, tx => {
         // A lost response must be reconciled, never create another Task.
         if (tx.listTasks().some(task => tx.listMessages(task.id)
@@ -150,6 +152,7 @@ export function createWebTaskSurface(
           throw new Error("This creation request was already saved; inspect the Task catalog before continuing.");
         }
         const created = runTaskCommand(["create", input.title,
+          ...(input.mode === "experiment" ? ["--mode", "experiment"] : []),
           ...input.projectIds.flatMap(id => ["--project", id])], tx, commandOptions);
         if (created.kind !== "output") throw new Error("Unexpected Task creation result.");
         const taskId = (created.data as { task: { id: string } }).task.id;
@@ -180,9 +183,12 @@ export function createWebTaskSurface(
       return { taskId, integrations: reader.listIntegrationAttempts(taskId),
         reviews: reader.listReviewRounds(taskId), workspaces: reader.listManagedWorkspaces(taskId) };
     }),
+    iteration: async (taskId: string, reference?: string, cursor?: string) => runIterationCommand(
+      reference === undefined ? ["overview", taskId, ...(cursor ? ["--cursor", cursor] : [])]
+        : ["read", taskId, reference], store, {}),
     artifacts: async (taskId: string, selectedCommit?: string, offset = 0) => {
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
-      const repo = openTaskArtifactRepository(store.rootDirectory(), taskId);
+      const repo = openTaskArtifactRepository(store.rootDirectory(), taskId, () => store.getConfig());
       if (selectedCommit !== undefined && !repo.exists()) throw new WebRequestRejected("Artifact revision unavailable.");
       const commit = selectedCommit ?? await repo.head();
       const entries = commit === null ? [] : await repo.list(commit);
@@ -194,12 +200,12 @@ export function createWebTaskSurface(
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
       // The browser always names a fixed revision. Never substitute HEAD after
       // a missing object, and never execute/render artifact HTML as an app.
-      return readArtifactPreview(store.rootDirectory(), taskId, { taskId, relativePath, commit }, offset);
+      return readArtifactPreview(store.rootDirectory(), taskId, { taskId, relativePath, commit }, offset, () => store.getConfig());
     },
     artifactDiff: async (taskId: string, relativePath: string, commit: string, beforeCommit: string, offset = 0) => {
       if (store.getTask(taskId) === null) throw new WebRequestRejected("Task not found.");
       return compareTextArtifacts(store.rootDirectory(), taskId,
-        { taskId, relativePath, commit: beforeCommit }, { taskId, relativePath, commit }, offset);
+        { taskId, relativePath, commit: beforeCommit }, { taskId, relativePath, commit }, offset, () => store.getConfig());
     },
     globalState: (roleName: string) => {
       const role = store.getGlobalRole(roleName);

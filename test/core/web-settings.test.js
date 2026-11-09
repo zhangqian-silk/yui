@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
-import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
+import { createGlobalRole, createRoleAgentBinding, updateGlobalRole } from "../../dist/role/role.js";
 import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
 import { createAgentProfile } from "../../dist/profile/agentProfile.js";
@@ -82,6 +82,26 @@ test("settings use CLI defaults and validation, atomic group writes, stale-read 
   await f.save("tools", [{ key: "tmux-history-limit", value: 2000 }]);
   assert.equal(f.store.getConfig().tmuxHistoryLimit, 2000);
   assert.match(f.service.read("tools").fields.find(f => f.key === "tmux-history-limit").takesEffect, /New tmux sessions/);
+  const gitKeys = ["git-local-timeout-seconds", "git-remote-inactivity-timeout-seconds", "git-remote-timeout-seconds"];
+  const beforeGit = f.store.getConfig();
+  for (const value of [0, -1, 1.5, 86401]) {
+    for (const key of gitKeys) {
+      assert.throws(() => runConfigCommand("tools", ["set", key, String(value)], f.store), /integer/);
+    }
+  }
+  assert.deepEqual(f.store.getConfig(), beforeGit, "invalid budgets do not mutate configuration");
+  await f.save("tools", gitKeys.map((key, i) => ({ key, value: [45, 60, 600][i] })));
+  const configuredGit = runConfigCommand("tools", ["show"], f.store).data;
+  assert.equal(configuredGit.gitLocalTimeoutSeconds, 45);
+  assert.equal(configuredGit.gitRemoteInactivityTimeoutSeconds, 60);
+  assert.equal(configuredGit.gitRemoteTimeoutSeconds, 600);
+  for (const key of gitKeys) assert.equal(configuredGit.valueSources[key], "stored");
+  await f.save("tools", gitKeys.map(key => ({ key, reset: true })));
+  for (const key of gitKeys) {
+    const field = f.service.read("tools").fields.find(f => f.key === key);
+    assert.equal(field.source, "default");
+    assert.equal(field.value, field.defaultValue);
+  }
   for (const group of f.service.index().groups) {
     for (const field of f.service.read(group.id).fields) {
       assert.ok(f.service.index(field.key).groups.some(g => g.id === group.id),
@@ -188,6 +208,30 @@ test("Role default model/effort saves validate the selected model without changi
   await save([{ key: "model", reset: true }, { key: "effort", reset: true }]);
   assert.equal(f.store.getGlobalRoleSessionSet("worker"), null);
   assert.equal(service.read("role/worker").fields.find(f => f.key === "model").source, "native/default");
+  const worker = f.store.getGlobalRole("worker");
+  f.store.saveGlobalRole(updateGlobalRole({ ...worker, name: "leader" }, {
+    leaderStages: { draft: { model: "deep" } }
+  }, new Date()));
+  const saveLeader = changes => service.save({ id: "role/leader", revision: service.read("role/leader").revision, changes });
+  await saveLeader([{ key: "model", value: "deep" }, { key: "effort", value: "high" }]);
+  const leaderBefore = f.store.getGlobalRole("leader");
+  await assert.rejects(saveLeader([{ key: "model", value: "fast" }, { key: "effort", value: "low" }]), /field=effort/,
+    "A valid base pair cannot silently make an inherited stage pair invalid.");
+  assert.deepEqual(f.store.getGlobalRole("leader"), leaderBefore);
+  await saveLeader([{ key: "description", value: "Stage-aware Leader" }]);
+  assert.equal(f.store.getGlobalRole("leader").description, "Stage-aware Leader",
+    "Profile-only updates do not need an unrelated stage capability preflight.");
+  const other = createConfiguredAgent("other", "codex", "unused", [], [], new Date());
+  f.store.saveConfiguredAgent(other);
+  const leader = f.store.getGlobalRole("leader");
+  f.store.saveGlobalRole(updateGlobalRole(leader, { agentBindings: {
+    ...leader.agentBindings,
+    other: createRoleAgentBinding(other, { adapterId: "codex", model: "fast", effort: "low",
+      permission: { strategy: "default" } })
+  } }, new Date()));
+  await assert.rejects(saveLeader([{ key: "activeAgentId", value: "other" }]), /field=effort/,
+    "Changing the default Agent validates stage fields inherited from its binding.");
+  assert.equal(f.store.getGlobalRole("leader").activeAgentId, "fixture");
 });
 
 test("browser session access preference is isolated, validated and truthful when storage fails", () => {

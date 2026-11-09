@@ -38,6 +38,8 @@ const ENDPOINT_CHECKOUT_MODULES = Object.freeze([
   "acpProtocol.js",
   "acpSessionConfiguration.js",
   "agentRunConfiguration.js",
+  "contextRecovery.js",
+  "codexNativeAccess.js",
   "jsonLineChannel.js"
 ]);
 

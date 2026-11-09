@@ -83,7 +83,7 @@ export async function runTaskPublicationAdoptCommand(
     return { task, publication, completion, acceptedCommit, workspace, entry, integration, actor };
   };
   const facts = store.transaction(read);
-  const git = options.git ?? new NodeGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const localCommit = facts.publication.localCommit!;
   const [acceptedTree, candidateTree, diff] = await Promise.all([
     git.resolveTree(facts.entry.path, facts.acceptedCommit),

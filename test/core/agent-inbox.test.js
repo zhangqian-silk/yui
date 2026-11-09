@@ -22,7 +22,7 @@ import { applyGlobalInputControl } from "../../dist/commands/globalRoleCommands.
 import { readDocument } from "../helpers/read-document.js";
 import { createReviewRound, createTaskReviewRound, attachReviewRoundWorkspace, startReviewRound } from "../../dist/review/reviewRound.js";
 import { createFixtureRun } from "../helpers/runFixture.mjs";
-import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding } from "../../dist/runtime/providerRuntimeIdentity.js";
+import { acceptProviderTurn, beginProviderTurn, createProviderRuntimeBinding, rejectProviderTurn } from "../../dist/runtime/providerRuntimeIdentity.js";
 import { failRun } from "../../dist/agentRun/agentRun.js";
 import { createProject } from "../../dist/repository/project.js";
 import { stopTaskExecutionCommand, startTaskExecutionCommand } from "../../dist/commands/taskExecutionCommands.js";
@@ -31,8 +31,44 @@ import { callerDiscoveryAudience } from "../../dist/cli/callerDiscovery.js";
 import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { createRuntimeObservation } from "../../dist/runtime/runtimeObservation.js";
 import { globalInboxRecovery } from "../../dist/message/globalInboxRecovery.js";
+import { queueLeaderWakeup } from "../../dist/scheduler/wakeupQueue.js";
+import { globalSessionHealth } from "../../dist/runtime/globalSessionHealth.js";
+import { applyOperatorSessionControl } from "../../dist/commands/operatorCommands.js";
+import { standardAgentError } from "../../dist/runtime/agentError.js";
 
 const now = new Date("2026-10-13T00:00:00Z");
+test("Host refresh permits only same-session claimed-input ACK and retains stop fences", t => {
+  const { store, inbox, task } = taskFixture(t);
+  task(["message", "queue", "task-1", "Add a Project", "--request-id", "scope-input"]);
+  const id = inbox("leader", "claim", inbox("leader", "list").items[0].id, "--request-id", "scope-claim").id;
+  task(["message", "queue", "task-1", "Later input", "--request-id", "later"]);
+  const lane = { kind: "role-runtime", taskId: "task-1", roleName: "leader" };
+  enqueueWork(store, lane, "runtime-host-upgrade-required", now);
+  const ack = () => inbox("leader", "ack", id, "--request-id", "scope-ack", "--reason", "Scope requested; yield current Turn");
+  const pending = inbox("leader", "list").items.find(item => item.id.startsWith("pending-")).id;
+  assert.throws(() => inbox("leader", "claim", pending, "--request-id", "new-claim"), /being released/);
+  assert.throws(() => inbox("leader", "retire", id, "--request-id", "retire", "--reason", "No"), /being released/);
+  assert.equal(ack().inbox.ack.requestId, "scope-ack");
+  assert.equal(ack().inbox.ack.requestId, "scope-ack", "receipt retry is idempotent");
+  assert.ok(store.getWorkMailbox(lane).pending, "ACK does not settle Host lifecycle");
+  enqueueWork(store, lane, "runtime-cleanup-required", now);
+  assert.throws(ack, /being released/, "stop dominates coalesced upgrade");
+
+  const global = fixture(t, "operator");
+  const messageId = global.add("Retained prior-session claim");
+  global.command("claim", messageId, "--request-id", "prior");
+  const ended = updateRoleAgentSessionStatus(global.store.getGlobalRoleSessionSet("operator"),
+    "codex", "ended", now, "stopped");
+  global.store.saveGlobalRoleSessionSet(recordRoleAgentSession(ended, { ...ended.sessions.codex,
+    status: "active", endReason: undefined, nativeSessionId: "successor" }, now));
+  enqueueWork(global.store, { kind: "global-role-runtime", roleName: "operator" },
+    "runtime-host-upgrade-required", now);
+  assert.throws(() => runInboxCommand(["ack", messageId, "--request-id", "foreign",
+    "--reason", "Inspected prior handling"], global.store,
+    { ...global.env, CODEX_THREAD_ID: "successor" }, now), /being released/,
+    "Host refresh cannot authorize a successor to settle another Session's claim");
+});
+
 function fixture(t, name) {
   const home = mkdtempSync(join(tmpdir(), "yui-agent-inbox-"));
   const store = new SqliteTaskStore(home);
@@ -56,6 +92,98 @@ function fixture(t, name) {
   };
   return { store, command, add, env };
 }
+
+test("Global health distinguishes desired configuration, current native state and retained old failure", t => {
+  const { store } = fixture(t, "operator");
+  const role = store.getGlobalRole("operator");
+  const sessions = store.getGlobalRoleSessionSet("operator");
+  const drift = globalSessionHealth({ ...role, launchRevision: role.launchRevision + 1 }, sessions);
+  assert.equal(drift.configurationDrift, true);
+  assert.equal(drift.effectiveRevision, role.launchRevision);
+  assert.equal(drift.hostObservation, "unobserved");
+  const binding = rejectProviderTurn(beginProviderTurn(createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex", conversationId: "old-native",
+    startedAt: now.toISOString()
+  }), { attemptId: "old-attempt", authorityEpoch: 1, submittedAt: now.toISOString() }),
+  { attemptId: "old-attempt", rejectedAt: now.toISOString(), reason: "old rejection" });
+  const current = globalSessionHealth(role, { ...sessions, providerBinding: binding });
+  assert.equal(current.historicalBinding, true);
+  assert.equal(current.nativeTurn, null);
+  assert.equal(current.currentFailure, null);
+  assert.equal(current.retry, null);
+
+  const oldBinding = { ...binding,
+    conversations: [{ ...binding.conversations[0], conversationId: "operator-native" }],
+    run: { ...binding.run, failure: { ref: "old-failure", error: standardAgentError({
+      source: "provider", phase: "turn-submit", message: "Rejected before submission",
+      raw: "Rejected before submission", inputDisposition: "not-accepted"
+    }) } }
+  };
+  store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(sessions, oldBinding, now));
+  assert.equal(globalSessionHealth(role, store.getGlobalRoleSessionSet("operator"))
+    .currentFailure.ref, "old-failure");
+  store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(
+    store.getGlobalRoleSessionSet("operator"), "codex", "ended", now, "stopped"));
+  applyOperatorSessionControl({ kind: "session", action: "new", targetAgentId: "codex" }, store, now);
+  new FileSchedulerStoreAdapter(store).recordLaunchedRuntimeNativeSession({
+    owner: { scope: "global", roleName: "operator" }, agentId: "codex", adapterId: "codex",
+    nativeSessionId: "new-native", effective: resolveEffectiveLaunch({ role, purpose: "execution" })
+  }, () => {}, now);
+  const replaced = store.getGlobalRoleSessionSet("operator");
+  assert.equal(replaced.providerBinding.authority.epoch, 2);
+  assert.deepEqual(replaced.providerBinding.run, oldBinding.run, "retain historical failure evidence");
+  const newHealth = globalSessionHealth(role, replaced);
+  assert.equal(newHealth.nativeSessionId, "new-native");
+  assert.equal(newHealth.nativeTurn, null);
+  assert.equal(newHealth.currentFailure, null);
+  assert.equal(newHealth.historicalBinding, true);
+  const nextBinding = beginProviderTurn(replaced.providerBinding, {
+    attemptId: "new-attempt", authorityEpoch: 2, submittedAt: now.toISOString()
+  });
+  const nextHealth = globalSessionHealth(role, { ...replaced, providerBinding: nextBinding });
+  assert.equal(nextHealth.nativeTurn.attemptId, "new-attempt");
+  assert.equal(nextHealth.historicalBinding, false);
+});
+
+test("exact rejected input can retire; pending, unknown, accepted and interrupt-owned effects cannot", t => {
+  const { store, command, add } = fixture(t, "operator");
+  const id = add("Obsolete input");
+  command("claim", id, "--request-id", "original-inspection");
+  const original = command("show", id);
+  store.updateGlobalRoleMessage({ ...original,
+    notDelivered: { reason: "Provider rejected before submission", at: now.toISOString() } });
+  let binding = beginProviderTurn(createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "operator-native", startedAt: now.toISOString()
+  }), { attemptId: `global-input:operator/${id}`, authorityEpoch: 1, submittedAt: now.toISOString() });
+  const save = value => store.saveGlobalRoleSessionSet({
+    ...store.getGlobalRoleSessionSet("operator"), providerBinding: value });
+  const retire = () => command("retire", id, "--request-id", "obsolete-negative",
+    "--reason", "Verified exact rejection; business request superseded");
+  save(binding);
+  assert.throws(retire, /proven-unsubmitted/);
+  save({ ...binding, run: { ...binding.run, status: "delivery-unknown" } });
+  assert.throws(retire, /proven-unsubmitted/);
+  save(acceptProviderTurn(binding, { attemptId: binding.run.attemptId, nativeTurnId: "native",
+    acceptedAt: now.toISOString() }));
+  assert.throws(retire, /proven-unsubmitted/);
+  binding = rejectProviderTurn(binding, { attemptId: binding.run.attemptId,
+    rejectedAt: now.toISOString(), reason: "no input submitted" });
+  save(binding);
+  const result = retire();
+  assert.equal(result.inbox.retirement.reason, "Verified exact rejection; business request superseded");
+  assert.equal(result.inbox.claim.requestId, "original-inspection");
+  assert.equal(store.getGlobalRoleSessionSet("operator").providerBinding.run.status, "rejected");
+  assert.equal(command("show", id).notDelivered.reason, "Provider rejected before submission");
+  const reserved = add("Retained interrupt continuation");
+  store.updateGlobalRoleMessage({ ...command("show", reserved),
+    notDelivered: { reason: "target changed", at: now.toISOString() },
+    interruptThen: { requestId: "reserved-then", targetAttemptId: "old-turn",
+      targetNativeSessionId: "old-session", targetAgentId: "codex",
+      targetAuthorityEpoch: 1, targetAuthorityHolderId: "original-host" } });
+  assert.throws(() => command("retire", reserved, "--request-id", "cannot-retire-reservation",
+    "--reason", "No terminal proof"), /proven-unsubmitted/);
+});
 
 test("automatic Global delivery checks missing handling at exact terminal without acknowledging or replaying effects", t => {
   const { store, command, add } = fixture(t, "operator");
@@ -335,10 +463,17 @@ test("Global successor initialization uses one pinned notice while original clai
     conversationId: "successor", startedAt: now.toISOString() });
   store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(successor, binding, now));
   const next = add("New independent input");
+  // No-op polling must be legal on a read-only connection; it cannot reserve
+  // SQLite's writer slot merely to discover an already-created notice.
   const notice = globalInboxRecovery(store, "assistant", now);
   assert.ok(notice);
   assert.equal(notice.deliveryTarget.nativeSessionId, "successor");
-  assert.deepEqual(globalInboxRecovery(store, "assistant", now), notice, "restart/reconcile reuse the same Message");
+  const transaction = store.transaction.bind(store);
+  store.transaction = () => assert.fail("an existing notice must not reserve the writer");
+  try {
+    assert.deepEqual(globalInboxRecovery(store, "assistant", now), notice,
+      "restart/reconcile reuse the same Message without a write");
+  } finally { store.transaction = transaction; }
   const adapter = new FileSchedulerStoreAdapter(store);
   const input = message => ({ roleName: "assistant", agentId: "codex", nativeSessionId: "successor",
     attemptId: `global-input:assistant/${message}`, authorityEpoch: 1, authorityOwner: "controller",
@@ -354,6 +489,33 @@ test("Global successor initialization uses one pinned notice while original clai
   function commandSafe(store, message) {
     return runInboxCommand(["show", message], store, { CODEX_THREAD_ID: "successor" }, now);
   }
+});
+
+for (const change of ["settle-claim", "end-session"]) test(`Global recovery rechecks ${change} inside its write transaction`, t => {
+  const { store, command, add } = fixture(t, "assistant");
+  const id = add("Retained handling");
+  command("claim", id, "--request-id", "original-claim");
+  const ended = updateRoleAgentSessionStatus(store.getGlobalRoleSessionSet("assistant"), "codex", "ended", now, "stopped");
+  const successor = recordRoleAgentSession(ended, { ...ended.sessions.codex,
+    status: "active", endReason: undefined, nativeSessionId: "successor" }, now);
+  store.saveGlobalRoleSessionSet(bindGlobalRoleProviderRuntime(successor, createProviderRuntimeBinding({
+    providerNamespace: "openai/codex", accountScope: "codex", conversationId: "successor",
+    startedAt: now.toISOString()
+  }), now));
+  const transaction = store.transaction.bind(store);
+  let entered = false;
+  store.transaction = execute => {
+    store.transaction = transaction;
+    entered = true;
+    if (change === "settle-claim") runInboxCommand(["ack", id, "--request-id", "settled",
+      "--reason", "Verified original effects"], store, { CODEX_THREAD_ID: "successor" }, now);
+    else store.saveGlobalRoleSessionSet(updateRoleAgentSessionStatus(
+      store.getGlobalRoleSessionSet("assistant"), "codex", "ended", now, "stopped"));
+    return transaction(execute);
+  };
+  assert.equal(globalInboxRecovery(store, "assistant", now), undefined);
+  assert.equal(entered, true);
+  assert.equal(store.listGlobalRoleMessages("assistant").length, 1, "no stale recovery notice");
 });
 
 test("an unsubmitted Global steer can be explicitly handled without replay or blocking later input", t => {
@@ -401,6 +563,30 @@ function taskFixture(t, draft = false) {
   const inbox = (role, ...args) => runInboxCommand(args, store, envFor(role), now);
   const task = args => runTaskCommand(args, store, { now: () => now, environment: {} });
   return { ...f, task, inbox, envFor };
+}
+
+for (const [processingCount, pendingCount] of [[1, 3], [3, 1]]) {
+  test(`Leader signal appends actual pending suffix (${processingCount} processing, ${pendingCount} pending)`, t => {
+    const { store } = taskFixture(t);
+    const target = { kind: "role", taskId: "task-1", roleName: "leader" };
+    const enqueue = (prefix, count) => {
+      for (let i = 0; i < count; i++) enqueueWork(store, target, `${prefix}-${i}`, now,
+        [{ type: "event", taskId: "task-1", id: `event-${(prefix === "old" ? 1 : 10) + i}` }]);
+    };
+    enqueue("old", processingCount);
+    new FileSchedulerStoreAdapter(store).claimLeaderNotification("task-1", now);
+    enqueue("new", pendingCount);
+    const before = store.getWorkMailbox(target);
+    const result = store.transaction(tx => queueLeaderWakeup(tx, "task-1", "integration-conflicted:integration-1", now));
+    const after = store.getWorkMailbox(target);
+    assert.deepEqual(after.processing, before.processing);
+    assert.deepEqual(after.pending.refs, before.pending.refs);
+    assert.deepEqual(after.pending.reasons, [...before.pending.reasons, "integration-conflicted:integration-1"]);
+    assert.equal(after.pending.requestCount, pendingCount + 1);
+    assert.equal(after.nextSequence, before.nextSequence + 1);
+    assert.equal(result.requestCount, pendingCount + 1, "return new pending, not the processing projection");
+    assert.deepEqual(result.reasons, after.pending.reasons);
+  });
 }
 
 for (const mode of ["automatic", "active", "reminder"]) test(`Leader terminal checks ${mode} consumption and preserves later input`, t => {
@@ -588,7 +774,20 @@ test("automatic windows pin same-tick revisions and require explicit acknowledge
   assert.equal(adapter.claimLeaderNotification("task-1", now), null, "duplicate notification cannot replay a delivered revision");
   assert.equal(pendingCompletionMessages(store, "task-1").length, 1);
   assert.equal(inbox("leader", "list").items[0].id, first.wakeId);
-  inbox("leader", "claim", first.wakeId, "--request-id", "automatic-B");
+  const beforeRead = store.getTaskWake("task-1", first.wakeId);
+  const shown = inbox("leader", "show", first.wakeId);
+  assert.equal(shown.id, first.wakeId);
+  assert.equal(shown.originalContext.messages.find(message => message.id === "message-1").value.body, "B",
+    "Own wake inspection should include the same bounded complete ordinary original as wake show");
+  const { wake: _wake, ...focused } = task(["wake", "show", "task-1", first.wakeId]).data;
+  assert.deepEqual(shown.originalContext, focused, "Reuse the canonical focused wake projection");
+  assert.deepEqual(store.getTaskWake("task-1", first.wakeId), beforeRead,
+    "Reading originals neither claims nor acknowledges the wake");
+  const claimed = inbox("leader", "claim", first.wakeId, "--request-id", "automatic-B");
+  assert.equal(claimed.originals, undefined);
+  assert.equal(claimed.refreshOriginals, `yui task wake show task-1 ${first.wakeId} --json`,
+    "An existing wake receipt offers refresh, not a mandatory duplicate of inbox show");
+  assert.deepEqual(inbox("leader", "claim", first.wakeId, "--request-id", "automatic-B"), claimed);
   task(["message", "update", "task-1/message-1", "C"]);
   inbox("leader", "ack", first.wakeId, "--request-id", "B-handled", "--reason", "Handled B; C is later input");
   assert.equal(pendingCompletionMessages(store, "task-1").length, 1, "old acknowledgement cannot handle new revision");
@@ -605,7 +804,13 @@ test("Draft edits have distinct inbox ownership even under the same clock", t =>
   task(["message", "send", "task-1", "A", "--intent", "discuss"]);
   const claim = request => inbox("leader", "claim",
     inbox("leader", "list").items.find(item => item.id.startsWith("pending-")).id, "--request-id", request);
-  const first = claim("A");
+  const pendingId = inbox("leader", "list").items.find(item => item.id.startsWith("pending-")).id;
+  const first = inbox("leader", "claim", pendingId, "--request-id", "A");
+  assert.equal(first.originals, `yui task wake show task-1 ${first.id} --json`,
+    "A newly fixed pending window still needs its first complete original read");
+  assert.equal(first.refreshOriginals, undefined);
+  assert.deepEqual(inbox("leader", "claim", pendingId, "--request-id", "A"), first,
+    "A retried pending claim retains its original navigation and receipt identity");
   inbox("leader", "ack", first.id, "--request-id", "A-done", "--reason", "Handled A");
   task(["message", "update", "task-1/message-1", "B"]);
   assert.deepEqual(pendingCompletionMessages(store, "task-1").map(message => message.id), ["message-1"]);
@@ -721,6 +926,70 @@ for (const activeClaim of [false, true]) test(`replacement bootstraps before ret
   assert.ok(store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-2"));
   assert.ok(!store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-1"));
   assert.equal(successor("show", id).inbox.claim.actor.nativeSessionId, "leader-native");
+});
+
+for (const retainedClaim of [true, false]) test(`explicit notification settlement preserves rejected/unknown evidence (mailbox retained: ${retainedClaim})`, t => {
+  const { store, task, inbox } = taskFixture(t);
+  const scheduler = new FileSchedulerStoreAdapter(store);
+  const target = { kind: "role", taskId: "task-1", roleName: "leader" };
+  task(["message", "queue", "task-1", "Inspect original effects, never replay", "--request-id", "original"]);
+  const notification = scheduler.claimLeaderNotification("task-1", now);
+  if (retainedClaim) scheduler.settleLeaderNotification("task-1", notification.attemptId, "unknown", now);
+  scheduler.settleLeaderNotification("task-1", notification.attemptId, "rejected", now);
+  const original = store.getTaskWake("task-1", notification.wakeId);
+  const deliveries = store.listEvents("task-1").filter(event => event.type === "notification.delivery");
+  if (!retainedClaim) {
+    // The normal stop/start path drops operational mailboxes, not durable wakes.
+    stopTaskExecutionCommand({ taskId: "task-1", reason: "Stop exact fixture execution" },
+      store, { environment: {}, now: () => now });
+    startTaskExecutionCommand("task-1", store, { environment: {}, now: () => now });
+  }
+  task(["message", "queue", "task-1", "Independent later input", "--request-id", "later"]);
+  const pending = store.getWorkMailbox(target).pending;
+  const resolve = () => task(["wake", "resolve", "task-1", notification.wakeId,
+    "--reason", "Verified exact native/resource stop and inspected original effect receipts; no replay"]);
+  assert.throws(() => inbox("leader", "claim", notification.wakeId, "--request-id", "premature"), /automatic/);
+  const sessions = store.getTaskRoleSessionSet("task-1", "leader");
+  let binding = createProviderRuntimeBinding({ providerNamespace: "openai/codex", accountScope: "codex",
+    conversationId: "leader-native", startedAt: now.toISOString() });
+  binding = beginProviderTurn(binding, { attemptId: "direct:still-running", authorityEpoch: 1,
+    submittedAt: now.toISOString() });
+  binding = acceptProviderTurn(binding, { attemptId: "direct:still-running", nativeTurnId: "live",
+    acceptedAt: now.toISOString() });
+  store.saveTaskRoleSessionSet(bindTaskRoleProviderRuntime(sessions, binding, now));
+  assert.throws(resolve, /not proven quiescent/, "a rejection cannot establish shared-native quiescence");
+  store.saveTaskRoleSessionSet(sessions); // Fixture has no external native process.
+  const unrelated = retainedClaim ? null : scheduler.claimLeaderNotification("task-1", now);
+  const unrelatedClaim = store.getWorkMailbox(target).processing;
+  assert.equal(resolve().data.outcome, "released-without-replay");
+  assert.deepEqual(store.getTaskWake("task-1", notification.wakeId), original, "release neither accepts nor ACKs");
+  assert.deepEqual(store.listEvents("task-1").filter(event => event.type === "notification.delivery"), deliveries);
+  assert.equal(store.listEvents("task-1").filter(event => event.type === "notification.resolved").at(-1)
+    .payload.attemptId, notification.attemptId);
+  if (retainedClaim) {
+    assert.equal(store.getWorkMailbox(target).processing, null);
+    assert.deepEqual(store.getWorkMailbox(target).pending, pending);
+  } else {
+    assert.deepEqual(store.getWorkMailbox(target).processing, unrelatedClaim, "historical settlement cannot release another window");
+  }
+  const revision = store.getStateRevision();
+  resolve();
+  assert.equal(store.getStateRevision(), revision, "uncertain resolve response can be read/retried without another effect");
+  inbox("leader", "claim", notification.wakeId, "--request-id", "inspect");
+  inbox("leader", "ack", notification.wakeId, "--request-id", "handled",
+    "--reason", "Read original effect evidence; no action remains");
+  assert.equal(store.getTaskWake("task-1", notification.wakeId).status, "dispatched");
+  assert.equal(store.listMessages("task-1").length, 2);
+  assert.deepEqual(pendingCompletionMessages(store, "task-1").map(message => message.id), ["message-2"]);
+  const next = unrelated ?? scheduler.claimLeaderNotification("task-1", now);
+  assert.ok(store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-2"));
+  assert.ok(!store.getTaskWake("task-1", next.wakeId).refs.some(ref => ref.id === "message-1"));
+  // Missing delivery evidence is not an inferred unknown/rejected outcome.
+  assert.throws(() => task(["wake", "resolve", "task-1", next.wakeId, "--reason", "No evidence"]),
+    /unknown or rejected/);
+  scheduler.settleLeaderNotification("task-1", next.attemptId, "accepted", now);
+  assert.throws(() => task(["wake", "resolve", "task-1", next.wakeId, "--reason", "Already accepted"]),
+    /accepted notification/);
 });
 
 test("replacement releases uncertain transport for inspection, never for automatic business replay", t => {

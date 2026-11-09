@@ -4,9 +4,9 @@ import { describeCliFailure } from "../errors/cliFailure.js";
 import { fileURLToPath } from "node:url";
 import {
   findLiveControllerProcessForHome,
-  inspectLiveControllerProcess,
   type LiveControllerProcess
 } from "../core/controllerProcessIdentity.js";
+import { processGenerationIsLive } from "../core/fileLockOwner.js";
 import { readHomeFilesystemId } from "../core/homeFilesystemIdentity.js";
 import { parseControllerIdentity, type ControllerIdentity } from "../core/controllerIdentity.js";
 
@@ -35,6 +35,7 @@ import type { TaskWorkspacePreparer } from "../repository/taskWorkspacePreparer.
 import { WorkspaceCleanupBlockedError } from "../repository/taskWorkspacePreparer.js";
 import { hasRuntimeLifecycleWork } from "../runtime/lifecycleReservation.js";
 import { assertControllerStatusIdentity } from "../runtime/runtimeCoherence.js";
+import { readLinuxProcessIdentity } from "../runtime/sessionOwnerIdentity.js";
 import {
   CONTROLLER_SHUTDOWN_TIMEOUT_MS,
   LIFECYCLE_REQUEST_TIMEOUT_MS
@@ -123,19 +124,28 @@ export async function ensureFileTaskController(
 ): Promise<JsonValue> {
   const call = options.call ?? callController;
   await waitForForeignHandover(home, options);
-  try {
-    const status = await call(home, "controller.status", {});
-    assertCompatibleControllerStatus(status, options.expectedIdentity);
-    return status;
-  } catch (error) {
-    if (!isUnavailable(error)) throw error;
+  const timeoutMs = positive(options.startupTimeoutMs, STARTUP_TIMEOUT_MS, "startupTimeoutMs");
+  const pollMs = positive(options.pollIntervalMs, POLL_INTERVAL_MS, "pollIntervalMs");
+  const probeDeadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const status = await call(home, "controller.status", {});
+      assertCompatibleControllerStatus(status, options.expectedIdentity);
+      return status;
+    } catch (error) {
+      if (isUnavailable(error)) break;
+      // A closing endpoint may reset a read even after its owner exited.
+      // Retry only this observation: ambiguity never authorizes a spawn.
+      if (!(error instanceof ControllerClientError)
+        || error.code !== "CONTROLLER_DELIVERY_UNKNOWN"
+        || Date.now() >= probeDeadline) throw error;
+    }
+    await delay(pollMs);
   }
   // A handover may have started after the first lock check and before the
   // failed discovery/socket call. Re-check before spawning so a managed
   // Session can never resurrect the old Controller during an update.
   await waitForForeignHandover(home, options);
-  const timeoutMs = positive(options.startupTimeoutMs, STARTUP_TIMEOUT_MS, "startupTimeoutMs");
-  const pollMs = positive(options.pollIntervalMs, POLL_INTERVAL_MS, "pollIntervalMs");
   const spawnController = options.spawnController ?? spawnDetachedFileTaskController;
   // A readiness timeout is not exit evidence. Reuse the observable startup
   // process for this exact Home rather than multiplying unready Controllers.
@@ -279,13 +289,25 @@ export async function stopFileTaskController(
   await waitForForeignHandover(home, options);
   const physical = options.call === undefined
     ? findLiveControllerProcessForHome(readHomeFilesystemId(home)) : undefined;
-  const expectedPid = options.expectedPid ?? physical?.pid;
+  // A protected, Home-validated discovery can retain the generation fence
+  // even if the optional /proc ownership inventory is currently unreadable.
+  // It is not signal authority; physical recovery still revalidates ownership.
+  let captured = physical;
+  if (captured === undefined && options.call === undefined) {
+    try {
+      const discovery = await readControllerDiscovery(home);
+      captured = { pid: discovery.pid, processStartIdentity: discovery.processStartIdentity };
+    } catch (error) {
+      if (!isDefinitelyNotRunning(error)) throw error;
+    }
+  }
+  const expectedPid = options.expectedPid ?? captured?.pid;
   const bounded = { ...options, requestTimeoutMs: options.requestTimeoutMs ?? 2000,
     ...(expectedPid === undefined ? {} : { expectedPid }) };
   try {
     const result = await stopControllerGracefully(home, bounded);
-    if (result.stopped && physical !== undefined) {
-      await waitForControllerProcessExit(home, physical, options);
+    if (result.stopped && captured !== undefined) {
+      await waitForControllerProcessExit(captured, options);
     }
     if (result.stopped || options.call !== undefined) return result;
   } catch (error) {
@@ -294,13 +316,16 @@ export async function stopFileTaskController(
   const stopped = await stopOrphanedFileTaskController(
     home, options.shutdownTimeoutMs ?? CONTROLLER_SHUTDOWN_TIMEOUT_MS,
     { force: true, ...(expectedPid === undefined ? {} : { expectedPid }),
-      ...(physical === undefined ? {} : { expectedProcessStartIdentity: physical.processStartIdentity }) }
+      ...(captured === undefined ? {} : { expectedProcessStartIdentity: captured.processStartIdentity }) }
   );
+  // No match is not exit proof: /proc ownership inspection may have become
+  // unreadable after we captured this exact generation. Physical recovery
+  // cannot authorize a successor until that original generation is gone.
+  if (captured !== undefined) await waitForControllerProcessExit(captured, options);
   return stopped === undefined ? { stopped: false, alreadyStopped: true } : { stopped: true, pid: stopped.pid };
 }
 
 async function waitForControllerProcessExit(
-  home: string,
   controller: LiveControllerProcess,
   options: FileControllerClientOptions
 ): Promise<void> {
@@ -310,16 +335,23 @@ async function waitForControllerProcessExit(
     "shutdownTimeoutMs"
   );
   const pollMs = positive(options.pollIntervalMs, POLL_INTERVAL_MS, "pollIntervalMs");
-  const homeFilesystemId = readHomeFilesystemId(home);
   const deadline = Date.now() + timeoutMs;
-  while (
-    inspectLiveControllerProcess(
-      controller.pid,
-      homeFilesystemId,
-      controller.processStartIdentity
-    ) !== undefined
-  ) {
+  for (;;) {
+    let observationError: unknown;
+    try {
+      if (!processGenerationIsLive(controller.pid, controller.processStartIdentity)) return;
+      if (process.platform === "linux") {
+        const observed = readLinuxProcessIdentity(controller.pid);
+        // An exact zombie has exited even before its parent reaps it.
+        if (observed?.startIdentity === controller.processStartIdentity && observed.state === "Z") return;
+      }
+    } catch (error) {
+      // OS identity can disappear before kill(pid, 0) reports absence.
+      // Keep observing within the existing stop budget, never infer exit.
+      observationError = error;
+    }
     if (Date.now() >= deadline) {
+      if (observationError !== undefined) throw observationError;
       throw new ControllerClientError(
         "CONTROLLER_TIMEOUT",
         `Controller process ${controller.pid} did not exit within ${timeoutMs} ms.`
@@ -638,10 +670,7 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
     }
     if (targets.length === 0) return;
 
-    await callFileTaskController(this.home, "scheduler.scan", {}, {
-      ...this.clientOptions,
-      requestTimeoutMs: LIFECYCLE_REQUEST_TIMEOUT_MS
-    });
+    await Promise.all(targets.map(target => this.#waitForRuntimeCleanup(target)));
 
     for (const target of targets) {
       if (hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) {
@@ -689,10 +718,7 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
         `Role Session changed before its exact stop was reserved: ${input.taskId}/${input.roleName}.`
       );
     }
-    await callFileTaskController(this.home, "scheduler.scan", {}, {
-      ...this.clientOptions,
-      requestTimeoutMs: LIFECYCLE_REQUEST_TIMEOUT_MS
-    });
+    await this.#waitForRuntimeCleanup(target);
     if (hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) {
       throw new Error(`Role runtime did not stop: ${input.taskId}/${input.roleName}.`);
     }
@@ -708,7 +734,7 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
       const active = this.store.listActiveDurableJobs()
         .filter((job) => job.taskId === taskId);
       if (active.length === 0) return;
-      await callFileTaskController(this.home, "scheduler.scan", {}, {
+      await callFileTaskController(this.home, "scheduler.signal", { key: `task:${encodeURIComponent(taskId)}` }, {
         ...this.clientOptions,
         requestTimeoutMs: LIFECYCLE_REQUEST_TIMEOUT_MS
       });
@@ -820,10 +846,7 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
     if (target?.kind !== "global-role-runtime") {
       throw new Error(`Global Role runtime cleanup target is invalid: ${roleName}.`);
     }
-    await callFileTaskController(this.home, "scheduler.scan", {}, {
-      ...this.clientOptions,
-      requestTimeoutMs: LIFECYCLE_REQUEST_TIMEOUT_MS
-    });
+    await this.#waitForRuntimeCleanup(target);
     if (hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) {
       throw new Error(`Global Role runtime did not stop: ${roleName}.`);
     }
@@ -831,6 +854,39 @@ export class FileTaskWorkflowRuntime implements TaskWorkflowRuntimePort {
     const active = sessions?.sessions[sessions.activeAgentId];
     if (active !== undefined && active.status !== "ended") {
       throw new Error(`Global Role runtime session is still active: ${roleName}.`);
+    }
+  }
+
+  /**
+   * The durable cleanup mailbox is completed only after stopOwner proves
+   * quiescence and commits the existing cleanup transaction. A scheduler hint
+   * is not that proof; nor is exhaustion of the Home-wide coalescing loop.
+   */
+  async #waitForRuntimeCleanup(target: MailboxTarget): Promise<void> {
+    const timeoutMs = this.clientOptions.requestTimeoutMs ?? LIFECYCLE_REQUEST_TIMEOUT_MS;
+    const deadline = Date.now() + timeoutMs;
+    const label = controllerMailboxKey(target);
+    try {
+      await callFileTaskController(this.home, "scheduler.signal", { key: label }, {
+        ...this.clientOptions, requestTimeoutMs: timeoutMs
+      });
+      while (hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) {
+        if (Date.now() >= deadline) {
+          throw new Error("Timed out awaiting the target's durable cleanup transaction.");
+        }
+        await new Promise<void>(resolve => setTimeout(resolve,
+          Math.min(this.clientOptions.pollIntervalMs ?? POLL_INTERVAL_MS, Math.max(1, deadline - Date.now()))));
+      }
+    } catch (error) {
+      // A lost hint response must not hide cleanup that actually committed.
+      // No hint or native input is replayed here.
+      if (!hasRuntimeLifecycleWork(this.store.getWorkMailbox(target))) return;
+      throw new Error(
+        `Runtime stop remains unconfirmed for ${label}; cleanup obligation retained. `
+          + "No replacement was started by this stop operation. Inspect the exact Session/Host "
+          + "and cleanup failure before retrying; no physical exit is inferred.",
+        { cause: error }
+      );
     }
   }
 

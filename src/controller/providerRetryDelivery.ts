@@ -178,8 +178,25 @@ export function createProviderRetryHooks(home: string, store: TaskStore, ports: 
           if (binding.run?.attemptId !== retry.failedAttemptId) { stop(set, "superseded-input", at); continue; }
           try {
             if (owner.scope === "task" && retry.previousRunId !== undefined) {
-              if (retry.successorRunId !== undefined || retry.successorReviewRoundId !== undefined) continue;
               const previous = store.getRun(owner.taskId, retry.previousRunId);
+              if (retry.successorRunId !== undefined || retry.successorReviewRoundId !== undefined) {
+                const round = retry.successorReviewRoundId === undefined
+                  ? null : store.getReviewRound(owner.taskId, retry.successorReviewRoundId);
+                const successorId = retry.successorRunId ?? (previous?.executionLaneId === undefined
+                  ? round?.reviewerRunId
+                  : round?.executionGroup?.lanes.find(lane => lane.id === previous.executionLaneId)?.currentRunId);
+                const successor = successorId === undefined ? null : store.getRun(owner.taskId, successorId);
+                // A scheduled Run can fail before Host admission, leaving the
+                // Provider binding on the original failed Turn. Stop waiting;
+                // this is not proof of native quiescence or permission to replay.
+                if (successor?.status === "failed" && successor.id !== previous?.id
+                  && successor.roleName === owner.roleName
+                  && (retry.successorReviewRoundId === undefined
+                    || successor.reviewRoundId === retry.successorReviewRoundId)) {
+                  stop(set, "successor-failed-before-admission", at);
+                }
+                continue;
+              }
               if (previous?.status === "active") continue; // ordinary rejected-delivery terminal fold
               if (previous?.status !== "failed") { stop(set, "run-no-longer-failed", at); continue; }
               const actualTaskReviewCandidate = await ports.snapshotTaskCandidate?.(previous);

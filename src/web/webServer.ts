@@ -353,17 +353,18 @@ async function handleHttpRequest(
       } else if (pathname === "/api/tasks" && method === "POST") {
         const body = await readMutationBody(request);
         if (!body || typeof body !== "object" || Array.isArray(body)
-          || Object.keys(body).some(key => !["title", "requirements", "projectIds", "plan", "requestId"].includes(key))
+          || Object.keys(body).some(key => !["title", "requirements", "projectIds", "plan", "requestId", "mode"].includes(key))
+          || "mode" in body && body.mode !== "experiment"
           || !("title" in body) || typeof body.title !== "string" || !body.title.trim() || body.title.length > 200
           || !("requirements" in body) || typeof body.requirements !== "string" || !body.requirements.trim()
           || !("projectIds" in body) || !Array.isArray(body.projectIds) || body.projectIds.length > 32
           || body.projectIds.some(id => typeof id !== "string" || !/^project-[a-zA-Z0-9_-]+$/.test(id))
           || !("plan" in body) || typeof body.plan !== "boolean"
           || !("requestId" in body) || typeof body.requestId !== "string" || !body.requestId.trim()) {
-          throw new WebRequestRejected("Expected title, requirements, projectIds, plan and requestId only.");
+          throw new WebRequestRejected("Expected title, requirements, projectIds, plan, requestId and optional mode=experiment.");
         }
         sendJson(response, 200, { ...dependencies.surface.create(body as {
-          title: string; requirements: string; projectIds: string[]; plan: boolean; requestId: string
+          title: string; requirements: string; projectIds: string[]; plan: boolean; requestId: string; mode?: "experiment"
         }), requestId: body.requestId }, false);
       } else sendJson(response, 405, { error: "Method not allowed.", disposition: "not-submitted" }, false);
     } catch (error) {
@@ -490,7 +491,7 @@ async function handleHttpRequest(
     }
     return;
   }
-  const artifactTarget = /^\/api\/tasks\/([^/]+)\/(artifacts|evidence)$/.exec(pathname);
+  const artifactTarget = /^\/api\/tasks\/([^/]+)\/(artifacts|evidence|iteration)$/.exec(pathname);
   if (["/api/conversation", "/api/conversation/material", "/api/conversation/model"].includes(pathname) && dependencies.conversation) {
     try {
       const q = new URL(request.url!, "http://localhost").searchParams;
@@ -583,6 +584,15 @@ async function handleHttpRequest(
     try {
       const taskId = decodeURIComponent(artifactTarget[1]!);
       const query = new URL(request.url!, "http://localhost").searchParams;
+      if (artifactTarget[2] === "iteration") {
+        if ([...query.keys()].some(key => !["ref", "cursor"].includes(key) || query.getAll(key).length > 1)
+          || query.has("ref") && query.has("cursor")) {
+          throw new WebRequestRejected("Iteration reads accept a fixed ref or a page cursor.");
+        }
+        sendJson(response, 200, await dependencies.surface.iteration(taskId, query.get("ref") ?? undefined,
+          query.get("cursor") ?? undefined), false);
+        return;
+      }
       if (artifactTarget[2] === "evidence") {
         if ([...query.keys()].length) throw new WebRequestRejected("Evidence read takes no additional parameters.");
         sendJson(response, 200, dependencies.surface.evidence(taskId), false);

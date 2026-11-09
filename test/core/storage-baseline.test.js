@@ -21,14 +21,15 @@ import { readTaskUsage } from "../../dist/runtime/taskUsageQuery.js";
 import { addProjectKnowledge, createProject } from "../../dist/repository/project.js";
 import { createTaskMessage } from "../../dist/message/message.js";
 import { contextContentDigest, createContextSnapshot } from "../../dist/context/contextSnapshot.js";
-import { usePre19Layout, usePre114Layout } from "../helpers/pre19Storage.mjs";
+import { usePre19Layout, usePre114Layout, usePre124Layout } from "../helpers/pre19Storage.mjs";
+import { loadSnapshotContent } from "../../dist/storage/taskContent.js";
 
-test("fresh storage creates only the current 1.24 contract", () => {
-  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.24");
+test("fresh storage creates only the current 1.36 contract", () => {
+  assert.equal(versions.CURRENT_STORAGE_VERSION, "1.36");
   const db = new Database(":memory:");
   try {
     schema.initializeSqliteSchema(db);
-    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.24");
+    assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.36");
     assert.equal(schema.inspectSqliteSchema(db).targetChecksum, schema.CURRENT_SCHEMA_CHECKSUM);
     assert.equal(db.prepare("SELECT count(*) AS n FROM storage_schema").get().n, 1);
     assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='schema_migrations'").get(), undefined);
@@ -43,6 +44,92 @@ test("fresh storage creates only the current 1.24 contract", () => {
     db.exec("DROP INDEX idx_mailboxes_ready");
     assert.throws(() => schema.validateSqliteSchema(db), /idx_mailboxes_ready/);
   } finally { db.close(); }
+});
+
+test("1.29 continuation admission preserves history without inventing repair or replay", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-continuation-upgrade-"));
+  let store, db;
+  t.after(() => { store?.close(); db?.close(); rmSync(home, { recursive: true, force: true }); });
+  store = new SqliteTaskStore(home);
+  const at = new Date("2026-11-05T00:00:00Z");
+  store.saveTask(createTask("task-1", "Retained history", at));
+  store.saveEvent("task-1", createTaskEvent("event-1", "task-1", "work.accepted",
+    { workItemId: "work-item-1", summary: "Original evidence" }, at));
+  store.close(); store = undefined;
+  db = new Database(join(home, "yui.db"));
+  const before = db.prepare("SELECT payload FROM events").all();
+  db.prepare("UPDATE storage_schema SET minor=29").run();
+  assert.deepEqual(schema.storageMinorUpgradePlan("1.29").map(step => step.name),
+    ["workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "experiment-leader-copied-configuration", "task-owned-context-content", "migration-backup-retention", "model-registry"]);
+  assert.throws(() => new SqliteTaskStore(home), /upgrade|storage/i);
+  schema.applySqliteMinorUpgrades(db, home);
+  assert.deepEqual(db.prepare("SELECT payload FROM events").all(), before);
+  assert.equal(schema.inspectSqliteSchema(db).currentVersion, "1.36");
+  db.close(); db = undefined;
+  store = new SqliteTaskStore(home);
+  assert.equal(store.listRuns("task-1").length, 0);
+  assert.equal(store.listMessages("task-1").length, 0);
+});
+
+test("1.28 upgrade preserves config bytes and admits independently stored Git budgets", t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-git-budget-upgrade-"));
+  let store;
+  let db;
+  t.after(() => { store?.close(); db?.close(); rmSync(home, { recursive: true, force: true }); });
+  store = new SqliteTaskStore(home);
+  store.saveConfig({ schemaVersion: 1, defaultWorkspace: join(home, "workspace") });
+  store.close(); store = undefined;
+  db = new Database(join(home, "yui.db"));
+  const before = db.prepare("SELECT payload FROM config").get().payload;
+  db.prepare("UPDATE storage_schema SET minor=28").run();
+  assert.deepEqual(schema.storageMinorUpgradePlan("1.28").map(step => step.name),
+    ["git-command-budgets", "workitem-native-continuation", "leader-stage-launch-configuration", "experiment-knowledge-and-role-inheritance", "experiment-leader-copied-configuration", "task-owned-context-content", "migration-backup-retention", "model-registry"]);
+  schema.applySqliteMinorUpgrades(db, home);
+  assert.equal(db.prepare("SELECT payload FROM config").get().payload, before);
+  db.close(); db = undefined;
+  store = new SqliteTaskStore(home);
+  assert.equal(store.getConfig().gitRemoteTimeoutSeconds, undefined);
+  store.saveConfig({ ...store.getConfig(), gitLocalTimeoutSeconds: 45, gitRemoteInactivityTimeoutSeconds: 60, gitRemoteTimeoutSeconds: 600 });
+  assert.equal(store.getConfig().gitLocalTimeoutSeconds, 45);
+  assert.equal(store.getConfig().gitRemoteTimeoutSeconds, 600);
+  assert.throws(() => store.saveConfig({ ...store.getConfig(), gitRemoteTimeoutSeconds: 0 }), /integer/);
+  assert.equal(store.getConfig().gitRemoteTimeoutSeconds, 600);
+});
+
+test("1.23 upgrade preserves history and starts transaction-owned read revisions", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-read-revision-upgrade-"));
+  let store, db;
+  t.after(() => { store?.close(); db?.close(); rmSync(home, { recursive: true, force: true }); });
+  store = new SqliteTaskStore(home);
+  const at = new Date("2026-10-27T00:00:00Z");
+  store.saveTask(createTask("task-1", "History", at));
+  const event = createTaskEvent("event-1", "task-1", "diagnostic.sample", { original: "yes" }, at);
+  store.saveEvent("task-1", event);
+  const message = createTaskMessage("message-1", "task-1", "original", "user", { type: "user" }, at);
+  store.saveMessage("task-1", message);
+  const revision = store.getRevision();
+  store.close(); store = undefined;
+  db = new Database(join(home, "yui.db"));
+  usePre124Layout(db);
+  db.prepare("UPDATE storage_schema SET minor=23").run();
+  const before = db.prepare("SELECT payload FROM events").get().payload;
+  schema.validateSqliteSchemaObjects(db, "1.23");
+  db.close(); db = undefined;
+  assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+  store = new SqliteTaskStore(home);
+  assert.equal(store.databaseHandle().prepare("SELECT payload FROM events").get().payload, before);
+  assert.equal(store.getRevision(), revision);
+  assert.equal(store.getTaskReadRevision("task-1"), 0);
+  store.updateMessage("task-1", { ...message, body: "updated" });
+  assert.equal(store.getTaskReadRevision("task-1"), 1);
+  assert.throws(() => store.transaction(s => {
+    s.removeEvents("task-1", ["event-1"]);
+    throw new Error("rollback");
+  }), /rollback/);
+  assert.equal(store.getTaskReadRevision("task-1"), 1);
+  assert.equal(store.listEvents("task-1").length, 1);
+  store.removeEvents("task-1", ["event-1"]);
+  assert.equal(store.getTaskReadRevision("task-1"), 2);
 });
 
 test("1.13 upgrade preserves exact Session bytes and Role deletion retains identity evidence", async t => {
@@ -75,6 +162,36 @@ test("1.13 upgrade preserves exact Session bytes and Role deletion retains ident
     assert.equal(current.removeGlobalRole(role.name), true);
     assert.throws(() => sessionCallerEnvironment(current, { CODEX_THREAD_ID: "retained-native" }), /no longer current/);
     assert.deepEqual(current.listRuntimeSessionCandidates(), []);
+  } finally { current.close(); }
+});
+
+test("1.25 upgrade preserves permission bytes and admits optional workspace temp exclusions", async t => {
+  const home = mkdtempSync(join(tmpdir(), "yui-temp-exclusion-upgrade-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const at = new Date("2026-10-25T00:00:00Z");
+  const store = new SqliteTaskStore(home);
+  const agent = createConfiguredAgent("fixture", "codex", "false", [], [], at);
+  const binding = createRoleAgentBinding(agent);
+  binding.config = { adapterId: "codex", permission: { strategy: "configured", sandbox: "workspace-write", approval: "never" } };
+  const role = createGlobalRole("fixture", [binding], agent.id, home, at);
+  store.saveGlobalRole(role);
+  const before = store.databaseHandle().prepare("SELECT payload FROM global_roles").get().payload;
+  store.databaseHandle().prepare("UPDATE storage_schema SET minor=25").run();
+  store.close();
+  assert.throws(() => new SqliteTaskStore(home), /not current/);
+  const plan = schema.storageMinorUpgradePlan("1.25");
+  assert.equal(plan.length, 11);
+  assert.equal(plan[0].sourceChecksum, plan[0].targetChecksum);
+  assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
+  const current = new SqliteTaskStore(home);
+  try {
+    assert.equal(current.databaseHandle().prepare("SELECT payload FROM global_roles").get().payload, before);
+    assert.deepEqual(current.getGlobalRole(role.name), role);
+    const narrowed = structuredClone(role);
+    narrowed.agentBindings[agent.id].config.permission.excludeTmpdirEnvVar = true;
+    narrowed.agentBindings[agent.id].config.permission.excludeSlashTmp = true;
+    current.saveGlobalRole(narrowed);
+    assert.deepEqual(current.getGlobalRole(role.name), narrowed);
   } finally { current.close(); }
 });
 
@@ -164,7 +281,19 @@ test("1.1 upgrade preserves valid Operator authority without inventing user prov
         ["1.19", "1.20", "job-agent-execution"],
         ["1.20", "1.21", "project-sync-clock"],
         ["1.21", "1.22", "role-profile-availability"],
-        ["1.22", "1.23", "global-shell-scripts"], ["1.23", "1.24", "model-registry"]]);
+        ["1.22", "1.23", "global-shell-scripts"],
+        ["1.23", "1.24", "task-read-revisions"],
+        ["1.24", "1.25", "role-instance-code-session-titles"],
+        ["1.25", "1.26", "codex-workspace-temp-exclusions"],
+        ["1.26", "1.27", "host-upgrade-lifecycle-signals"],
+        ["1.27", "1.28", "native-title-effect-receipts"],
+        ["1.28", "1.29", "git-command-budgets"],
+        ["1.29", "1.30", "workitem-native-continuation"],
+        ["1.30", "1.31", "leader-stage-launch-configuration"],
+        ["1.31", "1.32", "experiment-knowledge-and-role-inheritance"],
+        ["1.32", "1.33", "experiment-leader-copied-configuration"],
+        ["1.33", "1.34", "task-owned-context-content"],
+        ["1.34", "1.35", "migration-backup-retention"], ["1.35", "1.36", "model-registry"]]);
   }
   finally { current.close(); }
 });
@@ -246,7 +375,13 @@ for (const minor of [0, 1, 2, 3, 4, 5, 6, 7]) test(`1.${minor} migration preserv
   assert.equal((await runStorageUpgrade({ home, mode: "execute" })).outcome, "upgraded");
   const check = new Database(join(home, "yui.db"));
   assert.equal(check.prepare("SELECT payload FROM role_session_sets").get().payload, before);
-  for (const [table, rows] of retained) assert.deepEqual(check.prepare(`SELECT * FROM ${table}`).all(), rows);
+  for (const [table, rows] of retained) {
+    const actual = check.prepare(`SELECT * FROM ${table}`).all();
+    if (table === "context_snapshots") {
+      assert.deepEqual(actual.map(row => ({ ...row,
+        payload: JSON.stringify(loadSnapshotContent(home, JSON.parse(row.payload))) })), rows);
+    } else assert.deepEqual(actual, rows);
+  }
   check.close();
   const current = new SqliteTaskStore(home);
   try {

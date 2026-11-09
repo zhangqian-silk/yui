@@ -154,6 +154,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       "--responsibility": "value", "--constraint": "value", "--expected-output": "value",
       "--system-prompt": "value", "--skill": "value", "--model": "value",
       "--effort": "value", "--permission-strategy": "value", "--sandbox": "value", "--approval": "value",
+      "--exclude-tmpdir-env-var": "value", "--exclude-slash-tmp": "value",
       "--permission-mode": "value", "--allowed-tool": "value", "--disallowed-tool": "value",
       "--search": "value"
     }
@@ -308,6 +309,10 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
     confirmation: { action: "Clean archived Task resources", targetArgumentIndex: 2 }
   },
   {
+    ...taskTarget("process-cleanup", 2, ["archived"]),
+    trailingOptions: { "--preview": "flag", "--confirm": "value", "--request-id": "value" }
+  },
+  {
     ...taskTarget("archive", 2, ["completed", "cancelled"]),
     trailingOptions: { "--integrated": "flag", "--abandon": "flag", "--force": "flag" },
     confirmation: { action: "Archive task", targetArgumentIndex: 2 }
@@ -331,7 +336,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       provider: "projects",
       actionTarget: false
     }],
-    trailingOptions: { "--project": "value", "--base": "value" }
+    trailingOptions: { "--project": "value", "--base": "value", "--type": "value", "--mode": "value" }
   },
   ...["send", "list"].map((command): InteractionPolicy => ({
     commandPath: ["task", "message", command],
@@ -440,6 +445,7 @@ export const INTERACTION_POLICIES: readonly InteractionPolicy[] = Object.freeze(
       "--constraint": "value", "--expected-output": "value", "--system-prompt": "value",
       "--skill": "value", "--model": "value", "--effort": "value",
       "--permission-strategy": "value", "--sandbox": "value", "--approval": "value", "--permission-mode": "value",
+      "--exclude-tmpdir-env-var": "value", "--exclude-slash-tmp": "value",
       "--allowed-tool": "value", "--disallowed-tool": "value", "--search": "value"
     }
   },

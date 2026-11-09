@@ -1,4 +1,5 @@
 import type { ImplementationRef } from "../kernel/instanceHost.js";
+import { isDeepStrictEqual } from "node:util";
 import {
   builtinAgentEndpointImplementation,
   requireBuiltinAgentEndpointImplementation
@@ -65,8 +66,11 @@ export type AgentEndpointConfiguration = Readonly<{
 }>;
 
 export interface AgentEndpoint {
+  readonly contextEpoch?: number;
+  checkQuiescent(): Promise<boolean>;
   readonly nativeAccess?: import("./codexNativeAccess.js").CodexNativeAccess;
   readonly publicReply?: import("./publicReply.js").PublicReply;
+  readonly appliedGeneratedTitle?: string;
   readonly ownedProcessId?: number;
   readonly nativeAccountHome?: string;
   readonly adapterId: StructuredProviderSession["adapterId"];
@@ -198,7 +202,13 @@ type EventValue =
   | Readonly<{ type: "diagnostic"; value: StructuredProviderDiagnostic }>;
 
 class BuiltinAgentEndpoint implements AgentEndpoint {
+  get contextEpoch() { return this.driver.contextEpoch; }
+  async checkQuiescent(): Promise<boolean> {
+    if (!this.driver.checkQuiescent) throw new Error("This native Endpoint cannot prove background quiescence.");
+    return this.driver.checkQuiescent();
+  }
   get nativeAccess() { return this.driver.nativeAccess; }
+  get appliedGeneratedTitle() { return this.driver.appliedGeneratedTitle; }
   get ownedProcessId(): number | undefined { return this.driver.ownedProcessId; }
   get nativeAccountHome(): string | undefined { return this.driver.nativeAccountHome; }
   readonly capabilities;
@@ -275,6 +285,7 @@ class BuiltinAgentEndpoint implements AgentEndpoint {
     const previous = this.#attempts.get(input.attemptId);
     if (previous !== undefined) {
       if (previous.input.inputRef !== input.inputRef || previous.input.boundedText !== input.boundedText
+        || !isDeepStrictEqual(previous.input.additionalContext, input.additionalContext)
         || previous.operation !== operation) {
         throw new Error("Endpoint attempt identity cannot be reused for different input or operation.");
       }
@@ -288,7 +299,9 @@ class BuiltinAgentEndpoint implements AgentEndpoint {
       return { status: "not-submitted", error: new ProviderTurnRejectedError("Endpoint is detached.", input.attemptId) };
     }
     const attempt = {
-      input: Object.freeze({ ...input }),
+      input: Object.freeze({ ...input, ...(input.additionalContext === undefined ? {} : {
+        additionalContext: structuredClone(input.additionalContext)
+      }) }),
       operation,
       disposition: { status: "pending", reason: "submitting" } as AgentEndpointSubmission
     };

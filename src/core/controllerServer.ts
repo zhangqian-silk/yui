@@ -66,6 +66,7 @@ import {
   isBuiltinControllerMethod,
   ControllerCommandObserver,
   ControllerEventLoopDelay,
+  monotonicMilliseconds,
   type ControllerStatusTelemetry
 } from "./controllerTelemetry.js";
 import {
@@ -90,6 +91,7 @@ export type RunningControllerServer = Readonly<{
 }>;
 
 export type ControllerServerOptions = Readonly<{
+  onRequestDiagnostic?: import("./controllerTelemetry.js").ControllerCommandObserver["onRequestDiagnostic"];
   domainIdentity?: EphemeralDomainIdentity;
   status?: (telemetry: ControllerStatusTelemetry) => JsonValue;
   /** Test seam: override the detected running release (null = dev checkout). */
@@ -157,7 +159,7 @@ async function startControllerServerLocked(
 
   const token = randomBytes(32).toString("hex");
   let closeRunning: () => Promise<void> = async () => undefined;
-  const commandObserver = new ControllerCommandObserver();
+  const commandObserver = new ControllerCommandObserver(undefined, options.onRequestDiagnostic);
   const eventLoopDelay = new ControllerEventLoopDelay();
   const telemetry: ControllerStatusTelemetry = Object.freeze({
     commandObserver,
@@ -382,6 +384,7 @@ function receiveRequest(
   controllerInstanceId: string,
   getPrimaryIdentity: () => RuntimeIdentityReceipt | null
 ): void {
+  const acceptedAtMs = monotonicMilliseconds();
   let buffer = Buffer.alloc(0);
   let complete = false;
 
@@ -423,7 +426,8 @@ function receiveRequest(
       homeId,
       homeFilesystemId,
       controllerInstanceId,
-      getPrimaryIdentity
+      getPrimaryIdentity,
+      { acceptedAtMs, receivedAtMs: monotonicMilliseconds() }
     );
   });
   socket.on("end", () => {
@@ -445,7 +449,8 @@ async function routeRequest(
   homeId: string,
   homeFilesystemId: string,
   controllerInstanceId: string,
-  getPrimaryIdentity: () => RuntimeIdentityReceipt | null
+  getPrimaryIdentity: () => RuntimeIdentityReceipt | null,
+  socketTiming: Readonly<{ acceptedAtMs: number; receivedAtMs: number }>
 ): Promise<void> {
   let request;
   try {
@@ -505,12 +510,19 @@ async function routeRequest(
   // observation completes when the response is handed to the socket, so a
   // later status snapshot sees prior built-in completions and the dispatcher
   // service-time metric stays a distinct observation.
-  const observation = telemetry.commandObserver.start();
+  const observation = telemetry.commandObserver.start(request.method, request.id, socketTiming);
+  // A queued response is not a local flush, and even a local flush is not a
+  // client receipt. Close before finish retains a failed transport observation.
+  socket.once("close", () => observation.flushed(true));
+  if (socket.destroyed) observation.flushed(true);
   const send = (response: ControllerResponse, onFlushed?: () => void): void => {
     observation.complete(
       isBuiltinControllerMethod(request.method) ? "builtin" : "dispatched",
       response.ok ? "success" : "failure"
     );
+    // Install only for our response: a peer FIN can auto-end an otherwise
+    // empty socket while its asynchronous handler is still running.
+    socket.once("finish", () => observation.flushed());
     sendResponse(socket, response, onFlushed);
   };
 

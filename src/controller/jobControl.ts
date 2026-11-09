@@ -33,7 +33,7 @@ import { CliError } from "../errors/cliError.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import type { ManagedWorkspace } from "../worktree/managedWorkspace.js";
 import { assertJobAssignmentScope, JobAssignmentScopeError } from "../job/jobAssignmentScope.js";
-import { assertContextRecordReadable } from "../context/taskContext.js";
+import { assertTaskReadable } from "../context/taskContext.js";
 import { assertTaskProjectWriteAuthority } from "../task/taskAuthority.js";
 import { validateHttpPreview } from "../job/httpPreview.js";
 import { definitionFromTaskRun, type JobTrigger } from "../job/jobDefinition.js";
@@ -214,7 +214,7 @@ export function createDurableJobControl(store: TaskStore): DurableJobControlPort
     getJob(taskId, jobId, caller) {
       if (caller === undefined) throw jobControlError("UNAUTHORIZED", "Job reads require an explicit caller.");
       try {
-        assertContextRecordReadable(store, taskId, "job", jobId, caller.scope === "user" ? {} : {
+        assertTaskReadable(store, taskId, caller.scope === "user" ? {} : {
           YUI_SESSION_SCOPE: caller.scope, YUI_TASK_ID: caller.taskId, YUI_ROLE: caller.role,
           YUI_AGENT_ID: caller.agentId, YUI_ADAPTER_ID: caller.adapterId, YUI_NATIVE_SESSION_ID: caller.nativeSessionId
         });

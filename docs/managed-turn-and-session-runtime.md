@@ -2,6 +2,99 @@
 
 # Session, AgentRun and notifications
 
+## Two lifecycle layers and nonblocking checks
+
+Controller custody of a Host and the Host's native Session lifecycle have
+separate event/guard/transition tables. Neither is an upgrade workflow.
+
+| Layer | Events and transitions | Authority and correlation |
+| --- | --- | --- |
+| Controller → Host | Fresh physical observations recover `unavailable`/`stopped`/`starting`/`running`. Authorized launch enters `starting`; matching launch handshake enters `running`. Stop or graceful-exit request enters `stopping`; sending exit does not prove `stopped`. Physical absence confirms `stopped`; unknown effects enter `unavailable`. | Owner, local operation/revision, returned binding and native Session ID. Durable Role/Task intent, launch reservations and exact process custody remain authoritative. |
+| Host → native Session | Launch, attachment, input acceptance, native activity, terminal, persistence, disconnect and exit drive the native states described below. | Native Session, proxy process, attempt and Turn identity; existing writer/resource fences still authorize effects. |
+
+The Controller wraps the shared Host port for launch/restore, observation and
+stop, including graceful-upgrade exit. A competing physical operation is
+rejected before its side effect, not queued or replayed by this FSM. Late
+reads and old bindings cannot overwrite newer custody; identical observations
+produce no hook feedback loop. A Controller restart reconstructs by observation,
+never by replaying the process-local state. Native completion/attachment exit
+does not prove Host process exit. Legal same-conversation resume correlates the
+layers without sharing their state enums or inventing another durable authority.
+
+Host-side native Session lifecycle state is owned by an explicit transition table, not
+by version detection. Launch/submit enters `starting`; attachment facts select
+`idle`, `busy`, `ready` (owned input), or `delivery-unknown`; acceptance enters
+`ready`; native execution enters `busy`; terminal handling enters `settling`;
+persisted settlement returns to observed `idle`/`busy`. Disconnect enters
+`starting`, classified failures retain their failure outcome, and exit enters
+`exited`. Only an explicit launch can leave `exited`. Native-TUI attachment
+readiness has its own event: `ready` there is not proof of native quiescence.
+Illegal edges do not mutate state; stale process, attempt and terminal-Turn
+facts are ignored. Exact writer/resource guards remain at command admission.
+This process-local reducer reconstructs from existing launch and native facts;
+it adds no persisted Session authority or upgrade workflow state machine.
+
+Optional before/after observations are immutable, deferred and independently
+coalesced (at most one running and one latest pending observation per check).
+“Before” describes the transition's source, not an awaited precondition.
+A slow or failing check cannot veto a transition or hold event folding/input
+delivery; checks must yield for I/O and honour cancellation before effects.
+They may recommend work to the separate fenced upgrade coordinator.
+Controller Host-state hooks suggest version reconciliation. Host Session-state
+hooks asynchronously observe current Skill metadata on attachment/settlement,
+without reading Skill bodies, committing a notice or assuming model memory.
+The exact per-input integrity check remains an ingress safeguard: invalid
+Skills can reject that input, but an optional check cannot stall lifecycle.
+Only accepted input advances the existing notice baseline; unchanged input
+is passed through without any extra content.
+
+Controller startup, Host connection/exit observations, Host state-change
+signals and event persistence trigger version checks without an explicit
+`update` request. Existing periodic reconciliation covers missed hints,
+including providers without reliable background-execution-end events and
+graceful exits that cannot emit a post-exit hint. Checks
+compare actual loaded Host/Endpoint implementations with this Controller's
+loaded target, never npm `latest`. Incomplete readiness on matching versions
+is not an upgrade reason. Checks stop on shutdown; already-admitted work
+retains the existing durable mailbox. A request pinned to a different target
+stays waiting for explicit recovery, not silent retargeting. An explicitly
+stopped Session is never restarted by a check.
+
+## Host upgrade and context checks
+
+`update` reports package installation, verified Controller startup and each
+Host separately. `update --hosts-status` reads current per-Host evidence without
+installing, starting or advancing a switch. Supported controlled Codex Hosts fence new input immediately,
+wait for the current native Turn and event persistence, inspect native background
+execution, and release their owned Endpoint before exiting gracefully. The
+existing role-runtime mailbox retains the exact generation, native Session,
+configuration digest and drain receipt across Controller restarts. A successor
+uses the recorded effective configuration and resumes that same conversation;
+only its loaded Host/Endpoint and control/event handshake confirm success.
+Queued Messages remain original and accepted/unknown inputs are never replayed.
+
+Paused Roles stay paused. Older Hosts, native-TUI-only attachments and Endpoints
+without a quiescence capability are retained with an unsupported diagnosis; no
+unsupported drain command is sent. A busy/unknown native execution has no
+bounded upgrade-completion promise. An uncertain launch is not automatically
+repeated; a later exact successful handshake can settle the retained request.
+This fence covers Host-controlled ingress, not arbitrary external native clients;
+it never terminates a shared daemon or native conversation.
+
+Host Skill checks still run before every input. Unchanged inputs are passed
+through exactly, with no notice, marker, separator or extra native input part.
+The attachment's loading guidance explains this managed-input contract; no
+notice is not a reason to repeat the check. Unmediated clients or uncertain
+current input routing retain the explicit Manifest check fallback; reusing a
+conversation alone does not establish Host mediation. Cold attachment,
+affected Skill changes and observed native compaction supply loading guidance;
+compaction invalidates the next input's metadata baseline. Without a reliable
+native event, the Agent must still recover any missing instructions using the
+Manifest. Neither a version nor an accepted notice proves model memory.
+Routine checks and empty inboxes are not user-facing progress.
+
+## Session stop and runtime observations
+
 Global Session stop/replacement uses the same exact native-execution quiescence
 boundary as Task Sessions. A departed Host or archived Session alone is not
 proof that an accepted input ended: its retained Provider binding is inspected
@@ -11,12 +104,123 @@ notifications cannot restart an explicitly stopped Session; normal Host detach
 preserves an active Session and remains reconnectable. A switch after a partial
 failure still settles the retained input before selecting a new conversation.
 
-A newly created global Operator conversation requests the native title
-`Yui · Operator · MMdd`, using Yui's configured time zone. The request is made
-only after the provider returns the exact new conversation identity; restore
-and reconnect paths never replay it. Providers without a post-create rename
-capability keep the usable Session and expose a diagnostic instead of treating
-metadata failure as Session-creation failure.
+Local stop waits for its durable cleanup obligation, not for the Home-wide
+`scheduler.scan` loop to empty. A signal only requests reconciliation; the
+existing physical-stop proof and cleanup transaction remain the completion
+boundary. A timeout retains the obligation and blocks replacement. Selection
+failure and unconfirmed startup are reported separately; neither permits
+replaying an uncertain native operation.
+
+`operator status` and Session context distinguish desired/effective launch
+revisions and selected-writer state from Host observation health. Old-conversation
+failures remain audit evidence, not the new Session's current failure.
+An exact rejected input can be explicitly retired when obsolete; accepted,
+submitting, unknown and interrupt-owned input still retain their handling path.
+
+`controller status --json` exposes bounded observations under
+`identity.runtime.observations`: authenticated requests, scheduler pending
+scopes, phase/read costs and sampled event-loop lag are separate facts.
+Samples use a process-monotonic clock and hashed target/request labels, with
+at most 16 recent and 16 active samples plus the slowest completed sample.
+In-flight request count is not queue depth; total client-to-route wait is not
+measured by the server alone. These observations neither identify an old incident
+retroactively nor establish quiescence. A Controller restart does not itself
+prove Host replacement; asynchronous lifecycle checks still require a safe
+drain and the successor's actual handshake.
+
+`observations.commands.routes.transport` correlates socket accept-to-route,
+complete-frame receive-to-route and route-to-local-flush stages by the same
+request hash as route service time. A close before the response finishes is a
+failed transport observation, even if the business handler later succeeds.
+Client socket failures retain local monotonic connect/write/first-response/end
+timestamps in `details.diagnostic.controller.timing`; null means not observed.
+Match the request ID's SHA-256 prefix before comparing these with server stages.
+These are local events, not peer acknowledgement or pure kernel queue time.
+The interval before the server's accept callback includes unobserved socket and
+event-loop delay; sampled lag alone cannot attribute it to a scheduler phase.
+No timeout, coherence check, receipt, retry or stop/start policy is changed.
+
+`observations.persistence` separates main-thread database lock/body/commit
+costs from persistence-worker round trips, worker execution and worker reads.
+Worker summaries travel on existing replies and retain a worker-instance ID;
+status reads only cached facts, never performs a diagnostic worker RPC.
+Match hashed request targets when comparing round trip and execution. The
+difference includes startup, queueing, transport and main-loop delay, not a
+pure queue-time measurement. Nested database/read durations overlap worker
+execution and must not be added to it. Historical maxima may belong to other
+requests; the latest/slowest samples retain their own timestamps.
+
+With the default persistence worker, periodic Project-sync configuration checks,
+expired Input recommendations and run-progress/stall diagnostic transactions
+execute on that worker as complete read/check/write operations. Their callers
+await completion; lock waiting does not block the socket thread. Existing
+transaction fences and idempotent folds remain unchanged. Explicit worker-off
+mode and injected adapters retain synchronous behavior. This is not blanket
+isolation of all database writes: launch admission, mailbox claims, due Job
+admission and other lifecycle writes still require their own boundary analysis.
+Status responsiveness during these maintenance operations is not proof that
+every possible Controller stall has been eliminated.
+
+The worker-backed runtime drain reads its immutable inbox files asynchronously,
+as does native-Session discovery during launch. The 64-event fold limit is not
+a limit on the initial directory scan: a large retained backlog must not be
+read synchronously on the socket thread before that limit takes effect.
+Sorting, per-file validation, event identities, fold order and commit-before-ACK
+remain unchanged. This trades some backlog throughput for control responsiveness;
+it is not a bound on total backlog memory or every CPU operation. Synchronous
+producer deduplication and explicit worker-off drains still need separate
+boundary analysis.
+
+Controller stop retains the captured PID/start-generation fence through both
+graceful drain and physical recovery. If the ownership inventory is unreadable,
+a protected Home-validated discovery can retain that fence, but cannot authorize
+a signal. No physical match is not proof of exit: before allowing successor
+startup, the captured generation must be provably gone. A still-live generation
+times out; unavailable generation evidence refuses recovery. Explicit physical
+stop still revalidates UID, entrypoint, Home, PID and start identity before signalling.
+
+Idle Global inbox recovery and already-settled retry checks use read-only
+snapshots, without reserving SQLite's writer. Creating a recovery notice or
+settling an outstanding retry still rechecks the current Session/claim/input
+inside the original write transaction. This removes no-op lock waits, not
+contention from actual writes.
+
+Production Controller startup (including handover promotion) retains operational
+diagnostics in `runtime/controller-diagnostics.jsonl`, with two rotated files.
+Each file is bounded to 1 MiB and owner-readable/writable only. An asynchronous
+writer admits at most 32 queued records (16 KiB each); it never writes the
+business database. Scheduler/startup errors retain a classification, fingerprint
+and build-relative source frames, not raw messages, arguments or credentials.
+A 250 ms memory-only sampler records new failed/slow observations (at least
+1 second), active slow work or its own loop delay at most once per second.
+Records carry wall time, monotonic time, PID, process-instance ID and version;
+bounded phase snapshots retain hashed request/target identities. It is sampled
+evidence, not a trace of every request or the exact cause of pre-routing delay.
+`observations.diagnostics` reports written/dropped/pending records and write
+failures. No successful diagnostic write is assumed when storage fails.
+Rotation, queue overflow and abrupt termination can lose evidence; a blocked
+loop cannot emit a snapshot until it resumes. No automatic restart or operation
+replay is introduced. These disposable operational logs are not Task state,
+acceptance, a second recovery authority or a Home schema migration.
+
+Scheduler caches load families lazily and use transaction-maintained Task
+read revisions. Another Task or Global message does not invalidate an unchanged
+Task history; updates, deletions and external writers still do. Compound folds
+pin a read snapshot, uncommitted writes cannot publish a reusable cache token,
+and only 16 recent Task projections are retained. Cache entries never authorize
+dispatch or replace exact mutation-time checks.
+
+Role instance codes and generated Session/planning titles are Yui presentation
+metadata, using Yui's configured time zone where a date is included.
+Managed Codex retains this launch title but does not submit native title
+synchronization, including on restore and reconnect. This intentional omission
+is logged locally, not emitted as a failed operation or recovery notification.
+An unsubmitted name is never persisted as an applied native title; the native
+conversation and business execution remain usable.
+The native title mutation has been observed to persist without replying and
+block later Goal/Turn requests, even with a separate metadata client. Automatic
+synchronization must not be restored merely by increasing a timeout or retrying
+an unknown write; it requires a verified nonblocking native path.
 
 ## Authority
 
@@ -103,14 +307,27 @@ continuations and the complete-original reading protocol.
 Run Context freezes Assignment, source references, effective configuration and
 workspace boundaries. A Role edit does not rewrite an existing Assignment.
 Reading either Context does not acknowledge input or create execution authority.
-Every managed input points to the exact Session Manifest and CLI entry. The
+Initial or changed managed input points to the exact Session Manifest and CLI entry. The
 Run Pack is a reference directory: read the relevant requirement and message
 bodies before acting, rather than treating a successful load as the deliverable.
 Planning Packs expose no Project write scope or Task-completion permission.
 
-The Manifest pointer is a recovery locator, not a read receipt. At the start of
-every turn run `yui session skills --json` through the Session's CLI/Home. It
-checks current paths, internal `VERSION` files and readability, without reading
+The Manifest pointer is a recovery locator, not a read receipt. The managed Host
+checks current paths, internal `VERSION` files and readability before submit/steer,
+including the native Operator TUI relay. Unchanged inputs carry a short check
+notice, not repeated Skill lists or a request for another Agent tool call.
+The ordinary notice is only a check result: it does not repeat compaction or
+loading procedures. Those belong to the launch contract and event-specific
+entry guidance. After lost context, reconstruct the current working set from
+the Runtime/Role entry points and references applicable to the next action;
+do not restore the union of every procedure used earlier in the conversation.
+This is instruction routing, not a claim that the Host detects compaction,
+can evict old text, or knows what the model remembers.
+First input, changed metadata and Host reattachment/recovery supply current pointers.
+Only confirmed Provider acceptance advances the Host-local notice state; failures
+and unknown submissions do not. This state is ephemeral, not a loading receipt.
+Unmediated clients retain `yui session skills --json` through their Session CLI/Home.
+The check operates without reading
 Skill bodies or walking/snapshotting resources. Builtins use the running
 installation's `skills/<id>` entry; configured Skills use `YUI_HOME/skills/<id>`.
 These paths do not contain a Session/content digest. After changing installation
@@ -126,6 +343,8 @@ compacted/uncertain context. Reuse only when versions are unchanged and the full
 instructions remain available now. Yui stores no "already read" state and does
 not claim to inspect the model's context. Historical packages remain audit only;
 missing/corrupt snapshots do not prevent valid Session resume or input delivery.
+Provider compaction is not reliably observable here: missing instructions still
+require Agent-directed reload even when engineering reports unchanged versions.
 Missing current files report their exact path and recovery action. Session
 identity, scope, writer fences and real CLI/Home incompatibility still reject.
 Always refresh dynamic facts. Leader notifications use
@@ -337,7 +556,7 @@ The three failure ingresses retain their native fencing/classification, while
 record creation and deduplication share one writer and supervisor notices use
 the existing event-routing boundary.
 
-Unknown Leader notifications preserve their wake and input window:
+Unknown or rejected Leader notifications preserve their wake and input window:
 
 ```sh
 yui task wake show <task> <wake>
@@ -345,14 +564,20 @@ yui task wake resolve <task> <wake> --reason <quiescence-evidence>
 ```
 
 Resolve releases the claim after native-effect fences are clear. It neither
-replays the notification nor invents acceptance or completion. Independent
+replays the notification nor invents acceptance or completion. A rejection,
+including one recorded after an unknown outcome, is not quiescence evidence.
+If an execution stop removed the operational mailbox, the exact durable
+notification attempt can still be explicitly released for inbox inspection
+and handling; a different current batch is never released. Missing delivery
+evidence is refused, not guessed. Original delivery events and handling claims
+remain unchanged; a repeated resolve adds no second disposition. Independent
 Role work and legal local facts are not a Task-wide recovery lock.
 
 Wake status records notification delivery, not Message implementation. For
 ordinary Leader notifications, `consumed` means native acceptance. Native Turn
 completion and Task delivery need their own runtime evidence and durable results.
-A rejected wake stays `dispatched` with its claim until explicit retry or Session
-replacement; an explicitly released historical wake can remain `dispatched`
+A rejected wake stays `dispatched` with its claim until explicit retry, no-replay
+resolve or Session replacement; an explicitly released historical wake can remain `dispatched`
 without a claim. Unknown acceptance cannot use `wake retry`.
 Session replacement preserves queued input for a new wake and current Context;
 it does not retroactively mark an old wake accepted. Late receipts cannot settle
@@ -569,3 +794,104 @@ Operator storage diagnosis/upgrade also reaches the dedicated migration entry
 without first requiring the Home to already have the target storage version.
 Completion, cancellation and archive have distinct authority and resource
 boundaries. Storage changes use the single [upgrade contract](sqlite-control-plane-design.md).
+
+## Message delivery health
+
+The Controller's existing full reconciliation observes Task Role notification
+mailboxes, Assignment continuations, Global Role input and the Operator attention
+mailbox. It reads the real `pending` suffix separately from `processing`, never
+the compatibility `getPendingWakeup` projection. It does not run an Agent polling
+loop, acknowledge input, release a claim, resend an uncertain input or start an
+unavailable Operator.
+
+`yui controller status --verbose --json` exposes a cached, timestamped
+`identity.runtime.observations.messageHealth` view (the Controller RPC exposes
+`runtime.messageHealth`). It includes counts, oldest wait/occupancy, exact
+Session/attempt/wake/message references, answered input references, recorded
+delivery outcome, retry ownership and the existing Host reconciliation evidence.
+`unobserved` is not proof of Host health. Inspect its exact Event/Message read
+commands for durable originals. Status reads perform no database scans or probes.
+The view shows at most 64 owners and reports omissions; records remain readable
+through the existing Task event and Global Role message commands after restart.
+
+An eligible stalled delivery warns after 5 minutes and escalates once at
+30 minutes, or after 15 minutes if the queue at least doubles and reaches eight
+items. A single old input is sufficient. Sampling is on the configured full-pass
+interval (default 120 seconds, permitted 5–300 seconds): with a responsive
+Controller, detection occurs on the first completed pass after the threshold.
+These are not wall-clock delivery guarantees during downtime, blocked I/O or
+unavailable Providers. Accepted long Turns without contrary exact Host evidence
+are busy, not faults; explicit stops, disabled Roles, human ownership, native
+pause and matching open input waits are distinct from blocked delivery. Valid
+bounded retry remains owned by its existing recovery mechanism. Historical
+missing ACKs without a new waiting suffix do not generate backlog alerts.
+
+Each affected delivery owner has one open diagnostic episode: at most a warning,
+one escalation and a backlog-clear observation. Concurrent arrivals coalesce;
+they do not each call a model. Task evidence uses ordinary `message.health.<role>`
+Events; Global evidence uses record-only system Messages. These are append-only
+content in the existing open Event/Message formats, not a new storage envelope,
+schema version or scheduling aggregate. The newest evidence reconstructs
+notification deduplication after restart. Each notice reuses the ordinary
+Operator Global Message queue with a stable request ID, independent of the
+affected Task's occupied mailbox. Only one unsent engineering notice is admitted;
+later evidence stays durable and is reconsidered on subsequent full passes.
+
+If Operator is absent/stopped/uncontrolled, evidence remains generated but no
+new Session is started. If it is busy, the notice stays saved; failures retain
+their exact message and reason and are not replayed. Diagnostics distinguish
+generated evidence, saved notice, transport acceptance, Provider delivery and
+explicit handling. An alert ACK is never recovery. Only an observed empty
+delivery backlog closes an episode; an explicit pause or merely releasing the
+old processing claim while a pending suffix remains does not. Backlog clearance
+itself proves neither business handling nor completion, and grants no recovery
+authority. Moving all pending work to a new processing owner is not clearance:
+retained processing with a deferred delivery remains observable, including its
+exact attempt and rejection detail, even when the current Turn is completed.
+
+### Management recovery guidance
+
+Notices include the current observation time, exact identities, original read
+commands and conditional recovery guidance, also available in the cached
+`recovery` field. A notice delayed by Operator unavailability uses current facts
+when it is finally saved, not the original incident's intervention advice.
+Already-saved notices remain immutable evidence and are not resent merely to
+update advice: always refresh status and exact Session/wake/message evidence
+before acting. A command template is neither authorization nor proof that a
+later invocation still targets the observed Session; current CLI fences apply.
+
+An affected Leader is supervised by Operator; a subordinate Task Role by its
+authorized Leader or Operator. Normal busy work, legitimate pause and owned
+bounded retry receive non-intervention guidance. For an established retained
+Task Host barrier, the supervisor may consider the existing targeted
+`task role session stop` path without waiting for a complete engineering repair
+or perfect historical projections. Inspect exact native/background execution,
+event persistence, authority and cleanup consequences first. Unpersisted Host
+facts must not be destroyed. A saved stop request is not successful physical
+cleanup; retain failure evidence when cleanup cannot be proven. Existing
+authorized lifecycle/delivery may reuse the retained conversation after proven
+stop; verify its identity. Deliberate `task role session new` is a different,
+explicit replacement decision, requiring durable progress and fenced cleanup.
+Goal `stalled` alone neither establishes the cause nor warrants clearing Goal.
+
+In this candidate, `task wake retry` requires a proven-rejected, unconsumed
+exact claim, a corrected cause and no accepted/uncertain native execution.
+As an alternative, not a sequence, `task wake resolve` supports an unknown or
+rejected exact notification attempt after shared-native/background/writer
+quiescence and persisted evidence; rejection (including after unknown) is not
+quiescence. It releases scheduling without replay or semantic acknowledgement.
+If the operational mailbox is absent, exact durable wake/attempt evidence is
+still required; another current batch is never released. Original claims,
+delivery events and saved alerts remain unchanged. Deferred delivery meets
+neither precondition. Refresh current installed capabilities before acting.
+For Global Roles, this candidate
+does not establish a dedicated targeted Host-stop command: inspect original
+input/control and `session retry <role> show`, then discover current authorized
+capabilities. There is no guessed Task equivalent or stop-all fallback.
+
+On refusal or failure, preserve the exact receipt, original inputs and work,
+and escalate only the missing authority, capability or cleanup evidence.
+Verify management request, physical stop, conversation reuse/replacement,
+actual subsequent Provider acceptance and business handling separately.
+Missing evidence remains unverified; no automatic recovery, replay, forced
+ACK, model/account/permission change or Controller-wide restart is introduced.

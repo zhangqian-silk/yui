@@ -6,7 +6,7 @@ name: Publish npm package
 # release-specific evidence: tag/version identity, the artifact's structure and
 # executable bit, a fresh install across the supported Node matrix, and npm
 # provenance. The build job assembles one tarball from the exact tagged commit;
-# smoke and publish consume that same artifact, verified by SHA-256. All 12
+# smoke and publish consume that same artifact, verified by SHA-256. All 8
 # installs check ABI/PTY/SQL/CLI; only Node 24 runs process lifecycle on each OS.
 
 on:
@@ -27,10 +27,8 @@ jobs:
         include:
           - os: ubuntu-latest
             target: linux-x64
-          - os: macos-14
+          - os: macos-15
             target: darwin-arm64
-          - os: macos-15-intel
-            target: darwin-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -114,7 +112,7 @@ jobs:
 
       - name: Collect all supported platforms
         run: |
-          for target in linux-x64 darwin-x64 darwin-arm64; do
+          for target in linux-x64 darwin-arm64; do
             tar -xf "native-artifacts/native-$target.tar" -C dist/runtime/native
           done
 
@@ -140,8 +138,10 @@ jobs:
           grep -qx 'package/skills/yui-operator/SKILL.md' package-files.txt
           grep -qx 'package/skills/yui-reviewer/SKILL.md' package-files.txt
           grep -qx 'package/skills/yui-runtime/SKILL.md' package-files.txt
-          # Five entrypoints plus their packaged, on-demand references.
-          if [ "$(grep -Ec '^package/skills/[^/]+/SKILL\.md$' package-files.txt)" -ne 5 ]; then exit 1; fi
+          grep -qx 'package/skills/yui-experiment-leader/SKILL.md' package-files.txt
+          grep -qx 'package/skills/yui-experiment-leader/references/records.md' package-files.txt
+          # Six entrypoints plus their packaged, on-demand references.
+          if [ "$(grep -Ec '^package/skills/[^/]+/SKILL\.md$' package-files.txt)" -ne 6 ]; then exit 1; fi
           if grep -Eq '^package/(binding\.gyp|native/|build/|scripts/|test/)' package-files.txt; then exit 1; fi
           # The executable bit must survive into the actual tarball, not only
           # the npm pack manifest (PR #110 regression contract).
@@ -174,7 +174,7 @@ jobs:
       fail-fast: true
       matrix:
         node: [20, 22, 24, 26]
-        os: [ubuntu-latest, macos-14, macos-15-intel]
+        os: [ubuntu-latest, macos-15]
 
     steps:
       - name: Checkout

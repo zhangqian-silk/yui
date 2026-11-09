@@ -2,6 +2,149 @@
 
 # Session、AgentRun 与通知
 
+## 两层生命周期与非阻塞检查
+
+Controller 对 Host 的管理状态、Host 对原生 Session 的生命周期分别拥有自己的
+事件、guard 和转换表，都不是升级流程状态机。
+
+| 层级 | 事件与转换 | 权限及关联 |
+| --- | --- | --- |
+| Controller → Host | 新鲜物理观测恢复 `unavailable`／`stopped`／`starting`／`running`；合法 launch 进入 `starting`，匹配启动握手进入 `running`。停止或优雅退出请求进入 `stopping`，发送退出不证明 `stopped`；物理不存在才确认 `stopped`，未知效果进入 `unavailable`。 | owner、本地操作／观测 revision、返回 binding 和原生 Session ID；持久 Role／Task 意图、启动 reservation 和精确进程权属仍是权威。 |
+| Host → 原生 Session | launch、附件、输入接受、原生活动、终态、持久化、断连和退出驱动下述原生状态。 | 原生 Session、proxy 进程、attempt 和 Turn 身份；原有 writer／资源栅栏继续授权副作用。 |
+
+Controller 在共享 Host port 处统一管理启动／恢复、观测与停止（含安全升级的优雅退出）。
+冲突物理操作在副作用前拒绝，不由状态机另建队列或重放。迟到读取和旧 binding 不能覆盖
+新管理状态；相同观测不重复触发检查反馈循环。Controller 重启后从观测重建，
+不重放进程内状态。原生轮次完成或附件退出不能证明 Host 进程已退出；
+合法恢复通过同一原生对话关联两层，不共用状态枚举或新增持久权威。
+
+Host 内的原生 Session 生命周期由明确的转换表管理，不由版本检查管理。
+launch／submit 进入 `starting`；附件事实选择 `idle`、`busy`、
+`ready`（持有输入）或 `delivery-unknown`；接受输入进入 `ready`；
+原生执行进入 `busy`；终态处理进入 `settling`；持久化结清后回到观测到的
+`idle`／`busy`。断连进入 `starting`，分类失败保留对应失败状态，退出进入
+`exited`，只有显式 launch 可离开它。原生 TUI 附件就绪有独立事件，
+其 `ready` 不证明原生执行静止。非法边不改变状态；过期的进程、attempt、
+终态 Turn 事实被忽略。精确 writer／资源 guard 仍在命令准入处执行。
+状态机仅在进程内从现有 launch 和原生事实恢复，不新增持久 Session 权威或升级流程状态机。
+
+可组合的前／后检查接收不可变观测，各自异步执行并合并重复提示
+（每项最多一个执行中和一个最新待处理观测）。“前”表示转换来源，不是等待完成的前置条件。
+慢检查或失败不能否决转换、阻塞事件折叠或输入投递；检查回调必须异步等待 I/O，
+并在请求副作用前响应取消。它们只能向独立的、受精确栅栏保护的升级协调器提出请求。
+Controller 的 Host 状态 hook 提议版本对账；Host 的 Session 状态 hook 在附件和结清时
+异步观测当前 Skill 元数据，不读正文、不提交通知基线、不假定模型记忆。
+逐输入完整性核验仍是投递安全门：无效 Skill 可以拒绝该次输入，但可选检查不能卡住生命周期。
+仍只有被接受的输入推进通知基线，未变化输入原样通过，不额外注入内容。
+
+Controller 启动、Host 连接／退出观测、Host 状态变化 signal 和事件持久化均可触发版本检查，
+不依赖显式 `update`。现有周期对账覆盖丢失提示、无法可靠提供后台执行结束事件的提供方，
+以及无法在退出后发出提示的优雅退出。
+比较对象是实际加载的 Host／Endpoint 实现与当前 Controller 已加载的目标，不查询 npm `latest`。
+版本匹配但就绪证据未齐不是升级理由。关闭时停止检查，已准入工作仍保留现有持久 mailbox；
+请求固定的目标与当前 Controller 不同时保持等待，交由显式恢复，不静默改目标。
+检查不会复活明确停止的 Session。
+
+## Host 升级与上下文检查
+
+`update` 分别报告程序安装、Controller 启动核验及逐 Host 的状态。
+`update --hosts-status` 只读查询逐 Host 证据，不安装、启动或推进切换。支持此能力的
+受控 Codex Host 先关闭新输入准入，等待当前原生轮次和事件持久化、核验后台执行，
+释放自己持有的 Endpoint 后优雅退出。现有 role-runtime mailbox 保存精确实现代际、
+native Session、配置摘要和排空回执，Controller 重启后仍可继续。
+后继使用原 effective 配置接回同一对话；实际加载的 Host/Endpoint、控制与事件能力
+握手通过后才确认成功。队列中的 Message 原文不变，不重放 accepted 或 unknown 输入。
+
+暂停角色保持暂停。旧 Host、仅有原生 TUI 的附件及不能证明静止的 Endpoint
+保留并报告不支持，不反复发送不支持的排空命令。忙碌或未知执行不承诺限时升级。
+启动结果未知不自动重放；后续精确成功握手可结清原请求。
+准入栅栏覆盖 Host 控制的入口，不控制任意外部原生客户端，也不会终止共享 daemon 或原生对话。
+
+Host 仍逐输入机械检查 Skills。未变化时原文原样通过，不添加检查通知、隐藏标记、
+分隔换行或原生输入片段。附件加载指引说明这一托管输入约定，不因没有通知而重复检查。
+绕过 Host 的客户端或当前输入路由不明时仍通过 Manifest 显式检查；复用同一对话
+本身不证明当前输入受 Host 托管。首次附件、局部 Skill 变化、已观测到的原生压缩
+提供相应加载指引；压缩使下一次输入的元数据基线失效。
+提供方无法可靠暴露事件时，Agent 仍须通过 Manifest 恢复缺失指令。
+版本和已接受的通知都不能证明模型记忆；例行检查、角色版本和空 inbox 不作为用户进度播报。
+
+## 会话停止与运行时观测
+
+局部停止等待自身的持久清理义务完成，不等待整个 Home 的 `scheduler.scan`
+循环排空。signal 只请求调度；完成仍以现有物理停止证明及清理事务为准。
+超时保留义务并阻止替换；选择失败和新会话启动未确认分别报告，不允许重放未知效果。
+
+`operator status` 与 Session context 区分 desired/effective 配置版本、选定写入者
+状态和 Host 观测健康。旧会话失败保留为审计证据，不是新会话的当前失败。
+明确 rejected 的过时输入可以显式退役；accepted、submitting、unknown 和
+interrupt-owned 输入仍保留原处理路径。
+
+`controller status --json` 的 `identity.runtime.observations` 分别呈现已认证请求、
+调度待处理范围、阶段／读取成本及采样的事件循环延迟。样本使用进程单调时钟，
+目标／请求标签仅保存哈希；每组最多保留 16 个近期样本、16 个活动样本及最慢完成样本。
+in-flight 请求数不是排队数，服务端不能独自测量客户端到路由的完整等待。
+观测不能反推旧事故的唯一根因，
+也不构成静止证明；Controller 重启本身不证明 Host 已替换，
+异步生命周期检查仍须经过安全排空和后继实际握手。
+
+`observations.commands.routes.transport` 使用与 route service time 相同的请求哈希，
+分别关联 socket accept→route、完整帧 receive→route、route→本地 flush。
+响应完成前连接关闭会记录 transport 失败，即使业务 handler 随后成功。
+客户端 socket 失败在 `details.diagnostic.controller.timing` 保留单调时钟的
+connect／write／首个 response／end 时间戳；null 表示未观测到。
+比较服务端阶段前须匹配 request ID 的 SHA-256 前缀。这些是本地事件，
+不是对端确认或纯内核排队时间。服务端 accept callback 之前仍有未观测到的
+socket／事件循环延迟，不能仅凭采样 lag 归因到某个调度阶段。
+timeout、coherence、receipt、重试及 stop/start 策略均未改变。
+
+`observations.persistence` 将主线程数据库锁等待／事务体／提交成本，与持久化
+worker 的往返耗时、执行和读取成本分开。worker 摘要搭载既有响应，保留 worker
+实例标识；status 只读缓存观测，不另发诊断 RPC。比较往返和执行时间时须匹配
+同一个请求哈希，其差值还包括启动、排队、传输和主线程延迟，不是纯排队时长。
+嵌套的数据库／读取耗时已包含在 worker 执行中，不能重复相加；历史最大值可能
+来自其他请求，latest／slowest 样本保留各自时间戳。
+
+默认启用持久化 worker 时，周期性 Project-sync 配置检查、到期 Input 建议执行、
+运行进展及停滞诊断事务，作为完整的读／检查／写操作在 worker 内执行，调用方等待
+完成；等锁不再阻塞 socket 主线程。既有事务校验和幂等折叠保持不变。
+显式关闭 worker 或注入自定义 adapter 时仍沿用同步行为。这不是全部数据库写入的
+隔离：启动准入、邮箱领取、到期 Job 准入及其他生命周期写入仍需分别分析边界。
+这些维护操作期间状态请求可响应，不代表 Controller 的所有长停顿都已消除。
+
+worker 模式的 runtime drain 改用异步读取不可变 inbox 文件，启动时的原生 Session
+发现也使用同一路径。64 条折叠上限不限制前置目录扫描，不能在该上限生效前，
+先在 socket 主线程同步读取整个积压。排序、逐文件校验、事件身份、折叠顺序及
+先提交后 ACK 保持不变。这以部分积压吞吐换取控制面响应，不构成总积压内存或
+全部 CPU 操作的上限；同步生产者去重及显式关闭 worker 的 drain 仍需分别分析。
+
+Controller stop 在优雅停止和物理恢复两条分支都保留所捕获的 PID／启动代次。
+所有权扫描不可读时，经权限及 Home 校验的 discovery 可以保留该代次约束，但
+不能据此发信号。未找到物理匹配不等于已退出：允许启动后继前，必须证明原代次
+已消失；仍活着则超时，代次证据不可读则拒绝恢复。显式物理停止在发信号前，
+仍复核 UID、入口、Home、PID 及启动代次。
+
+空闲 Global 收件箱恢复检查、已处分的重试检查使用只读快照，不申请 SQLite
+写锁。真正创建恢复通知或处分未完成重试时，仍在原写事务内复核当前
+Session／claim／输入。这消除的是空操作等锁，不是所有实际写入的竞争。
+
+生产 Controller（含升级接管后的启动）将运行诊断保存至
+`runtime/controller-diagnostics.jsonl`，另保留两个轮转文件，每个最多 1 MiB，
+仅文件所有者可读写。异步写入器最多排队 32 条记录，每条最多 16 KiB，
+不写业务数据库。调度及启动错误只保留分类、指纹和构建内相对源码位置，
+不保留原始错误正文、参数或凭据。每 250 ms 仅检查内存指标；出现新的失败／
+至少 1 秒慢操作、仍在进行的慢操作或自身事件循环延迟时，每秒最多记录一次快照。
+记录包含墙钟、单调时间、PID、进程实例及版本，阶段摘要使用请求／目标哈希。
+这是采样证据，不是逐请求追踪，也不直接证明路由前阻塞原因。
+`observations.diagnostics` 显示写入、丢弃、待写数量和写入失败；磁盘故障不伪装为
+记录成功。轮转、队列溢出、突然终止均可能丢失证据，主线程恢复前也无法输出快照。
+不新增自动重启或操作重放。这些可丢弃运行日志不是 Task 状态、验收依据的替代物、
+第二套恢复权威或 Home 数据格式迁移。
+
+调度缓存按需加载记录族，并使用事务维护的 Task 读取修订号。其他 Task 或 Global
+消息不会使未变化的本 Task 历史失效；更新、删除、其他进程写入仍正确失效。
+组合折叠固定在一个读取快照，未提交写入不产生可复用缓存标识，最多保留最近
+16 个 Task 的投影。缓存不授权派发，也不替代变更时的精确身份检查。
+
 ## 当前身份与持久处理回执
 
 桌面与 TUI 使用相同的当前 Session 授权。只有 `CODEX_THREAD_ID` 的桌面命令
@@ -39,10 +182,13 @@ Provider binding，再结算执行占用。Global 停止证据保存为仅记录
 不触发新的原生输入。待投递通知不能重启已明确停止的 Session；普通 Host 脱离仍
 保留 active Session，可正常重连。部分切换失败后，仍须先结算旧输入再选择新会话。
 
-新建 global Operator 对话会按 Yui 当前配置时区请求原生标题
-`Yui · Operator · MMdd`。只有 Provider 返回新对话的确切身份后才执行该请求；
-恢复与重连路径不会重放。若 Provider 不支持创建后改名，已创建的 Session 仍保持
-可用，并留下诊断，而不会把元数据失败冒充为 Session 创建失败。
+Role 实例码及生成的 Session／规划标题属于 Yui 展示元数据；包含日期时采用当前
+配置时区。托管 Codex 保留 launch 标题，但不提交原生标题同步，恢复与重连也不提交。
+这一有意省略只写本地日志，不作为失败操作或恢复通知；未提交的标题不能记作已应用的
+原生标题，原生对话与业务执行保持可用。
+原生命名曾出现写入已生效却无回执、随后 Goal/Turn 请求阻塞的情况，独立元数据
+连接也未解决。恢复自动同步需要验证不会阻塞执行的原生路径，不能仅增加超时或重试
+结果未知的写入。
 
 ## 权威
 
@@ -86,8 +232,16 @@ Run Context 冻结 Assignment、来源引用、生效配置和工作区边界。
 和消息正文，而不是把加载成功当成交付物。规划 Pack 不暴露 Project 写范围或 Task 完成
 权限。
 
-Manifest 指针是恢复定位入口，不是已读凭据。每轮开始通过本 Session 的 CLI/Home 执行
-`yui session skills --json`，轻量检查当前路径、内部 `VERSION` 和文件可读性，不读取
+Manifest 指针是恢复定位入口，不是已读凭据。managed Host 在 submit/steer 前检查，
+原生 Operator TUI 代理也使用同一逻辑。普通未变化输入仅附短检查提示，不重复清单、
+不要求 Agent 再发工具调用；首次、元数据变化和 Host 重连／恢复才给当前入口。
+普通提示仅是工程检查结果，不逐轮重发压缩或加载操作说明；这些说明属于启动契约和
+事件触发的入口引导。丢失上下文后，从 Runtime／Role 入口和当前动作适用引用重建工作集，
+不恢复历史上用过的全部流程。这是指令路由，不声称 Host 能识别所有压缩、移除历史文本
+或判断模型记忆。任务原文和必要新鲜状态仍按业务需要读取。
+只有 Provider 明确接受才推进 Host 进程内的通知状态，失败与未知提交不推进；
+它不是持久化加载收据。不经过该 Host 的客户端仍通过本 Session CLI/Home 执行
+`yui session skills --json`。检查当前路径、内部 `VERSION` 和文件可读性，不读取
 正文或遍历/冻结资源。内置入口是当前安装目录的 `skills/<id>`，自定义入口是
 `YUI_HOME/skills/<id>`，不包含 Session/内容摘要；安装位置变化后由检查重新解析当前入口。
 Global Manifest 的 `skillCheckCommand` 使用自包含的 `session context <role>`，
@@ -96,6 +250,8 @@ Global Manifest 的 `skillCheckCommand` 使用自包含的 `session context <rol
 首次进入、版本变化、恢复，以及压缩后全文缺失或可用性不确定时，读取当前 Runtime、
 Role/custom Skills 全文及必要引用、Manifest 的 profile。只有版本未变且全文仍在当前
 上下文时才复用。系统不保存“已经读过”状态，也不声称检查了模型上下文。
+当前接口不能可靠观察 Provider 压缩；即使工程报告版本未变，Agent 发现指令缺失时
+仍须补读，不能将未发变化提示当作全文仍在的证明。
 历史冻结包仅作审计：缺失或损坏不阻止合法 Session 恢复与消息投递；当前文件缺失则
 报告具体路径和修复动作。身份、作用域、writer fence 与实际 CLI/Home 不兼容仍会拒绝。
 动态事实仍须刷新：
@@ -251,19 +407,23 @@ retry 把被拒绝批次及后续排队输入交回现有 mailbox，不把旧 wa
 工作区条目或当前 Session 引导协议。三类错误入口保留各自的原生身份检查与分类，
 错误创建、去重统一一个写入入口，上级通知统一使用事件路由边界。
 
-未知的 Leader 通知保留其唤醒和输入窗口：
+未知或被拒绝的 Leader 通知保留其唤醒和输入窗口：
 
 ```sh
 yui task wake show <task> <wake>
 yui task wake resolve <task> <wake> --reason <quiescence-evidence>
 ```
 
-resolve 在原生效果围栏清除后释放该认领。它既不重放通知，也不编造接受或完成。独立的
+resolve 在原生效果围栏清除后释放该认领。它既不重放通知，也不编造接受或完成。
+被拒绝（包括先 unknown 后 rejected）不等于已经静止。执行停止移除临时 mailbox 后，
+仍可依据该 wake 的精确持久投递 attempt 显式释放，以便在 inbox 检查和结清；
+不得释放另一当前批次。缺失投递证据时拒绝猜测。原始投递事件与处理认领保持不变，
+重复 resolve 不增加第二次处分。独立的
 Role 工作和合法的本地事实不是一把 Task 范围的恢复锁。
 
 wake 状态记录通知投递，不记录 Message 的实施结果。普通 Leader 通知的 `consumed`
 表示原生接受；原生 Turn 完成与 Task 交付应分别依据运行证据和持久结果判断。
-被拒绝的 wake 保持 `dispatched` 并保留 claim，直到显式重试或 Session 替换；
+被拒绝的 wake 保持 `dispatched` 并保留 claim，直到显式重试、无重放 resolve 或 Session 替换；
 已显式释放的历史 wake 可以保持 `dispatched` 而不占用 claim。
 接受状态未知的通知不能用 `wake retry` 重放。Session 替换把待投递输入
 保留给新 wake 与当前 Context，不会追溯把旧 wake 标成已接受；旧回执也不能结算
@@ -429,3 +589,71 @@ Task。Operator 诊断和 Controller 重启不先要求一个健康的 Controlle
 也能到达专用的迁移入口，而不先要求 Home 已经处于目标存储版本。完成、取消和归档具有
 彼此不同的权限和资源边界。存储变更使用唯一的
 [升级合同](sqlite-control-plane-design.zh-CN.md)。
+
+## 消息投递健康度
+
+Controller 在既有 full reconciliation 中观察 Task Role 通知 mailbox、
+Assignment continuation、Global Role 输入及 Operator attention mailbox。
+分别读取真实 `pending` 后缀与 `processing`，不把 `getPendingWakeup` 的兼容投影
+当作底层队列；不启动 Agent 私有轮询、不自动 ACK、释放占用或重放未知输入。
+
+`yui controller status --verbose --json` 的
+`identity.runtime.observations.messageHealth` 提供带采样时间的缓存诊断；Controller RPC 对应
+`runtime.messageHealth`。可查看数量、最老等待与占用时长、精确 Session/attempt/wake/
+message、已回答输入、投递证据、重试归属与既有 Host 核对结果。`unobserved` 不代表
+Host 健康。按其中的 Event/Message 读取命令核对持久原始证据。状态读取不会扫描数据库
+或发起探测；最多展示 64 个 owner 并显式报告省略数量，重启后原始记录仍可读取。
+
+符合异常条件的投递等待在 5 分钟后预警，30 分钟后最多升级一次；若队列至少翻倍且达到
+8 条，可在 15 分钟后提前升级。仅一条长期不推进的输入也会检测。采样复用 full-pass
+间隔（默认 120 秒，可设 5–300 秒），健康响应的 Controller 在超过阈值后的首次完整
+检查发现；停机、I/O 堵塞和 Provider 不可用期间不保证墙钟时限或即时送达。没有精确
+Host 反证的 accepted 长 Turn 视为忙碌；显式停止、Role 禁用、human 所有权、原生
+暂停、匹配的未回答输入等待单独区分。有效的有界重试仍由既有恢复机制拥有。只有历史
+缺 ACK、没有新待投递后缀，不会生成积压告警。
+
+按受影响的投递 owner 合并一个未关闭异常，最多保存预警、升级和积压消除三个阶段，
+并发到达不会逐条调用模型。Task 使用普通 `message.health.<role>` Event，Global
+使用 record-only system Message，都是既有开放内容格式中的追加证据，不新增存储
+envelope、schema 或调度权威。最新证据用于重启后的去重。告警使用稳定 request ID，
+走独立于受影响 Task 占用的 Operator Global Message 通道；最多保留一条未发送的
+工程通知，其余待告警证据持久保留并在后续 full pass 检查。
+
+Operator 缺席、已停止或没有受控 binding 时，不自动创建 Session；忙碌时保留已保存
+通知，失败时保留原 Message 和原因、不重放。诊断区分已生成证据、已保存通知、传输
+接受、Provider 送达与显式处置。告警 ACK 不关闭异常。只有观察到投递积压消失才记录
+恢复；显式暂停、或仅释放旧 processing 但 pending 仍在，不算恢复。积压消除也不证明
+业务处理完成、Task 验收或获得任何额外恢复权限。
+pending 全部转入新 processing owner 也不算清除：即便当前 Turn 已完成，持续 deferred
+的 processing 仍保留监测及精确 attempt、投递拒绝详情。
+
+### 管理恢复引导
+
+通知直接包含当前观测时间、精确身份、原始读取命令及有前提的恢复引导，缓存诊断的
+`recovery` 字段也提供同一引导。Operator 不可用导致延迟保存的通知使用保存当时的
+当前观测，不复制旧异常的操作建议；已保存通知不重写，也不为更新建议重复发送。
+执行前必须刷新 status 和准确 Session/wake/message 原始证据。命令模板不是授权，
+也不能固定未来调用的目标身份；实际操作仍受现有 CLI 围栏约束。
+
+Leader 自身受阻由 Operator 处理，下属 Task Role 由有权限的 Leader 或 Operator
+处理。正常忙碌、合法暂停、有界重试仍拥有恢复时，不推荐打断。确认 Task Host 遗留
+占用后，可评估已有准确 `task role session stop` 管理路径，不必等待完整工程修复包
+或所有历史投影对齐；先核对准确原生/后台执行、事件持久化、权限和清理影响，不能丢失
+Host 中尚未持久化的事实。stop 请求保存不等于物理清理成功，失败时保留原证据。
+证明停止后，既有授权生命周期/投递可在支持时复用原 conversation，须验证实际身份。
+`task role session new` 则是另行明确选择新 Session，需保存进展并通过清理围栏。
+仅显示 Goal stalled 不能确定根因，也不能据此要求清 Goal。
+
+本候选的 `task wake retry` 仅适用已纠正原因、原准确 claim 仍未消费的明确 rejected，
+且不能存在已接受或不确定原生执行。另一可选动作是 `task wake resolve`：准确 unknown
+或 rejected 通知 attempt 在共享原生／后台／writer 静止及持久证据确认后释放调度，
+不重放、不 ACK。两者不是自动依次执行的步骤；rejected（包括 unknown 后的拒绝）
+不等于静止。operational mailbox 缺失时仍须精确持久 wake/attempt 证据，不能释放
+另一当前批次。原始处理认领、投递事件与已保存告警不改写。deferred 不满足二者前提，
+执行前刷新实际安装能力。GlobalRole 未确认有专用准确 Host-stop 命令时，读取
+原输入/control 和 `session retry <role> show`，再发现当前权限下的能力；不臆造
+Task 等价命令，也不退化为 stop-all。
+
+动作拒绝或失败后，保留精确回执、原输入和工作区，只升级缺失的权限、能力或清理证据。
+分别验证管理请求、物理停止、原会话复用/显式替换、后续实际 Provider 接受及业务处置；
+缺证据仍标为未验证。不新增自动恢复、重放、强制 ACK、模型/账号/权限变更或全局重启。

@@ -14,6 +14,7 @@ import { sourceRunContextValue } from "../context/sourceRunContext.js";
 import { requireManagedTaskCaller } from "../runtime/managedCaller.js";
 import { runtimeObservationFromTaskEvent } from "../runtime/runtimeObservation.js";
 import { isTaskRecordRetired, operationalTaskRecords } from "../task/taskRecordRetirement.js";
+import { recoveredMessageContinuation } from "../controller/taskRunRecovery.js";
 
 export function resolveMessageRecipient(
   store: TaskStore, taskId: string, roleName: string,
@@ -80,7 +81,8 @@ export function messageAssignmentBlocker(store: TaskStore,
     run.workItemId === owner.workItemId && run.reviewRoundId === owner.reviewRoundId
     && run.roleName === owner.roleName).at(-1);
   if (latest !== undefined && latest.id !== owner.id
-    && latest.inputs[0]?.input.source.channel !== "message-continuation") return "assignment-changed";
+    && latest.inputs[0]?.input.source.channel !== "message-continuation"
+    && !recoveredMessageContinuation(store, message, latest)) return "assignment-changed";
   if (target.reviewRoundId !== undefined) {
     const validation = validateExactRunReviewRound(store, latest ?? owner, { allowTerminal: true });
     if (validation.disposition !== "applied") return validation.reason ?? "review-candidate-stale";

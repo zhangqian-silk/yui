@@ -15,7 +15,8 @@ import { FileRoleLaunchPlanner } from "../../dist/executor/fileRoleLaunchPlanner
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { startControllerServer } from "../../dist/core/controllerServer.js";
 import { launchBrokerForHome } from "../../dist/runtime/launchBroker.js";
-import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl, sendAgentHostRunControl } from "../../dist/runtime/agentHost.js";
+import { inspectAgentHost, reconcileAgentHostTurn, sendAgentHostCancelControl, sendAgentHostSteerControl, sendAgentHostNativeControl, sendAgentHostRunControl, sendAgentHostLaunchControl, sendAgentHostUpgradeControl } from "../../dist/runtime/agentHost.js";
+import { AGENT_HOST_CONTROL_PROTOCOL } from "../../dist/runtime/agentHostProtocol.js";
 import { deliverGlobalInputs } from "../../dist/controller/globalInputDelivery.js";
 import { runGlobalRoleCommand } from "../../dist/commands/globalRoleCommands.js";
 import { runInboxCommand } from "../../dist/commands/inboxCommands.js";
@@ -32,7 +33,7 @@ import { createProviderRetryHooks } from "../../dist/controller/providerRetryDel
 
 async function globalHostFixture(t, adapterId = "codex", {
   controlled = true, roleName = "assistant", autoDeliver = false, capacityFailure = false,
-  omitTerminalOnce = false, direct = false
+  omitTerminalOnce = false, direct = false, instanceCode
 } = {}) {
   const home = mkdtempSync(join(tmpdir(), "yui-global-host-"));
   const store = new SqliteTaskStore(home);
@@ -54,6 +55,7 @@ async function globalHostFixture(t, adapterId = "codex", {
   store.saveConfiguredAgent(agent);
   const role = createGlobalRole(roleName, [createRoleAgentBinding(agent)], agent.id, home, now);
   store.createGlobalRoleIfAbsent(role);
+  if (instanceCode !== undefined) runGlobalRoleCommand(["update", roleName, "--instance-code", instanceCode], store, { env: {} });
   const effective = resolveEffectiveLaunch({ store, role, purpose: "execution" });
   const planned = new FileRoleLaunchPlanner(home, store, {
     cliPath: resolve("dist/cli.js"), environment: { HOME: home, PATH: process.env.PATH }
@@ -148,7 +150,7 @@ async function globalHostFixture(t, adapterId = "codex", {
     childLifecycle: planned.launch.childLifecycle, startMode: "provider",
     environment: { ...planned.launch.env, YUI_FAKE_CONTROLLED: controlled ? "1" : "0",
       ...(direct ? { YUI_FAKE_DIRECT_PORT_FILE: join(home, "direct.port") } : {}),
-      ...(capacityFailure ? { YUI_FAKE_CAPACITY_FAILURE: "1" } : {}) },
+      ...(capacityFailure ? { YUI_FAKE_CAPACITY_FAILURE: "1", YUI_FAKE_INPUT_LOG: join(home, "retry-inputs.jsonl") } : {}) },
     providerControl: planned.launch.providerControl
   };
   const startHost = providerControl => {
@@ -197,6 +199,14 @@ async function globalHostFixture(t, adapterId = "codex", {
   });
   const native = () => store.getGlobalRoleSessionSet(role.name).providerBinding.run;
   return { store, home, role, command, submitNext, native, wait, host, errors, observations, scheduler,
+    reuseHost: async sessionTitle => {
+      const { ticket } = launchBrokerForHome(home).reserve({ ...launchPayload,
+        providerControl: { ...launchPayload.providerControl, kind: "restore", mode: "resume",
+          nativeSessionId, sessionTitle } });
+      return sendAgentHostLaunchControl({ home, scope: "global", roleName, control: {
+        protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "launch", ticket
+      } });
+    },
     restartQuiescentFixtureHost: async () => {
       assert.equal((await inspectAgentHost({ home, scope: "global", roleName: role.name })).state, "idle");
       host.kill("SIGTERM");
@@ -221,6 +231,44 @@ async function globalHostFixture(t, adapterId = "codex", {
     advanceTo: at => { fakeNow = new Date(at); },
     nativeSessionId, output: () => output };
 }
+
+test("live Host reuse reports the applied native title, not its new launch intent", async t => {
+  const f = await globalHostFixture(t, "codex", { instanceCode: "old" });
+  const original = await inspectAgentHost({ home: f.home, scope: "global", roleName: f.role.name });
+  assert.equal(original.appliedGeneratedTitle, undefined,
+    "Optional native synchronization is not submitted or falsely recorded as applied");
+  const reused = await f.reuseHost("Yui assistant @new");
+  assert.equal(reused.snapshot.nativeSessionId, original.nativeSessionId);
+  assert.equal(reused.snapshot.appliedGeneratedTitle, original.appliedGeneratedTitle);
+});
+
+test("graceful Host upgrade releases its exact Endpoint and exits without ending or replaying the native Session", async t => {
+  const f = await globalHostFixture(t, "codex", { controlled: false });
+  const target = { home: f.home, scope: "global", roleName: f.role.name };
+  const before = await inspectAgentHost(target);
+  const session = structuredClone(f.store.getGlobalRoleSessionSet(f.role.name));
+  const queued = f.command(["message", "queue", f.role.name, "Queued original survives",
+    "--request-id", "upgrade-queued"]).message;
+  const queuedOriginal = structuredClone(f.store.listGlobalRoleMessages(f.role.name).find(m => m.id === queued.id));
+  const fence = { requestId: "fixture-upgrade", nativeSessionId: before.nativeSessionId,
+    processInstanceId: before.processInstanceId, hostGeneration: before.hostImplementation.generation };
+  const drained = await sendAgentHostUpgradeControl({ ...target,
+    control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "prepare-upgrade", ...fence } });
+  assert.equal(drained.snapshot.hostUpgrade.state, "drained");
+  const rejected = await sendAgentHostRunControl({ ...target, control: {
+    protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "submit-turn", nativeSessionId: before.nativeSessionId,
+    authority: { epoch: before.authorityEpoch, owner: before.authorityOwner, holderId: before.authorityHolderId },
+    run: { attemptId: "must-not-write", boundedText: "No native write across the admission fence" }
+  } });
+  assert.equal(rejected.outcome, "busy");
+  const exit = once(f.host, "exit");
+  await sendAgentHostUpgradeControl({ ...target,
+    control: { protocol: AGENT_HOST_CONTROL_PROTOCOL, type: "finish-upgrade", ...fence } });
+  await exit;
+  assert.equal(f.host.exitCode, 0);
+  assert.deepEqual(f.store.getGlobalRoleSessionSet(f.role.name), session);
+  assert.deepEqual(f.store.listGlobalRoleMessages(f.role.name).find(m => m.id === queued.id), queuedOriginal);
+});
 
 test("disable at atomic Host admission preserves the original Global input until enabled", async t => {
   const f = await globalHostFixture(t, "codex", { controlled: false });
@@ -427,6 +475,15 @@ test("capacity recovery traverses Controller, real Host and Codex adapter on the
   assert.equal(binding().retry.failedNativeTurnId, "fake-turn-1");
   assert.equal(binding().retry.nativeSessionId, f.nativeSessionId);
   assert.deepEqual(binding().retry.input, { kind: "message", roleName: f.role.name, messageId: original.id });
+  const delivered = readFileSync(join(f.home, "retry-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(delivered.length, 2);
+  assert.deepEqual(delivered[1].input, delivered[0].input, "Retry keeps original business input verbatim.");
+  assert.ok(delivered[0].additionalContext["yui.session-skills"]);
+  assert.equal(delivered[1].additionalContext["yui.session-skills"], undefined,
+    "A failed Turn in the same attachment is not evidence of lost Skill context.");
+  const guidance = delivered[1].additionalContext["yui.recovery"].value;
+  assert.match(guidance, /fake-turn-1/);
+  assert.ok(!guidance.includes(delivered[1].input[0].text), "Recovery guidance does not duplicate business input.");
   assert.deepEqual(f.errors, []);
 });
 
@@ -553,7 +610,9 @@ test("Operator natural terminals settle through Host and Inbox and automatically
     assert.ok(f.store.listGlobalRoleMessages("operator").find(message => message.id === id)?.inbox?.ack,
       "Both consumption paths must retain the fake Agent's actual handling receipt.");
   }
-  assert.equal(f.store.listGlobalRoleMessages("operator")[0].delivery.via, "provider");
+  const messages = f.store.listGlobalRoleMessages("operator");
+  assert.equal(messages.find(message => message.id === notice.messageId)?.delivery?.via, "provider",
+    JSON.stringify(messages.map(({ id, kind, delivery }) => ({ id, kind, delivery }))));
   await f.wait(async () => (await inspectAgentHost({
     home: f.home, scope: "global", roleName: "operator"
   })).state === "idle");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
@@ -9,7 +9,7 @@ import { GitIntegrationService } from "../../dist/integration/gitIntegrationServ
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { FileRoleLaunchPlanner, nativeAgentWorkspace } from "../../dist/executor/fileRoleLaunchPlanner.js";
 import { resolveEffectiveLaunch } from "../../dist/executor/effectiveLaunch.js";
-import { createRoleSessionSet, recordRoleAgentSession, updateRoleAgentSessionStatus } from "../../dist/executor/agentExecutor.js";
+import { createRoleSessionSet, recordRoleAgentSession } from "../../dist/executor/agentExecutor.js";
 import { createRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { createIntegrationAttempt } from "../../dist/integration/integrationAttempt.js";
 import { createProject } from "../../dist/repository/project.js";
@@ -23,6 +23,7 @@ import {
 import { SqliteTaskStore } from "../../dist/storage/sqliteStore.js";
 import { createTask } from "../../dist/task/task.js";
 import { runTaskCommand } from "../../dist/commands/taskCommands.js";
+import { runTaskProjectUpdateCommand, taskProjectBindingsGuard } from "../../dist/commands/taskProjectUpdateCommands.js";
 import {
   createCandidateGitSnapshot,
   createWorkItem,
@@ -301,18 +302,35 @@ test("a Project-free Task keeps its native cwd when a Project is bound later", a
   registerProject(store, "project-1", "app", project.checkout, project.remote);
   runTaskCommand(["project", "add", task.id, "project-1"], store,
     { now: () => now, environment: {} });
-  await assert.rejects(preparer.prepareTaskWorkspace(task.id), /session must be stopped/i);
-  assert.deepEqual(store.getTaskWorkspace(task.id).entries, []);
-  store.saveTaskRoleSessionSet(updateRoleAgentSessionStatus(
-    store.getTaskRoleSessionSet(task.id, "leader"), agent.id, "ended", now));
+  const original = store.getTaskRoleSessionSet(task.id, "leader");
   await preparer.prepareTaskWorkspace(task.id);
   const expanded = store.getTaskWorkspace(task.id);
   assert.equal(store.getTask(task.id).cwd, root);
   assert.equal(expanded.root, root);
   assertSingleLayerEntry(home, expanded.entries[0], root, "app");
   assert.equal(nativeAgentWorkspace(expanded), root);
-  assert.equal(launch().role.workspace, root);
-  assert.equal(launch().role.cwd, undefined);
-  assert.equal(store.getTaskRoleSessionSet(task.id, "leader").history.length, 1);
-  assert.deepEqual(store.getTaskRoleSessionSet(task.id, "leader").sessions, {});
+  const adopted = store.getTaskRoleSessionSet(task.id, "leader");
+  assert.equal(adopted.sessions.claude.nativeSessionId, original.sessions.claude.nativeSessionId);
+  assert.deepEqual(adopted.providerBinding, original.providerBinding);
+  assert.deepEqual(adopted.sessions.claude.effective.writeProjectIds, ["project-1"],
+    "Root-contained project adoption is immediately available without native drain or resume.");
+  assert.equal(runTaskCommand(["project", "list", task.id], store).data.sessions[0].scope, "captured");
+  assert.equal(store.getWorkMailbox({ kind: "role-runtime", taskId: task.id, roleName: "leader" }), null);
+  const repo = expanded.entries[0].path;
+  const originalHead = git(["rev-parse", "HEAD"], repo);
+  writeFileSync(join(repo, "uncommitted.txt"), "preserve my work\n");
+  git(["branch", "same-base", "master"], project.remote);
+  const update = async baseRef => runTaskProjectUpdateCommand(
+    [task.id, "project-1", "--base", baseRef, "--if-current", taskProjectBindingsGuard(store.getTask(task.id))],
+    store, { environment: {} });
+  assert.equal((await update("same-base")).data.change, "reference-only");
+  const seed = join(home, "seeds", "project-1");
+  commitFile(seed, "upstream.txt", "new upstream\n", "advance upstream");
+  git(["push", "origin", "HEAD:next"], seed);
+  assert.equal((await update("next")).data.change, "upstream-target");
+  await preparer.prepareTaskWorkspace(task.id);
+  assert.equal(git(["rev-parse", "HEAD"], repo), originalHead);
+  assert.equal(store.getTask(task.id).projectBindings[0].baseCommit, originalHead);
+  assert.equal(readFileSync(join(repo, "uncommitted.txt"), "utf8"), "preserve my work\n");
+  assert.deepEqual(store.getTaskRoleSessionSet(task.id, "leader"), adopted);
 });

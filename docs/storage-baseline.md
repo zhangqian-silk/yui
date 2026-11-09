@@ -2,11 +2,182 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.24. The 1.23 → 1.24 transition archives and splits the
-coupled model-management connection into independent module/endpoint references.
-It creates no Agent binding, maintenance grant, service ownership or network
-effect. Fresh effective Session snapshots may capture reference-only model
-bindings; historical snapshots remain unchanged.
+Current storage is 1.36. The 1.35 → 1.36 transition archives and splits a coupled
+model-management connection into independent module/endpoint references. It creates
+no Agent binding, maintenance grant, service ownership or network effect.
+
+The 1.34 → 1.35 transition admits optional
+`migrationBackupKeep` configuration and schema-1 success receipts for new migration
+backups. Existing configuration bytes and historical backups are unchanged; the
+schema transition itself never deletes files.
+
+The 1.33 → 1.34 transition separates frozen Context
+metadata from immutable resource content. SQLite retains identity, scope,
+sequence and fixed references; `task-data/<task-id>/context-values/<digest>.json`
+holds the exact values, deduplicated only within that Task. Snapshot digests,
+authorized values and historical references do not change. Scope lookups use
+the existing SQLite index before loading selected content. Missing or corrupt
+content is an error, never reconstructed from current state.
+
+Home admission validates the current schema, Home identity and global config,
+not every historical Task record or file. Exact reads and explicit record audits
+remain strict. The compact Task catalog keeps missing/invalid Task bodies visible
+with `recordError` and a null `ref`; it does not fabricate valid Task references.
+Doctor reports historical record errors separately as `stored records`, outside
+the core storage health gate used for post-update verification.
+Exact reads return missing-file/content errors for the Agent to assess;
+missing history does not disable unrelated Tasks. Normal upgrades do not
+rewrite Task worktree contents or create automatic task-data/Artifact backups,
+and deleted history is not automatically restored. The existing database
+migration backup and rollback mechanism is unchanged.
+Upgrade admission uses the same boundary plus SQLite integrity checking;
+each migration still validates the data it transforms. This is not automatic
+repair or a guarantee that damaged core database/configuration can run.
+
+### Migration backup retention
+
+```sh
+yui config resources show
+yui config describe resources
+yui config resources set migration-backup-keep 3
+yui config resources clear migration-backup-keep
+```
+
+`migration-backup-keep` accepts integers from 1 to 1000, default 3. A count means
+backup **sets**, not individual database/WAL/SHM files. Saving or clearing the
+setting never deletes anything and needs no restart. It takes effect only after
+the next required storage migration succeeds and passes control-record and SQLite
+integrity validation, under the existing `upgrade`/`update` maintenance fence.
+Dry-run, update preflight, already-current storage, backup failure and migration
+or validation failure never prune. No background cleaner is installed, and old
+backups are never deleted first to make room for a new backup.
+
+New successful backups receive `<backup>.retention.json`, binding their canonical
+Home path, Home ID, creation timestamp and exact file identity. Only unchanged,
+owned, single-link regular files with a matching receipt can be removed.
+Candidates are ordered by the validated creation timestamp, not storage-version
+strings or modification times. Historical `pre-storage-v…-<timestamp>.db` names
+without receipts are reported as protected: naming alone cannot establish
+ownership or distinguish success from failed recovery material. First enabling
+the feature therefore does **not** reclaim pre-existing excess backups or infer
+success receipts. Unknown files, manual backups, directories, links, shared
+backup roots and another Home's data are never adopted.
+
+The current migration backup is always protected. To reserve another successful
+backup for a separate recovery, place a `<backup>.pin` marker before using it and
+keep it until that recovery finishes. Failed/unreceipted backups need no marker.
+Any `-wal`, `-shm` or `-journal` sidecar protects the entire set, rather than
+unlinking SQLite pieces. Observed open files and an incomplete process inventory
+also prevent deletion. Maintenance serializes Yui writers; do not open or alter
+backup sets with an external tool during maintenance. Identity, fence and
+sidecar checks are repeated immediately before deletion.
+
+Protected sets can exceed the limit; output explains why. Both commands report
+retained/deleted counts, exact deleted paths, protection reasons and cleanup
+warnings (`upgrade --json` also exposes `report.backupRetention`). An unreadable
+inventory reports the retained count as unknown. Cleanup errors never turn a
+validated migration into failure or trigger rollback/replay. Retry occurs only
+at a later successful migration. A crash after database deletion can leave an
+inert receipt, which is ignored; incomplete/mismatched receipts protect surviving
+files. This is database migration retention, not whole-Home or Task backup.
+
+### Offline scoped repair
+
+The user/current Operator can run `yui repair inspect` without starting a
+Controller or loading Task history. Task Roles cannot use this Home maintenance
+entry. `yui repair config --patch /absolute/patch.json` previews a patch such as
+`{"set":{"telemetryEnabled":false},"remove":["unexpectedField"]}`. Use stored
+property names (listed by `repair inspect`), not CLI hyphenated keys.
+Only public configuration properties can be set; explicit removal can also
+remove an unknown corrupt field. `schemaVersion` cannot be patched. Unmentioned
+fields are preserved and the complete candidate must validate. Already-valid
+configuration uses ordinary `config set/clear`, not this repair entry.
+
+Apply the same request with `--apply --expect <returned-digest>`. The digest binds
+the Home, original control rows/revision and exact candidate; changed data or
+inputs require a fresh preview. The write and revision bump are one SQL
+transaction. Apply holds the existing maintenance and startup fences and refuses
+Controller discovery/process presence; it does not stop or start services.
+After an uncertain response, inspect and verify the intended values before any
+retry. Successful repair is not proof that all Home data or services are healthy.
+
+`yui repair identity --from-backup /absolute/original.db` previews restoration
+from a user-selected existing SQLite backup. Apply uses the same digest flags.
+The backup identity must validate and match the surviving valid `homeId`; valid
+surviving identity fields must also agree. This never generates a replacement
+identity or restores the entire database. Invalid JSON, missing singleton rows,
+lost/unverifiable Home IDs, revision corruption, unsupported schema and physical
+database corruption remain explicit blockers. No automatic backup or historical
+file restoration is introduced. Preview outputs field names, not full config
+values. A workspace directory selected in a config patch must already exist and
+remain outside Home; repair does not create directories on its behalf.
+
+Upgrade runs under the existing maintenance fence, first backing up the old
+database (which still embeds all old values). It fsyncs objects before committing
+metadata. On a handled failure the database is rolled back/restored and only
+this attempt's new files are removed; cleanup/restoration errors are reported.
+A process crash before commit may leave unreferenced immutable objects. They
+are not authoritative snapshots and a retry verifies and reuses them.
+If a user separately chooses a complete historical backup, it must include
+`task-data/` as well as `yui.db` and existing artifact repositories; such a file
+backup is not an upgrade prerequisite. Worktree cleanup must never remove these
+durable namespaces. These changes do not themselves implement Task deletion.
+
+New Task/Run Context includes portable Project policy and the effective
+Knowledge version, not registration paths, proposals or the entire Knowledge
+revision history. Explicit Project commands still expose those records.
+Already frozen Context retains its original values, including old projections.
+The 1.32 → 1.33 transition materializes each inherited
+experimental Leader from its effective global configuration at upgrade time.
+Its configuration is then maintained independently, like an ordinary Task Role.
+Ordinary Roles and historical Session/Run payloads remain byte-for-byte unchanged.
+Skill references still load current shared files; no historical input is replayed.
+
+The 1.31 → 1.32 transition admits explicit
+ExperimentLeader template references and schema-1 experimental knowledge in
+Task artifact repositories. No tables are added and no existing Task/Role,
+artifact or runtime is converted. In 1.32, inherited configuration was resolved on read;
+historical execution snapshots remain fixed. Use the centralized upgrade path
+for an existing Home; rolling software back requires its matching Home backup.
+
+The 1.30 → 1.31 transition admits optional Leader draft/develop overrides and
+launch stage/source provenance. It preserves existing Role, Task, Session and
+Run payloads byte-for-byte; it neither invents overrides nor reconfigures or
+restarts existing Sessions.
+
+The 1.29 → 1.30 transition admits explicit WorkItem
+continuation receipts, Role-tagged native user messages, and correlation of an
+already accepted native Turn with its newly authorized Run. Existing payloads
+remain byte-for-byte unchanged; no repair intent or acceptance is inferred,
+no WorkItem is reopened by migration, and no native input is replayed.
+
+The 1.28 → 1.29 transition admits optional local Git
+total and remote Git inactivity/total timeout settings. Existing configuration payloads remain
+byte-for-byte unchanged; absent fields use runtime defaults.
+
+The 1.27 → 1.28 transition admits exact-identity native
+title effect receipts under `runtime/native-titles`. It does not infer historical
+title ownership, rename conversations, or change existing database payloads.
+Unconfirmed naming intents remain non-replayable across Host replacement.
+
+The 1.26 → 1.27 transition admits versioned Host-upgrade
+signals in the existing role-runtime mailbox. It adds no table, infers no past
+upgrade request, and preserves existing payloads. Drain receipts precede Host
+exit; a Controller restart resumes the exact request, not business input.
+The 1.25 → 1.26 transition admits optional Codex
+workspace-write temporary-directory exclusions without changing historical
+permission payloads. The published 1.24 → 1.25 transition remains unchanged
+and admits optional Role
+`instanceCode` and Session `generatedTitle` presentation fields without rewriting
+existing records. Untagged historical titles remain user-owned; no code or
+title provenance is inferred. The 1.23 → 1.24 transition adds transaction-maintained
+Task read-cache revisions for the scheduler's nine source tables. Inserts,
+updates and deletions invalidate only the affected Task; rollback also rolls
+back the token. These tokens are derived cache identities, never Task authority
+or a replacement for the Home revision CAS. Historical payloads are unchanged,
+and existing Tasks start with an implicit zero token until their first mutation.
+Two partial indexes support exact runtime-observation identity lookup without
+scanning or deserializing the historical observation set.
 
 The 1.22 → 1.23 transition adds global Shell Job
 definitions with revisioned script files and per-Run executable snapshots.

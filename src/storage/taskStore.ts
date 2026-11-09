@@ -17,6 +17,10 @@ import {
   resolveAgentLaunchInactivityTimeoutSeconds,
   resolveControllerTaskConcurrency,
   resolveDeliveryTimeoutSeconds,
+  resolveMigrationBackupKeep,
+  resolveGitLocalTimeoutSeconds,
+  resolveGitRemoteInactivityTimeoutSeconds,
+  resolveGitRemoteTimeoutSeconds,
   resolveResourcesGcAutoQuarantine,
   resolveResourcesGcMode,
   resolveResourcesQuarantineTtlHours,
@@ -133,7 +137,11 @@ export type YuiConfig = Readonly<{
   controllerTaskConcurrency?: number;
   agentLaunchInactivityTimeoutSeconds?: number;
   deliveryTimeoutSeconds?: number;
+  gitLocalTimeoutSeconds?: number;
+  gitRemoteInactivityTimeoutSeconds?: number;
+  gitRemoteTimeoutSeconds?: number;
   resourcesQuarantineTtlHours?: number;
+  migrationBackupKeep?: number;
   /**
    * Path to the tmux binary. Defaults to `tmux` on PATH.
    */
@@ -205,6 +213,11 @@ export type TaskStore = {
   queryContextRecords(taskId: string, query: ContextRecordQuery): ContextRecordPage;
   latestEventSequence(taskId: string): number;
   listEventsByType(taskId: string, types: readonly string[]): TaskEvent[];
+  inspectTaskProcessData(taskId: string): import("../task/processCleanup.js").TaskProcessData;
+  clearTaskProcessData(
+    taskId: string, digest: string, requestId: string, actor: "user" | "operator" | "leader"
+  ): import("../task/processCleanup.js").TaskProcessCleanupReceipt;
+  hasRuntimeObservation(taskId: string, identity: { semanticKey: string } | { eventId: string }): boolean;
   readTaskUsageFacts(taskId: string): import("../runtime/taskUsageQuery.js").TaskUsageFacts;
   listTaskRunWorkspaceBases(taskId: string): Pick<AgentRun, "id" | "createdAt" | "workspace">[];
   contextInputReferences(taskId: string, scope: ContextInputScope): { messages: string[]; events: string[] };
@@ -296,6 +309,8 @@ export type TaskStore = {
   listPendingActivationRequestTaskIds(): string[];
   /** Current durable state revision; advances once per committed mutation. */
   getStateRevision(): number;
+  /** Read-cache token only; uncommitted mutations have no reusable identity. */
+  getTaskReadRevision(taskId: string): number;
   getTask(id: string): Task | null;
   /**
    * Issue 07 (Leader convergence): load exactly the records the next-action
@@ -392,6 +407,7 @@ export type TaskStore = {
   nextContextSnapshotId(taskId: string): string;
   getContextSnapshot(taskId: string, snapshotId: string): ContextSnapshot | null;
   listContextSnapshots(taskId: string): ContextSnapshot[];
+  queryContextSnapshots(taskId: string, query: import("./taskContent.js").ContextSnapshotQuery): ContextSnapshot[];
   saveContextSnapshot(snapshot: ContextSnapshot): void;
   nextRunId(taskId: string): string;
   peekNextRunId(taskId: string): string;
@@ -578,7 +594,11 @@ export function validateYuiConfig(config: YuiConfig): void {
       "controllerTaskConcurrency",
       "agentLaunchInactivityTimeoutSeconds",
       "deliveryTimeoutSeconds",
+      "gitLocalTimeoutSeconds",
+      "gitRemoteInactivityTimeoutSeconds",
+      "gitRemoteTimeoutSeconds",
       "resourcesQuarantineTtlHours",
+      "migrationBackupKeep",
       "tmuxBin",
       "tmuxHistoryLimit",
       "telemetryEnabled",
@@ -606,10 +626,14 @@ export function validateYuiConfig(config: YuiConfig): void {
     resolveResourcesGcMode(config.resourcesGcMode);
     resolveResourcesGcAutoQuarantine(config.resourcesGcAutoQuarantine);
     resolveResourcesQuarantineTtlHours(config.resourcesQuarantineTtlHours);
+    resolveMigrationBackupKeep(config.migrationBackupKeep);
     resolveRuntimeHealth(config.runtimeHealth);
     resolveControllerTaskConcurrency(config.controllerTaskConcurrency);
     resolveAgentLaunchInactivityTimeoutSeconds(config.agentLaunchInactivityTimeoutSeconds);
     resolveDeliveryTimeoutSeconds(config.deliveryTimeoutSeconds);
+    resolveGitLocalTimeoutSeconds(config.gitLocalTimeoutSeconds);
+    resolveGitRemoteInactivityTimeoutSeconds(config.gitRemoteInactivityTimeoutSeconds);
+    resolveGitRemoteTimeoutSeconds(config.gitRemoteTimeoutSeconds);
     resolveTmuxBin(config.tmuxBin);
     resolveTmuxHistoryLimit(config.tmuxHistoryLimit);
     resolveTelemetryEnabled(config.telemetryEnabled);

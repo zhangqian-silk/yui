@@ -30,8 +30,8 @@ Leader 读取原始需求并判断是否属于独立工作。请求身份、权�
 
 稳定的 Project checkout 是只读参考。Task main 是一个逻辑上的多 Project 根，带有
 按 Project 划分的独立 Git clone；WorkItem、Review 和 Integration worktree 归这些
-Task 仓库所有。对单个 Project，Agent 的正常 cwd 是其受管 Git 根；
-对多个 Project，根加上原生的附加目录机制暴露明确的 Project 集合。
+Task 仓库所有。零个、一个或多个 Project 的默认原生 cwd 都是 Task 的受管根，
+通过原生附加目录机制暴露明确的 Project 集合；运行中新增 Project 不改变 cwd。
 
 一个隔离的 WorkItem 为可写 Project 拥有独立 worktree，为其余 Project 提供 Task-main
 上下文。写范围是显式的，且只能由获授权的 owner 扩大。Review 拥有一个单独的冻结
@@ -42,6 +42,48 @@ Task 仓库所有。对单个 Project，Agent 的正常 cwd 是其受管 Git 根
 启动前，实际 Git 血缘必须由已记录的基线派生而来。落在该血缘之外的 reset 是物理
 漂移，而不是猜测或修复所有权的理由。一个显式采用的环境可以选择不同的原生 cwd，
 而受管工作区仍是 Git/控制所有权记录。
+
+### 更新 Project 绑定并保留原 conversation
+
+先读取 `yui task project list <task> --json` 返回的 `writeGuard`，再执行：
+
+```sh
+yui task project update <task> <project> --base <branch> --if-current <writeGuard>
+```
+
+这是当前 Leader、Operator 或用户的 Task 管理操作，不授予 Project 写权限。
+命令校验远端分支，在观察后重新检查绑定集合与工作区，再原子保存更新和审计事件。
+`task update` 不接受绑定字段；`project add` 只用于新增绑定，不能冒充更新。
+
+解析到原基线提交的别名纠正返回 `reference-only`；指向不同提交则返回
+`upstream-target`。两者都保留 HEAD、base/current commit、未提交改动和工作区
+所有权。结果明确标记 `workspaceMigrated: false`；真实基线变更通过现有
+`task upstream integrate <task> --project <project>` 实际应用和验证，保留该流程的
+脏工作树、权限及冲突门禁。Draft 或尚未准备的绑定只更新将来的准备目标。
+目录迁移、权限撤销不是元数据更新。
+
+`project add` 在 Task-main 下创建直接子目录。cwd、既有路径/分支/访问权限及原生执行边界
+不变时，工作区准备在同一事务中采用项目清单及当前 Session 范围。这是**纯配置热更新**：
+不新建 Host、不重连 Provider、不调用原生 resume、不 interrupt，也不等待当前 Turn 结束。
+Leader 可以在同一 Turn 内新增并使用项目。`project update --base` 同样保留 Host、
+连接与 conversation；上游目标更新仍不会自动 rebase 物理工作树。
+
+`project add` 返回 `workspaceConfiguration.mode: "in-place"`；`task project list` 展示
+每个 Session 当前工作区、可写项目及生命周期观测。启动环境中的 `YUI_*PROJECT*` 只是
+历史启动快照，不是实时配置或授权依据。若显式采用的 scratch/local 执行目录不同于
+Task main，则新增 Task-main 项目会明确拒绝，不会隐式扩大目录授权或替换 Host。
+热采用不修改已连接 Provider 的原生配置与沙箱，
+不放宽受保护路径，也不绕过原生工具限制。
+只处理 Task-main 附着，不扩展
+隔离 WorkItem/Review、planning 权限、模型/账号设置或显式 Assignment 范围；
+只读 Leader 仍为只读，既有 AgentRun 快照及 Provider 回执不改写。
+已采用的执行目录保留原身份及资源授权记录，绑定更新不会重选环境；
+恢复时仍核验目录身份和授权，尚未采用的 preparation 则继续拒绝原 Task 意图变化。
+
+不兼容边界或已有 runtime 清理/升级预约会拒绝采用，而不是中断执行或自动降级到 Host
+重建。绑定意图可能已经保存，恢复前应检查结果及当前工作区。暂停的 Task/Role 保持暂停；
+配置尚未采用时仅延后输入，不重放。Host 代码升级仍走独立的排空/退出证明流程；
+项目配置变更不再请求该操作。
 
 ## Candidate、Review 与 Integration
 
@@ -57,6 +99,11 @@ Integration 在候选 worktree 中套用固定来源提交，运行已配置的�
 
 已有 merge/rebase/cherry-pick 若缺少原尝试的进度回执，不根据 Git 标记接管。
 保留现场并选择显式恢复；正常续作使用原回执，不重放已完成步骤。
+
+若 Git 已停止而保存冲突的事务失败，显式 `task integration continue` 可以继续
+同一次操作，但原进度回执、工作区、分支、来源和 Git 元数据必须全部匹配。
+此恢复要求非空且全部暂存的解决结果，无未解决、未暂存或未跟踪文件。
+普通重入不授权恢复；缺少证据仍拒绝。不伪造冲突记录、不重新发起来源命令，也不跳过检查。
 
 当检查是一个 DurableJob 时，Integration 在运行期间保留那个确切的 jobId。Job 结算
 后，`task integration continue <task>/<integration>` 消费其结果并执行带守卫的收尾。
@@ -314,6 +361,14 @@ Force 不验证合并、不验收工作、不证明物理静止、不丢弃脏�
 检查后通过 `yui task archive-cleanup <task>` 显式重试精确 owner 的安全清理。
 `allResourcesReleased` 将当前轮次及剩余所有权与历史警告分开报告；不隐含后台重试或更广泛的删除
 权限。两条归档路径都保留 Task 历史与恢复信息。已归档的 Task 不能重开。
+
+显式删除保留的 telemetry 明细时，先运行
+`yui task process-cleanup <task> --preview`，再使用返回的摘要执行
+`yui task process-cleanup <task> --confirm <digest> --request-id <stable-id>`。
+当前仅清明细，保留汇总、业务事件、冻结证据、Artifact、日志和工作区；
+不是完整过程文件清理或 Task 删除。执行要求已归档、业务已结清、物理运行已释放，
+在 SQLite 写事务内复查预览并同时保存删除回执。响应未知时复用同一请求 ID 和摘要。
+已归档任务不再接收延迟到达的在线 telemetry。软件升级交付能力，但不会调用清理。
 
 runtime 清理中断可能留下相邻的 `.cleanup-*` 认领目录。重试同时检查这些目录和原路径，
 只有 Owner marker 精确匹配且没有存活进程引用时才删除。marker 缺失或不匹配时保留目录，

@@ -21,7 +21,7 @@ import { createYuiWebServer } from "../../dist/web/webServer.js";
 import { createWebTaskSurface } from "../../dist/web/webTaskSurface.js";
 import { readTaskSearchSource } from "../../dist/context/taskSearch.js";
 
-test("body search pages authoritative records, pins originals and never widens Task scope", (t) => {
+test("body search pages source records and preserves pinned evidence across Task ownership", (t) => {
   const home = mkdtempSync(join(tmpdir(), "yui-search-"));
   const store = new SqliteTaskStore(home);
   t.after(() => { store.close(); rmSync(home, { recursive: true, force: true }); });
@@ -72,16 +72,16 @@ test("body search pages authoritative records, pins originals and never widens T
   }
   const env = { YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1", YUI_ROLE: "leader",
     YUI_NATIVE_SESSION_ID: "leader", YUI_WORKSPACE: home };
-  assert.ok(search(env).items.every(item => item.taskId === "task-1"));
-  assert.throws(() => search(env, "--task", "task-2"), /outside/i);
-  assert.throws(() => search(env, "--cursor", first.nextCursor), /cursor/i);
-  assert.throws(() => search({ ...env, YUI_ROLE: "worker", YUI_NATIVE_SESSION_ID: "worker" }), /Assignment/i);
+  assert.equal(search(env).scope.taskId, null);
+  assert.ok(search(env, "--task", "task-2").items.every(item => item.taskId === "task-2"));
+  assert.doesNotThrow(() => search(env, "--cursor", first.nextCursor));
+  assert.ok(search({ ...env, YUI_ROLE: "worker", YUI_NATIVE_SESSION_ID: "worker" }).items.length);
   assert.throws(() => search({ YUI_ROLE: "leader" }), /identity/i);
   assert.throws(() => search({ YUI_SESSION_SCOPE: "global", YUI_ROLE: "reviewer" }), /Operator/i);
   const foreign = items.find(item => item.taskId === "task-2");
-  assert.throws(() => inspectTaskContext(store, foreign.taskId, foreign.ref, env), /outside/i);
-  assert.throws(() => readTaskSearchSource(store, foreign.taskId,
-    { ...foreign.ref, field: foreign.field, offset: 0 }, env), /outside/i);
+  assert.doesNotThrow(() => inspectTaskContext(store, foreign.taskId, foreign.ref, env));
+  assert.equal(readTaskSearchSource(store, foreign.taskId,
+    { ...foreign.ref, field: foreign.field, offset: 0 }, env).authority, "reference-only");
   assert.throws(() => readTaskSearchSource(store, hit.taskId,
     { ...hit.ref, field: hit.field, offset: 0 }), /changed/i);
 });

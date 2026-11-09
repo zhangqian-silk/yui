@@ -15,6 +15,79 @@ Task Role 是 Task 局部的；global Role 提供已配置的默认值和全局�
 的 global Role。只有当请求的 Task Role 不存在时，global Role 才作为创建模板。
 可用性、producer 分离和冻结的审查候选仍然适用。
 
+## 迁移备份保留数量
+
+`yui config resources set migration-backup-keep <1-1000>` 设置保留的最近成功受管
+迁移备份集合数，默认 3。`yui config resources show` 查看有效值，`clear` 恢复默认。
+修改配置不删除文件、无需重启；仅在下一次 `upgrade` 或 `update` 的存储迁移成功且
+校验通过后执行清理，恢复依赖和无法确认的历史备份即使超限也保护。
+详见[保留与保护规则](storage-baseline.zh-CN.md#迁移备份数量保留)。
+
+## Git 操作预算
+
+三项 Git 超时均有正式配置。本地命令（包括本地 ref 复制和产物仓库）使用总耗时上限；
+clone、远程 fetch 和需要连接远端的 `ls-remote` 使用独立的无进展超时与总耗时上限：
+
+```sh
+yui config tools show
+yui config tools set git-local-timeout-seconds 30
+yui config tools set git-remote-inactivity-timeout-seconds 120
+yui config tools set git-remote-timeout-seconds 1800
+yui config tools clear git-local-timeout-seconds
+yui config tools clear git-remote-inactivity-timeout-seconds
+yui config tools clear git-remote-timeout-seconds
+```
+
+三项都接受 1–86400 的整数秒，默认分别为单条本地命令总耗时 30 秒、
+无 stdout/stderr 输出 120 秒、单条远程命令总耗时 1800 秒。
+保存后下一条命令生效，包括 Controller 的 Project refresh 和 Task
+准备；无需重启，已启动命令保持原预算。clone/fetch 即使没有终端也显式请求进度输出。
+每次输出只重置静默计时，不延长总上限；输出仅证明活动，不证明传输在推进。
+远程 stderr 只保留末尾 64 KiB，避免长时间进度输出耗尽缓冲；stdout 和本地命令输出
+保留原缓冲上限。
+
+任一预算耗尽时终止该次调用自己的进程组（含传输 helper），等待进程与管道关闭。
+错误保留超时类型和预算、实际耗时、可用的退出码、信号及 stderr；不会自动重试，
+失败也不等于已回滚。存储 1.28 → 1.29 声明三项可选配置，不重写旧配置或持久化默认值。
+
+## 可选实例码与会话标题
+
+每个 Role 独立配置仅用于展示的实例码。例如只设置 Operator，其他角色留空：
+
+```sh
+yui config role update operator --instance-code dev-bj
+yui config role show operator
+yui config role update operator --clear-instance-code
+yui task role update task-159 leader --instance-code dev-sg
+```
+
+`add` 也接受 `--instance-code`。允许 1–24 个 UTF-16 单位的 Unicode 字母、
+数字、组合标记、短横线和下划线，不输入 `@`。空白、控制字符、转义和其他标点
+直接拒绝，不静默清洗。没有 Home 级默认值；Global Role 作为模板创建 Task Role
+时复制其值，之后模板变化不回写。Agent Profile 不携带实例码；既有 Task Role
+通过自己的 update/clear 修改。实例码不改变启动版本、权限、内部 ID 或消息寻址，
+也不保证全局唯一；遇到歧义应查看实际 Home、Session 和原生身份。
+
+生成的 Task 标题为 `Yui Leader task-159 Draft @dev-sg · 任务名`。
+`Draft` 根据 Leader Session 的 planning 权限显示；Task 激活后保留的 planning
+会话仍显示 Draft，delivery 会话不显示。保留完整小写 Task ID。
+Operator 为 `Yui Operator @dev-bj · MMDD`；未配置保持
+`Yui · Operator · MMDD`，日期使用会话创建时间和配置时区。
+其他 Global Role 配置实例码后生成标题。80 单位总长度内优先截断任务名，
+不拆开代理对；身份部分无法容纳则明确报错，不静默截断。
+
+配置修改不会立即重命名、停止或重建活动会话。新会话采用新配置，后续正常
+Host 启动/恢复可刷新确认由 Yui 管理的标题，不改写历史记录。
+缺少来源标记的旧标题及已记录的用户标题保留。Codex 恢复时只有原生返回的
+名字仍等于上次生成标题才改名；原生信息缺失或用户已改名则跳过。
+Codex 只记录已成功应用的名称；复用存活 Host、命名失败或跳过不推进标题来源。
+Provider 命名为尽力能力；失败或不支持不会使会话失效。其他 Provider 仅在新建时
+传入生成名，恢复时不重新传入名称，以保护原生用户改名；不为改名主动重启。
+在可安全改名的 Codex 恢复路径，清除自定义 Global Role 实例码后恢复
+`Yui role`；Operator 恢复未配置格式。
+
+存储 1.24 → 1.25 增加可选实例码和生成标题来源，不回填历史记录或猜测标题所有权。
+
 ## 启用与停用
 
 启停是配置状态，与 Active Agent、Session 是否运行和 Task executionGate 分开：
@@ -65,6 +138,38 @@ Worker 的编辑不会改写既有的 Task Role。重新套用一个 Profile 是
 原生子代继承其父 Agent 和权限。Profile 可以引导它们的行为；model/effort 覆盖
 需要真实的原生工具支持。它们不获得 Yui Role、独立 Assignment 或更大范围。
 
+## Leader 可选 draft/develop 配置
+
+同一逻辑 Leader 可以为规划（`draft`）和正式交付（`develop`）设置可选的
+Agent/model/effort 覆盖项。阶段不是新 Role，也不授予权限；不影响 Worker 或 Reviewer。
+
+```sh
+yui config role update leader --stage draft --agent planner --model <model> --effort <effort>
+yui config role update leader --stage develop --model <model>
+yui task role update <task> leader --stage draft --effort <effort>
+yui task role show <task> leader
+yui task role capabilities <task> leader --stage draft
+```
+
+不传 `--stage` 时保持原有 binding 更新和 `role bind` 语义。阶段内的 `--agent`
+只选择该阶段的 Agent，不修改默认 active Agent。未覆盖 Agent 时使用默认 active Agent；
+model/effort 逐字段由**所选 Agent 自身已冻结的 Role binding**兜底，再由原生默认值兜底。
+切换 Agent 不复制另一 Agent 的模型、effort、组件、权限或供应商专属配置；
+首次选择未绑定 Agent 时建立其适配器默认 binding，必要时另行配置该 binding。
+已存在的阶段 model/effort 显式覆盖仍保留，并按新 Agent 校验。
+
+`--clear-agent`、`--clear-model`、`--clear-effort` 分别移除覆盖项；
+`--clear-agent-config` 清空该阶段。清除表示继承，不表示强制使用原生默认值。
+阶段更新不能混合 Profile、环境或权限设置；两个阶段都可以完全不配置。
+
+新 Task 冻结全局 Leader bindings 和阶段配置；之后修改全局模板不会静默改写既有 Task，
+需要使用 Task 级更新。阶段来自实际 planning/delivery 启动权限，不从标题、输入文本或
+任意 purpose 猜测。Draft 激活沿现有工作区/权限交接自动选择 develop，不增加阶段专用
+会话替换机制。期望更新不修改正在执行的回合，也不重放输入；保留 Session 的 Host
+重建仍使用已记录的生效快照，需要采用新设置时走既有显式 Session 替换边界。
+查看命令显示期望覆盖、解析值以及生效快照的阶段和逐字段来源；这些是启动请求事实，
+不是原生模型的实时观察。
+
 ## 期望、生效与观察
 
 期望设置是下一次启动的意图。AgentRun 和 Session 捕获生效启动：Agent/组件、
@@ -86,6 +191,18 @@ Worker 绑定变更保留活动 Assignment 的 Agent 和生效快照；之后的
 Provider 权限策略、Profile 访问意图和 Project 写范围是不同的合同。Provider 旁路
 不授予对另一个 Project 的写入。受管工作区 owner、精确 Assignment 和资源 grant
 落实 Yui 操作；宽泛的原生权限不是 OS 沙箱。
+
+Codex configured 权限可显式排除自动加入的可写临时目录：
+`--sandbox workspace-write --exclude-tmpdir-env-var true --exclude-slash-tmp true`。
+两项均接受 `true`/`false`；`--clear-exclude-tmpdir-env-var` 和
+`--clear-exclude-slash-tmp` 分别清除覆盖。省略时保留原生默认语义，不默认排除。
+两项都要求显式 `workspace-write`，其他 adapter 或冲突策略会被拒绝。
+受管 start/resume 编译到该 Thread 的 `sandbox_workspace_write`，不修改共享 daemon
+默认值或账户文件；普通交互启动使用等价的单次调用结构化选项。
+映射依据[原生配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)。
+这只排除自动 `$TMPDIR`、`/tmp` 写授权，不排除位于其中且被显式授权的 writable root；
+也不证明读隔离或阻止合法 Controller RPC 的副作用。配置被接受不是 OS 沙箱生效证明；
+应检查原生回执，并在另行授权的可丢弃 fixture 内验证实际执行边界。
 
 以 write 意图在自己 Task-owned main 工作区启动的 delivery Leader，从该工作区
 捕获已绑定 Project 的写域，不要求存在 open WorkItem；已接受结果也不会移除这个
@@ -151,11 +268,20 @@ yui config role show <global-role>
 yui config profile show <profile>
 yui task role add <task> <role> --profile <profile>
 yui task role show <task> <role>
+yui task role show <task> <role> --view full
 yui task role update <task> <role> --environment <preparation-id>
 yui task role update <task> <role> --managed-environment
 yui task role session inspect <task> <role>
 yui task role session new <task> <role> --reason "<why a fresh Session is useful>"
 ```
+
+`task role show` 默认返回完整的期望 Role 配置及当前记录的 Session 配置，
+不再附带历史 Run 配置副本。记录配置和保留的控制目标不等于实时状态或停止
+证明；需要这些事实时使用返回的 status/session 检查入口。`--view full`
+保留原来的完整 `role`、`sessions`、`runs` 文档及有界分页。依赖这些历史
+字段的 JSON 消费者须显式选择 full，并在后续游标读取中保持同一视图。
+这是 CLI 默认 JSON 视图变更，不改变存储，也不改变交互配置向导使用的
+`task.role.show` 配置 RPC。
 
 全局查询使用调用进程的默认原生环境；Task 查询使用 Controller 的原生账户环境及
 所选 Role 配置，不把调用方的凭据转交给其他 Provider。省略 `--error` 查看当前期望

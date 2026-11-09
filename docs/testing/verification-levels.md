@@ -53,12 +53,12 @@ is required.
 Both include `test/core` and `test/platform`. For an already built checkout,
 `npm run test:business` runs only `test/core` and `npm run test:platform` runs
 only `test/platform`; neither rebuilds. CI owns one explicit build per job.
-The stable suite owns current storage 1.24 and its declared 1.0 through 1.23 minor
+The stable suite owns current storage 1.36 and its declared 1.0 through 1.35 minor
 transition. It contains no undeclared historical format compatibility path.
 
 Current coverage includes:
 
-1. Fresh storage 1.24, exact schema/record validation, no initialization over
+1. Fresh storage 1.36, exact schema/record validation, no initialization over
    unknown data, and rejection of old integer formats without mutation.
 2. Exact-version staging, mismatched-target refusal, same-major contiguous
    minor preflight, explicit maintenance-owner identity across handover, and
@@ -90,6 +90,49 @@ stable suite. Real-model or real-Home checks require explicit authorization.
 Current envelope checks reject arbitrary unknown fields, rather than maintaining
 a blacklist of retired field names.
 
+## Context evaluation checks
+
+Evaluation code is organized by topic under [scripts/eval](../../scripts/eval/README.md).
+Core evidence utilities and provider usage adapters are separate from the Yui
+context scenarios below and the independent review-material evaluation.
+
+The framework produces engineering measurements and objective check evidence;
+the executing Agent interprets actual trajectories, semantic quality, model
+variation and optimization benefit. Assemble related changes before a bounded
+representative experiment. Wording-only or small byte reductions normally need
+deterministic checks, not their own full A/B and model-review chains. Record the
+decision question and spending bounds in the experiment plan; independent model
+review is optional for material disputes, never automatic. This does not grant
+real-resource authorization.
+
+New runs freeze `decisionPolicy: agent-analysis`: process exit describes complete
+collection and released cleanup, not quality acceptance. Original check failures
+and unknowns remain in reports. Only bounded non-recovery business reading/load
+findings cease to censor later safe inputs; authority, effects, handling, identity,
+native execution and recovery fences remain. Historical exits and seals are not
+rewritten. See the framework README for exact boundaries and Agent handoff.
+
+`npm run eval:check` checks evaluation contracts without starting a Home.
+The explicit `npm run eval:context:wiring -- --product <absolute-checkout> --out <new-dir>`
+uses the [maintained framework](../../scripts/eval/context/README.md)
+for multi-input CLI/Controller/Host/fake-Provider chains and bounded fault checks.
+It remains outside `npm test` and the platform matrix: package smoke continues
+to own package/OS wiring. Fake success is not a real-model, native-compaction or
+lossless-observation claim. Historical performance ledgers are not reset by
+framework validation; live resources require a separately authorized freeze.
+The fake-only `native-normal` scenario verifies completed native tool evidence
+through the real adapter without participant files. Read/load checks are bound
+to Role/Thread/context epoch and decision time; unsupported evidence stays
+unknown. Current observation cannot yield an unqualified valid-pass.
+Proxy checks exercise both managed and identity-free detached control clients;
+detached transport cannot supply subject read/load evidence.
+The opt-in wiring `--profile recovery` checks a scheduled retained-claim
+Session replacement using the same native evidence adapter as real mode:
+exact predecessor stop, fresh successor ownership/read/load, preserved effect
+and successor ACK; a native background-inspection rejection fences replacement.
+It is deterministic CLI/Host wiring, not live model recovery or native
+compaction. Real `session-recovery` requires its own exact authorized freeze.
+
 ## Skill and instruction changes
 
 Review the shared Runtime contract and affected Role/Project Skills together.
@@ -117,17 +160,17 @@ adjudication aggregation are deterministic; they do not run or measure a model.
 
 `ci.yml` runs on PRs and master. Business contracts and full package business
 wiring run once on Linux x64/Node 24. Platform tests run on Linux Node 24/26
-and Mac Intel/Apple Silicon Node 24. Every job builds exactly once, without
+and macOS Apple Silicon Node 24. Every job builds exactly once, without
 another lint or implicit pretest build. Keep the existing job names for branch
 checks; the complete workflow must pass for the exact master commit.
 
 | Evidence | PR/master | Exact release tarball |
 | --- | --- | --- |
 | Business/state/authority contracts (`test/core`) | Linux 24 once | Reuse exact-SHA successful Core CI |
-| OS/helper/PTY/Git/SQLite boundaries (`test/platform`) | Linux 24/26, both Macs 24 | Real SQLite SQL/GC on all 12 installs; other installed boundaries below |
+| OS/helper/PTY/Git/SQLite boundaries (`test/platform`) | Linux 24/26, Apple Silicon Mac 24 | Real SQLite SQL/GC on all 8 installs; other installed boundaries below |
 | `full` smoke: business Jobs/Schedules + lifecycle + compatibility | Linux 24 once | Reuse exact-SHA business evidence |
-| `lifecycle` smoke: restart, Session/Host handoff, archive + compatibility | Both Macs 24 (Linux included in full) | Node 24 on each of the 3 platforms |
-| `compatibility` smoke: setup, CLI/bin, helpers, Doctor/PTY/SQLite | Linux 26 (included in other profiles) | All 3 platforms × Node 20/22/24/26 (included in lifecycle on 24) |
+| `lifecycle` smoke: restart, Session/Host handoff, archive + compatibility | Apple Silicon Mac 24 (Linux included in full) | Node 24 on each of the 2 platforms |
+| `compatibility` smoke: setup, CLI/bin, helpers, Doctor/PTY/SQLite | Linux 26 (included in other profiles) | Both platforms × Node 20/22/24/26 (included in lifecycle on 24) |
 
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` exercises
 the actual CLI/Controller/Host/SQLite and isolated tmux, replacing only the
@@ -181,7 +224,7 @@ It starts empty on each smoke invocation and is removed with the fixture.
 No cache is restored across jobs, packages or Node versions, and no production
 default changes. Keep it out of V8 coverage runs, where it can reduce precision.
 
-`publish.yml` builds one archive containing all three native targets and runs
+`publish.yml` builds one archive containing both supported native targets and runs
 the profiles above against that exact freshly installed package through
 `YUI_INSTALLED_ROOT`, adding actual npm-bin, dependency, supported Node version,
 artifact and provenance boundaries. This validates runtime integration, not

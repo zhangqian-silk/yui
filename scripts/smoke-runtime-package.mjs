@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { buildReleaseManifest } from "./lib/runtime-package.mjs";
 
 const started = performance.now();
 let phaseStarted = started;
@@ -71,8 +72,10 @@ let cli;
 let environment;
 let FixtureStore;
 let operatorHostPid;
+let scopeRefreshProject;
 const skills = [
   "yui-leader",
+  "yui-experiment-leader",
   "yui-worker",
   "yui-operator",
   "yui-reviewer",
@@ -81,11 +84,20 @@ const skills = [
 
 try {
   console.log(`Runtime package profile: ${profile}; ${process.platform}/${process.arch}; Node ${process.version}`);
+  console.log(`Runtime package fixture: ${sandbox}`);
   mkdirSync(isolatedHome, { recursive: true, mode: 0o700 });
   mkdirSync(fakeBin, { recursive: true, mode: 0o755 });
   const fakeCodex = new URL("../test/fixtures/fake-codex-cli.mjs", import.meta.url);
   writeFileSync(join(fakeBin, "codex"),
-    `#!${process.execPath}\nprocess.env.YUI_FAKE_UNIQUE_THREADS = "1";\nimport(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
+    `#!${process.execPath}\nprocess.env.YUI_FAKE_UNIQUE_THREADS = "1";\n`
+    + `process.env.YUI_FAKE_DIRECT_PORT_FILE = ${JSON.stringify(join(sandbox, "work-direct-"))} + (process.env.YUI_ROLE ?? "reader") + ".port";\n`
+    + `process.env.YUI_FAKE_INPUT_LOG = ${JSON.stringify(join(sandbox, "skill-inputs.jsonl"))};\n`
+    + `process.env.YUI_FAKE_MODELS = ${JSON.stringify(JSON.stringify([{ id: "smoke-model", model: "smoke-model",
+      displayName: "Smoke fixture", isDefault: true, supportedReasoningEfforts: [
+        { reasoningEffort: "medium", description: "Fixture only" }
+      ], defaultReasoningEffort: "medium" }]))};\n`
+    + `process.env.YUI_FAKE_TURN_HANDLER = ${JSON.stringify(new URL("../test/fixtures/scope-refresh-smoke-handler.mjs", import.meta.url).href)};\n`
+    + `import(${JSON.stringify(fakeCodex.href)}).catch(error => { console.error(error); process.exitCode = 1; });\n`,
     { mode: 0o755 });
   symlinkSync(process.execPath, join(fakeBin, "node"));
   // Optional real Git for the compatibility matrix; never replace system Git.
@@ -183,7 +195,7 @@ try {
     for (const [, href] of content.matchAll(/\[[^\]]+\]\(([^)\s]+)\)/gu)) {
       if (/^[a-z][a-z\d+.-]*:/iu.test(href)) continue;
       const target = href.split("#")[0];
-      if (!target.endsWith(".md")) continue;
+      if (!target.endsWith(".md") && !target.endsWith(".mjs")) continue;
       const resolved = resolve(dirname(path), target);
       const local = relative(skillRoot, resolved);
       if (local === ".." || local.startsWith("../") || isAbsolute(local)) {
@@ -192,6 +204,12 @@ try {
       pendingSkills.push(resolved);
     }
   }
+  // Execute the packaged local helper, not a source-checkout substitute.
+  // Its business comparison is covered in Core; here check shipped Node wiring.
+  const verifier = spawnSync(process.execPath,
+    [join(skillRoot, "yui-operator/scripts/verify-submission.mjs")], { encoding: "utf8" });
+  assert.equal(verifier.status, 1);
+  assert.match(JSON.parse(verifier.stderr).message, /^Usage: node verify-submission\.mjs /);
   if (packageJson.bin?.yui !== "./dist/cli.js") {
     throw new Error("Installed runtime package does not expose the expected yui bin.");
   }
@@ -393,6 +411,7 @@ try {
       git(syncSeed, "add", "value"); git(syncSeed, "commit", "-m", "before"); git(syncSeed, "push", "origin", "main");
       const before = git(syncSeed, "rev-parse", "HEAD");
       const project = json("project", "clone", "Sync fixture", syncRemote, "--stable", "main", "--development", "main").project;
+      scopeRefreshProject = project;
       const syncId = `project-sync-${project.id}`;
       await waitFor(() => observeFixture(store => store.getSchedule({ kind: "global" }, syncId) !== null),
         "Builtin sync was not installed by Controller reconciliation.");
@@ -530,7 +549,7 @@ try {
     const { createUpdatePorts } = await import(pathToFileURL(join(root, "dist", "cli", "updatePorts.js")).href);
     // Real update lifecycle children, bounded so a self-wait regression does not
     // spend the production 90-second handover deadline in CI. No npm operation.
-    const updatePorts = createUpdatePorts(environment, (command, args, options) =>
+    let updatePorts = createUpdatePorts(environment, (command, args, options) =>
       spawnSync(command, args, { ...options, timeout: 15_000 }));
     const lifecycle = updatePorts.controllerStatus(yuiHome);
     const controller = status.resources.find(resource => resource.kind === "controller" && resource.state === "current");
@@ -543,6 +562,26 @@ try {
     phase("doctor/identity");
     const { task } = json("task", "create", "runtime smoke");
     assert.equal(task.status, "draft");
+    if (profile === "full") {
+      const experimentTask = json("task", "create", "experimental knowledge fixture", "--mode", "experiment").task;
+      const overridden = json("task", "role", "update", experimentTask.id, "leader",
+        "--model", "smoke-model", "--effort", "medium").role;
+      assert.equal(overridden.agentBindings[overridden.activeAgentId].config.model, "smoke-model");
+      assert.equal(overridden.agentBindings[overridden.activeAgentId].config.effort, "medium");
+      const cleared = json("task", "role", "update", experimentTask.id, "leader", "--clear-agent-config").role;
+      assert.equal(cleared.agentBindings[cleared.activeAgentId].config.model, undefined);
+      const initialized = json("task", "iteration", "init", experimentTask.id);
+      const direction = { schemaVersion: 1, kind: "direction", id: "latency", title: "Latency",
+        problem: "slow", goal: "lower latency", metrics: ["p95"], constraints: ["offline fixture"],
+        priority: "high", status: "active", next: "design measurement", unresolved: [] };
+      const request = ["task", "iteration", "save", experimentTask.id, JSON.stringify(direction),
+        "--request-id", "direction-fixture", "--expected-head", initialized.commit];
+      const saved = json(...request);
+      assert.deepEqual(json(...request), saved);
+      assert.equal(json("task", "iteration", "read", experimentTask.id, JSON.stringify(saved.ref)).value.goal, direction.goal);
+      assert.equal(json("task", "iteration", "overview", experimentTask.id).directions[0].id, "latency");
+      assert.equal(json("task", "show", experimentTask.id).task.status, "draft");
+    }
     assert.throws(() => runCli(cli, ["task", "activate", task.id], environment), error => {
       assert.match(String(error.stderr), /activation request.*required/i);
       return true;
@@ -584,6 +623,26 @@ try {
       "CLI input did not traverse Controller, Host and fake Provider back to durable results.",
       () => JSON.stringify({ task: json("task", "show", task.id), events: json("task", "event", "list", task.id) }));
     assert.match(JSON.stringify(events()), /Native Codex result\./);
+    const initialInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    assert.ok(initialInputs.some(row => JSON.stringify(row.additionalContext ?? {}).includes("Current Skill pointers:")),
+      "Actual Host-to-Provider input carries current pointers on first entry.");
+    assert.ok(initialInputs.every(row => !/Yui Host checked current Skills|Current Skill pointers:/.test(JSON.stringify(row.input))),
+      "Engineering metadata must not enter business input or its automatic title source.");
+    const titleDirectory = join(yuiHome, "runtime/native-titles");
+    const titleReceipt = () => {
+      if (!existsSync(titleDirectory)) return undefined;
+      return readdirSync(titleDirectory).flatMap(key => {
+        const file = join(titleDirectory, key, "receipt.json");
+        return existsSync(file) ? [JSON.parse(readFileSync(file, "utf8"))] : [];
+      }).find(receipt => receipt.identity.taskId === task.id && receipt.identity.roleName === "leader");
+    };
+    await waitFor(() => titleReceipt()?.status === "confirmed",
+      "Trusted-local Task title did not receive a native confirmation.", () => JSON.stringify(titleReceipt()));
+    const confirmedTitle = titleReceipt();
+    assert.equal(confirmedTitle.requestedTitle, `Yui Leader ${task.id} · runtime smoke`);
+    const nativeTitleFile = join(environment.CODEX_HOME, "fixture-title-"
+      + createHash("sha256").update(confirmedTitle.identity.threadId).digest("hex") + ".json");
+    assert.equal(JSON.parse(readFileSync(nativeTitleFile, "utf8")).name, confirmedTitle.requestedTitle);
     assert.equal(json("task", "show", task.id).task.status, "active");
     assert.equal(existsSync(join(yuiHome, "runtime", "session-cli")), false,
       "Launching and waking a Leader must not generate a Session CLI script.");
@@ -658,6 +717,64 @@ try {
     };
     const desktopSkills = JSON.parse(runCli(cli, ["session", "skills", "--json"], desktopLeader)).data;
     assert.deepEqual(desktopSkills.skills.map(skill => skill.id), ["yui-runtime", "yui-leader"]);
+    if (profile === "full") {
+      json("task", "role", "add", task.id, "repair-worker", "--agent", "codex");
+      const work = json("task", "work", "create", task.id, "Retained original result",
+        "--role", "repair-worker").workItem;
+      const workRef = `${task.id}/${work.id}`;
+      json("task", "work", "dispatch", workRef);
+      await waitFor(() => observeFixture(store => store.listRuns(task.id)
+        .some(run => run.workItemId === work.id && run.status === "completed")),
+      "Original WorkItem did not complete through its Host.");
+      const originalRuns = observeFixture(store => store.listRuns(task.id).filter(run => run.workItemId === work.id));
+      assert.equal(originalRuns.length, 1);
+      json("task", "work", "update", workRef, "done", "--summary", "Original native result");
+      json("task", "work", "accept", workRef, "--summary", "Original acceptance");
+      const originalWork = json("task", "work", "show", workRef).workItem;
+      const originalSession = json("task", "role", "session", "inspect", task.id, "repair-worker").session;
+      json("task", "role", "session", "stop", task.id, "repair-worker", "--reason", "Retain repair identity");
+      const retainedWorkerEnv = { ...environment, CODEX_THREAD_ID: originalSession.nativeSessionId };
+      assert.equal(JSON.parse(runCli(cli, ["task", "work", "show", workRef, "--json"], retainedWorkerEnv))
+        .data.workItem.status, "accepted");
+      assert.deepEqual(JSON.parse(runCli(cli, ["session", "skills", "--json"], retainedWorkerEnv))
+        .data.skills.map(skill => skill.id), ["yui-runtime", "yui-worker"]);
+      json("task", "role", "session", "resume", task.id, "repair-worker");
+      const restored = json("task", "role", "session", "inspect", task.id, "repair-worker").session;
+      assert.equal(restored.nativeSessionId, originalSession.nativeSessionId);
+      assert.deepEqual(json("task", "work", "show", workRef).workItem, originalWork);
+      const workerEnv = { ...environment, CODEX_THREAD_ID: restored.nativeSessionId };
+      const portFile = join(sandbox, "work-direct-repair-worker.port");
+      const native = (method, id, status, text) => ({ method, params: {
+        threadId: restored.nativeSessionId,
+        turn: { id, status, items: [{ id: `${id}-result`, type: "agentMessage", text }] }
+      } });
+      await sendDirect(portFile, native("turn/started", "work-question", "inProgress", ""));
+      await sendDirect(portFile, native("turn/completed", "work-question", "completed", "Explanation only"));
+      await waitFor(() => observeFixture(store => store.getTaskRoleSessionSet(task.id, "repair-worker")
+        ?.providerBinding?.run?.status === "completed"), "Original-conversation question did not finish.");
+      assert.deepEqual(json("task", "work", "show", workRef).workItem, originalWork);
+      await sendDirect(portFile, native("turn/started", "work-repair", "inProgress", ""));
+      await waitFor(() => observeFixture(store => store.getTaskRoleSessionSet(task.id, "repair-worker")
+        ?.providerBinding?.run?.nativeTurnId === "work-repair"), "Direct repair Turn was not observed.");
+      const continueArgs = ["--json", "task", "work", "continue", workRef, "--request-id", "same-conversation-repair",
+        "--expected-turn", "work-repair", "--input", "Fix this same result within the original scope."];
+      const continued = JSON.parse(runCli(cli, continueArgs, workerEnv)).data;
+      assert.equal(JSON.parse(runCli(cli, continueArgs, workerEnv)).data.run.id, continued.run.id);
+      assert.notEqual(continued.run.id, originalRuns[0].id);
+      assert.equal(json("task", "work", "show", workRef).workItem.status, "open");
+      await sendDirect(portFile, native("turn/completed", "work-repair", "completed", "Repaired original result"));
+      await waitFor(() => observeFixture(store => store.getRun(task.id, continued.run.id)?.status === "completed"),
+        "Repair result did not bind to its fresh AgentRun.");
+      json("task", "work", "update", workRef, "done", "--summary", "New same-conversation result");
+      json("task", "work", "accept", workRef, "--summary", "Fresh acceptance of repaired result");
+      const repaired = json("task", "work", "show", workRef).workItem;
+      assert.equal(repaired.candidates.length, 2);
+      assert.deepEqual(repaired.candidates[0], originalWork.candidates[0]);
+      assert.notEqual(repaired.acceptedCandidateId, originalWork.acceptedCandidateId);
+      assert.equal(json("task", "role", "session", "inspect", task.id, "repair-worker").session.nativeSessionId,
+        originalSession.nativeSessionId);
+      console.log("Original WorkItem conversation, stopped Host restoration and separately accepted repair passed.");
+    }
     acknowledgeWindows();
     json("task", "complete", task.id, "--summary", "The deterministic Provider result is accepted.");
     assert.equal(json("task", "show", task.id).task.status, "completed");
@@ -767,7 +884,119 @@ try {
     const serverPid = Number(tmux("display-message", "-p", "-t", `=${neighbor}:`, "#{pid}").trim());
     tmux("kill-session", "-t", `=${neighbor}`);
     await waitFor(() => processExited(serverPid), "The empty fixture tmux server did not exit.");
+    const deliveredInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    assert.ok(deliveredInputs.some(row => {
+      return row.additionalContext === undefined && row.input.length === 1 && row.input[0].type === "text"
+        && row.input[0].text.startsWith("Yui Task notification:");
+    }), "A later actual Host Turn begins with the original notification, without any Skill prefix or extra part.");
     phase("task/session/archive");
+
+    if (profile === "full") {
+      // The active Leader adds and uses its first Project within the same Turn.
+      // Neither the Host nor Provider connection may be replaced or interrupted.
+      const scopeTask = json("task", "create", "scope refresh fixture").task;
+      const scopeTmuxSession = `yui-${tmuxServer.slice(4, 16)}-${scopeTask.id}`;
+      const scopeHostPids = () => tmux("list-panes", "-t", `=${scopeTmuxSession}:`, "-F", "#{pane_pid}").trim();
+      writeFileSync(join(sandbox, "scope-refresh.json"), JSON.stringify({
+        taskId: scopeTask.id, projectId: scopeRefreshProject.id, cli, root,
+        tmuxServer, tmuxSession: scopeTmuxSession
+      }));
+      // This contract attaches children of the captured Task-main root. A
+      // separately adopted scratch/local cwd is not that execution boundary.
+      json("task", "activation", "request", scopeTask.id, "--request-id", "scope-start", "--environment", "empty");
+      const scopeEvents = () => observeFixture(store => store.listEvents(scopeTask.id));
+      await waitFor(() => existsSync(join(sandbox, "scope-added.json")),
+        "Active Leader did not return from its own project add.",
+        () => JSON.stringify(scopeEvents().slice(-10)));
+      const { inspectAgentHost: inspectScopeHost } =
+        await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
+      const scopeOwner = { home: yuiHome, scope: "task", taskId: scopeTask.id, roleName: "leader" };
+      const added = JSON.parse(readFileSync(join(sandbox, "scope-added.json"), "utf8"));
+      const beforeScope = added.before;
+      assert.equal(scopeHostPids(), added.hostPids, "Host PID must survive both self-issued configuration commands.");
+      assert.equal(added.result.workspaceConfiguration.mode, "in-place");
+      assert.equal(observeFixture(store =>
+        store.getWorkMailbox({ kind: "role-runtime", taskId: scopeTask.id, roleName: "leader" })), null,
+      "A project configuration change must not reserve Host lifecycle work.");
+      const heldHost = await inspectScopeHost(scopeOwner);
+      assert.equal(heldHost.processInstanceId, beforeScope.processInstanceId);
+      assert.equal(heldHost.nativeSessionId, beforeScope.nativeSessionId);
+      assert.equal(heldHost.nativeTurnId, added.turnId, "Configuration adoption must not interrupt the active Turn.");
+      assert.deepEqual(observeFixture(store => {
+        const set = store.getTaskRoleSessionSet(scopeTask.id, "leader");
+        return set.sessions[set.activeAgentId].effective.writeProjectIds;
+      }), [scopeRefreshProject.id], "New Project authority is immediately available in the same Turn.");
+      const newProjectPath = added.result.workspaceConfiguration.sessions
+        .find(session => session.roleName === "leader").workspace.entries
+        .find(entry => entry.projectId === scopeRefreshProject.id).path;
+      assert.equal(readFileSync(join(newProjectPath, "hot-config-proof.txt"), "utf8"),
+        `${beforeScope.nativeSessionId}/${added.turnId}`);
+      rmSync(join(newProjectPath, "hot-config-proof.txt"));
+      assert.ok(scopeEvents().some(event => event.type === "runtime.workspace-scope-adopted"
+        && event.payload.hostPreserved === "true"));
+      writeFileSync(join(sandbox, "scope-yield"), "yield");
+      await waitFor(() => observeFixture(store => {
+        const set = store.getTaskRoleSessionSet(scopeTask.id, "leader");
+        return set?.sessions[set.activeAgentId]?.effective.writeProjectIds.includes(scopeRefreshProject.id)
+          && !store.getWorkMailbox({ kind: "role-runtime", taskId: scopeTask.id, roleName: "leader" })?.pending;
+      }), "Task-main configuration was not adopted in place.",
+      () => JSON.stringify({ projects: json("task", "project", "list", scopeTask.id),
+        hosts: runCli(cli, ["update", "--hosts-status"], environment), events: scopeEvents().slice(-12) }));
+      const afterScope = await inspectScopeHost(scopeOwner);
+      assert.equal(afterScope.nativeSessionId, beforeScope.nativeSessionId);
+      assert.equal(afterScope.processInstanceId, beforeScope.processInstanceId);
+      let continuation;
+      await waitFor(() => observeFixture(store => {
+        continuation ??= store.listTaskWakes(scopeTask.id).find(wake => wake.id !== added.wakeId
+          && wake.reasons.includes("task-project-added"));
+        return continuation && store.getTaskWake(scopeTask.id, added.wakeId).inbox?.ack
+          && store.getTaskWake(scopeTask.id, continuation.id).inbox?.ack
+          && store.listEvents(scopeTask.id).some(event => {
+            if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
+            const fence = JSON.parse(event.payload.observation).fence;
+            return fence.nativeSessionId === beforeScope.nativeSessionId
+              && fence.receiptId?.startsWith(`notification:${scopeTask.id}/${continuation.id}/`);
+          });
+      }), "Self-add did not ACK and automatically continue the same conversation.");
+      const handled = readFileSync(join(sandbox, "scope-handled.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(handled.filter(row => row.wakeId === added.wakeId).length, 1);
+      assert.equal(handled.filter(row => row.wakeId === continuation.id).length, 1);
+      assert.ok(handled.every(row => row.threadId === beforeScope.nativeSessionId));
+      assert.equal((await inspectScopeHost(scopeOwner)).processInstanceId, beforeScope.processInstanceId);
+      const listing = json("task", "project", "list", scopeTask.id);
+      const updatedBinding = json("task", "project", "update", scopeTask.id, scopeRefreshProject.id,
+        "--base", "main", "--if-current", listing.writeGuard);
+      assert.equal(updatedBinding.change, "reference-only");
+      assert.equal(updatedBinding.workspaceMigrated, false);
+      assert.equal((await inspectScopeHost(scopeOwner)).processInstanceId, afterScope.processInstanceId);
+      const scopeInput = json("task", "message", "queue", scopeTask.id, "One post-refresh input.",
+        "--request-id", "scope-input");
+      let scopeWake;
+      await waitFor(() => observeFixture(store => {
+        scopeWake ??= store.listTaskWakes(scopeTask.id).find(wake =>
+          wake.refs.some(ref => ref.type === "message" && ref.id === scopeInput.message.id));
+        return scopeWake && store.listEvents(scopeTask.id).some(event => {
+          if (event.type !== "runtime.observation" || event.payload.kind !== "turn.completed") return false;
+          const fence = JSON.parse(event.payload.observation).fence;
+          return fence.nativeSessionId === beforeScope.nativeSessionId
+            && fence.receiptId?.startsWith(`notification:${scopeTask.id}/${scopeWake.id}/`);
+        });
+      }),
+      "Original conversation did not handle post-refresh input.");
+      const finalScopeHost = await inspectScopeHost(scopeOwner);
+      assert.equal(finalScopeHost.nativeSessionId, beforeScope.nativeSessionId);
+      assert.equal(finalScopeHost.processInstanceId, beforeScope.processInstanceId);
+      assert.equal(scopeHostPids(), added.hostPids);
+      assert.ok(json("task", "wake", "show", scopeTask.id, scopeWake.id).wake.refs
+        .some(ref => ref.id === scopeInput.message.id));
+      const nativeInputs = readFileSync(join(sandbox, "skill-inputs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+      assert.equal(nativeInputs.filter(row => JSON.stringify(row.input)
+        .includes(`task=${scopeTask.id} wake=${scopeWake.id}.`)).length, 1);
+      json("task", "cancel", scopeTask.id, "--summary", "Disposable scope-refresh fixture verified.");
+      json("task", "archive", scopeTask.id, "--abandon", "--force");
+      assert.equal(json("task", "show", scopeTask.id).task.status, "archived");
+      phase("task/project/scope-refresh");
+    }
 
     const updateStarted = performance.now();
     // Keep a real Host alive across the updater's Controller replacement. Only
@@ -812,11 +1041,20 @@ try {
       "--request-id", "update-pending").message;
     const notificationTask = json("task", "create", "update notification fixture").task;
     json("task", "cancel", notificationTask.id, "--summary", "Notify the busy Operator.");
-    await waitFor(() => pending().some(message => message.id !== queued.id),
-      "The Task fact did not produce a pending engineering notice.");
-    const queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
-    assert.ok(queuedBefore.some(message => message.id !== queued.id && message.body.includes(notificationTask.id)),
-      "The pending engineering notice must reference this exact Task fact.");
+    // Only one unsent engineering notice is allowed. Earlier fixture facts may
+    // already own it; the new cancellation then coalesces in the mailbox rather
+    // than rewriting that original. Preserve whichever exact notice is queued.
+    const isEngineeringNotice = message => message.id !== queued.id
+      && message.inputControl?.requestId?.startsWith("operator-notice:");
+    let queuedBefore = [];
+    await waitFor(() => {
+      queuedBefore = pending().map(message => json("role", "message", "show", "operator", message.id));
+      return queuedBefore.some(isEngineeringNotice);
+    },
+      "No pending engineering notice was queued.",
+      () => JSON.stringify(queuedBefore));
+    assert.equal(queuedBefore.filter(isEngineeringNotice).length, 1,
+      "Handover must preserve the one original engineering notice alongside the queued user input.");
     assert.equal(context().nativeTurn.status, "accepted", "Busy Desktop input must fence queued delivery.");
     const beforeUpdate = updatePorts.controllerStatus(yuiHome);
     assert.equal(beforeUpdate.running, true);
@@ -932,7 +1170,24 @@ try {
     const beforeHostRestart = listItems("role", "message", "list", "operator");
     await waitFor(async () => (await inspectAgentHost(target)).state === "idle",
       "Only an idle fixture Host may be restarted.");
-    process.kill(hostPid, "SIGTERM");
+    const { AGENT_HOST_IMPLEMENTATION } =
+      await import(pathToFileURL(join(root, "dist/runtime/agentHostImplementation.js")).href);
+    const upgradeStatus = await callFileTaskController(yuiHome, "runtime.upgrade-hosts",
+      { generation: AGENT_HOST_IMPLEMENTATION.generation }, { environment, requestTimeoutMs: 15_000 });
+    assert.ok(upgradeStatus.hosts.some(entry => entry.owner.scope === "global"
+      && entry.owner.roleName === "operator" && entry.status === "current"
+      && entry.nativeSessionId === hostBefore.nativeSessionId),
+      "The real Controller verifies actual Host and Endpoint generations before reporting current.");
+    assert.match(runCli(cli, ["update", "--hosts-status"], environment), /global\/operator.*current/);
+    const { sendAgentHostUpgradeControl } =
+      await import(pathToFileURL(join(root, "dist/runtime/agentHost.js")).href);
+    const exactHost = await inspectAgentHost(target);
+    const fence = { protocol: "yui-agent-host-control/v1", requestId: "fixture-idle-upgrade",
+      nativeSessionId: exactHost.nativeSessionId, processInstanceId: exactHost.processInstanceId,
+      hostGeneration: exactHost.hostImplementation.generation };
+    const drained = await sendAgentHostUpgradeControl({ ...target, control: { ...fence, type: "prepare-upgrade" } });
+    assert.equal(drained.snapshot.hostUpgrade.state, "drained");
+    await sendAgentHostUpgradeControl({ ...target, control: { ...fence, type: "finish-upgrade" } });
     await waitFor(() => processExited(hostPid), "Original fixture Host did not exit.");
     await callFileTaskController(yuiHome, "runtime.ensure-role-session",
       { scope: "global", roleName: "operator" }, { environment, requestTimeoutMs: 15_000 });
@@ -1021,6 +1276,67 @@ try {
       }, "Agent Job native Turns did not settle before fixture teardown.");
       phase("agent-jobs");
     }
+    if (assembled) {
+      // Exercise release activation, not only updater stop/restore. The second
+      // immutable build has a different digest while keeping storage/protocol
+      // unchanged; both preflights must run while the first release is active.
+      // The earlier historical-session probe intentionally replaced hostPid.
+      assert.equal(processExited(operatorHostPid), false);
+      // An exiting Host cannot guarantee a post-exit signal. Exercise the
+      // existing periodic fallback at an explicit fixture-only cadence.
+      json("config", "runtime", "set", "reconciliation-interval-seconds", "5");
+      const first = json("release", "install", root);
+      assert.equal(first.outcome, "installed");
+      assert.equal(json("release", "activate", first.releaseId).outcome, "activated");
+      cli = join(first.releaseDir, "dist/cli.js");
+      const currentHost = async (generation) => {
+        try {
+          const observed = await inspectAgentHost(target);
+          return observed.hostImplementation?.generation === generation && observed.state === "idle" && observed;
+        } catch { return false; } // The old socket disappears during a proven graceful drain.
+      };
+      await waitFor(() => currentHost(first.packageDigest), "First installed Controller did not converge its Host.");
+      const activationHost = await inspectAgentHost(target);
+      const operatorPane = `=yui-${tmuxServer.slice(4, 16)}-operator:=operator`;
+      const activationHostPid = Number(tmux("display-message", "-p", "-t", operatorPane, "#{pane_pid}").trim());
+      const nextSource = join(sandbox, "next-release");
+      cpSync(root, nextSource, { recursive: true });
+      writeFileSync(join(nextSource, "activation-fixture.txt"), "same code, distinct immutable build\n");
+      const nextManifest = buildReleaseManifest(nextSource, { version: packageJson.version });
+      writeFileSync(join(nextSource, "release-manifest.json"), JSON.stringify(nextManifest));
+      const next = json("release", "install", nextSource);
+      assert.equal(next.outcome, "installed");
+      const nextCli = join(next.releaseDir, "dist/cli.js");
+      assert.throws(() => runCli(nextCli, ["--json", "upgrade", "--update-preflight"], environment),
+        /Refusing installed-release CLI access/, "inactive ordinary CLI remains fenced");
+      const before = json("task", "message", "list", task.id);
+      const activated = json("release", "activate", next.releaseId);
+      assert.equal(activated.outcome, "activated");
+      assert.equal(processExited(activated.oldPid), true);
+      cli = nextCli;
+      const { createUpdatePorts: activeUpdatePorts } = await import(
+        pathToFileURL(join(next.releaseDir, "dist/cli/updatePorts.js")).href);
+      updatePorts = activeUpdatePorts(environment, (command, args, options) =>
+        spawnSync(command, args, { ...options, timeout: 15_000 }));
+      const { callController } = await import(pathToFileURL(join(root, "dist/core/controllerClient.js")).href);
+      const identity = await callController(yuiHome, "controller.identity", {});
+      assert.equal(identity.buildId, next.buildId, "read back the promoted candidate, not the old owner");
+      const pointer = JSON.parse(readFileSync(join(yuiHome, "runtime/active-release.json"), "utf8"));
+      assert.equal(pointer.packageDigest, next.packageDigest);
+      assert.deepEqual(json("task", "message", "list", task.id), before);
+      const successor = await waitFor(() => currentHost(next.packageDigest),
+        "Controller lifecycle checks did not automatically converge the old Host.", () =>
+          runCli(cli, ["update", "--hosts-status"], environment), 30_000);
+      assert.equal(successor.nativeSessionId, activationHost.nativeSessionId);
+      assert.notEqual(successor.processInstanceId, activationHost.processInstanceId);
+      assert.equal(processExited(activationHostPid), true);
+      operatorHostPid = Number(tmux("display-message", "-p", "-t", operatorPane, "#{pane_pid}").trim());
+      assert.ok(Number.isInteger(operatorHostPid) && operatorHostPid > 0);
+      assert.deepEqual(json("task", "message", "list", task.id), before);
+      assert.match(runCli(cli, ["update", "--hosts-status"], environment), /global\/operator.*current/);
+      console.log("Installed release activation passed: candidate promotion, automatic Host convergence, same native Session and original inputs (no explicit update request).");
+      phase("release-activation");
+    }
     runCli(cli, ["session", "stop", "--all"], environment);
     await waitFor(() => processExited(operatorHostPid), "The fixture Operator Host did not exit.");
     assert.equal(updatePorts.controllerStatus(yuiHome).running, false,
@@ -1028,6 +1344,11 @@ try {
     process.stdout.write(`Update handover lifecycle smoke passed (${Math.round(performance.now() - updateStarted)} ms).\n`);
     phase("session-stop");
   }
+} catch (error) {
+  // Preserve the first failure even if teardown also fails after a partially
+  // completed activation. A cleanup error must not hide the operation evidence.
+  console.error("Runtime package smoke failed before cleanup:", error);
+  throw error;
 } finally {
   // Even a failed handover check must stop its live fixture Host before
   // stopping the Controller or deleting the Home it could still write.
@@ -1045,7 +1366,14 @@ try {
   // Home when shutdown fails: another Agent needs its exact identity to clean it.
   if (existsSync(join(yuiHome, "yui.db")) && cli !== undefined && environment !== undefined) {
     try {
-      runCli(cli, ["controller", "stop"], environment);
+      // Activation can promote the candidate before its caller receives a
+      // result. Resolve and verify this fixture's active artifact, never replay
+      // activation or use the now-inactive CLI to clean up its successor.
+      const { resolveActiveRelease } = await import(
+        pathToFileURL(join(root, "dist/release/runtimeRelease.js")).href);
+      const active = resolveActiveRelease(yuiHome);
+      const cleanupCli = active === null ? cli : join(active.releaseDir, "dist/cli.js");
+      runCli(cleanupCli, ["controller", "stop"], environment);
     } catch (error) {
       throw new Error(`Runtime smoke cleanup failed; fixture retained at ${sandbox}.`, { cause: error });
     }

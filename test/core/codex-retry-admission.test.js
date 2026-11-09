@@ -106,6 +106,9 @@ test("read and resume preserve complete native terminal error evidence", async (
   };
   const runtime = new CodexAppServerRuntime({
     request: async (method) => {
+      if (method === "thread/turns/list") return {
+        data: [{ id: "failed-turn", status: "failed", error: rawError }], nextCursor: null
+      };
       assert.ok(["thread/read", "thread/resume"].includes(method));
       return { thread: {
         id: input.conversationId, status: { type: "systemError" },

@@ -1,6 +1,6 @@
 {
   "name": "@zq-silk/yui",
-  "version": "2.17.0",
+  "version": "2.29.0",
   "description": "Local control plane for long-running native agent CLI sessions backed by tmux.",
   "license": "MIT",
   "private": true,
@@ -22,6 +22,11 @@
     "LICENSE"
   ],
   "scripts": {
+    "eval:context": "node scripts/eval/context/run.mjs",
+    "eval:check": "node --test scripts/eval/context/check.mjs scripts/eval/context/native.check.mjs scripts/eval/context/provider.check.mjs scripts/eval/context/isolation.check.mjs scripts/eval/context/controller-bridge.check.mjs",
+    "eval:context:wiring": "node scripts/eval/context/wiring-check.mjs",
+    "eval:context:analyze": "node scripts/eval/context/analyze.mjs",
+    "eval:review": "node scripts/eval/review/evaluate.mjs",
     "build": "tsc -p tsconfig.json && node scripts/build-runtime-native.mjs",
     "pretest:core": "npm run build",
     "test:core": "node --import ./test/helpers/physical-tmpdir.mjs --test test/core/*.test.js test/platform/*.test.js",

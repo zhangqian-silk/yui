@@ -1,4 +1,5 @@
 import { usageError } from "../errors/cliError.js";
+import { validateInstanceCode, type RoleDisplaySettings } from "../role/instanceCode.js";
 import { parseEnabled } from "../role/availability.js";
 import {
   defaultRoleAgentConfig,
@@ -6,7 +7,7 @@ import {
   type PermissionStrategy,
   type RoleAgentConfig
 } from "../executor/agentAdapter.js";
-import type { RoleAgentBinding, RoleProfile } from "../role/role.js";
+import { createRoleAgentBinding, resolveLeaderStageBinding, type GlobalRole, type LeaderStage, type RoleAgentBinding, type RoleProfile } from "../role/role.js";
 
 export type RoleOptionKind = "flag" | "value" | "repeatable";
 
@@ -41,6 +42,8 @@ const AGENT_VALUE_OPTIONS: readonly [string, RoleOptionKind][] = [
   ["--permission-strategy", "value"],
   ["--sandbox", "value"],
   ["--approval", "value"],
+  ["--exclude-tmpdir-env-var", "value"],
+  ["--exclude-slash-tmp", "value"],
   ["--permission-mode", "value"],
   ["--search", "value"]
 ];
@@ -56,6 +59,8 @@ const AGENT_CLEAR_OPTIONS: readonly [string, RoleOptionKind][] = [
   ["--clear-allowed-tools", "flag"],
   ["--clear-disallowed-tools", "flag"],
   ["--clear-search", "flag"],
+  ["--clear-exclude-tmpdir-env-var", "flag"],
+  ["--clear-exclude-slash-tmp", "flag"],
   ["--clear-agent-config", "flag"]
 ];
 
@@ -97,6 +102,11 @@ export function roleOptionSpecs(input: Readonly<{
     ...(input.includeWorkspace === true ? [["--workspace", "value"] as const] : []),
     ...(input.update ? [["--yes", "flag"] as const] : []),
     ...(input.update ? [["--enabled", "value"] as const] : []),
+    ...(input.update && input.includeAgent ? [
+      ["--stage", "value"] as const, ["--clear-agent", "flag"] as const
+    ] : []),
+    ["--instance-code", "value"],
+    ...(input.update ? [["--clear-instance-code", "flag"] as const] : []),
     ...PROFILE_OPTIONS,
     ...agentValueOptions,
     ...agentRepeatableOptions,
@@ -139,8 +149,9 @@ export function parseRoleOptions(
   };
 }
 
-export function roleProfileFrom(parsed: ParsedRoleOptions): RoleProfile {
+export function roleProfileFrom(parsed: ParsedRoleOptions): RoleProfile & RoleDisplaySettings {
   return {
+    ...roleDisplayPatch(parsed),
     ...(parsed.has("--description") ? { description: requiredText(parsed.one("--description")) } : {}),
     responsibilities: parsed.many("--responsibility").map(requiredText),
     constraints: parsed.many("--constraint").map(requiredText),
@@ -152,7 +163,7 @@ export function roleProfileFrom(parsed: ParsedRoleOptions): RoleProfile {
   };
 }
 
-export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile & { enabled?: boolean } {
+export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile & RoleDisplaySettings & { enabled?: boolean } {
   assertPairs(parsed, [
     ["--description", "--clear-description"],
     ["--responsibility", "--clear-responsibilities"],
@@ -162,6 +173,7 @@ export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile & { ena
     ["--skill", "--clear-skills"]
   ]);
   return {
+    ...roleDisplayPatch(parsed),
     ...(parsed.has("--enabled") ? { enabled: parseEnabled(parsed.one("--enabled")) } : {}),
     ...(parsed.has("--description") ? { description: requiredText(parsed.one("--description")) } : {}),
     ...(parsed.has("--clear-description") ? { description: undefined } : {}),
@@ -182,8 +194,88 @@ export function roleProfilePatch(parsed: ParsedRoleOptions): RoleProfile & { ena
   };
 }
 
+function roleDisplayPatch(parsed: ParsedRoleOptions): RoleDisplaySettings {
+  assertPairs(parsed, [["--instance-code", "--clear-instance-code"]]);
+  try {
+    return {
+      ...(parsed.has("--instance-code") ? { instanceCode: validateInstanceCode(parsed.one("--instance-code")) } : {}),
+      ...(parsed.has("--clear-instance-code") ? { instanceCode: undefined } : {})
+    };
+  } catch (error) {
+    throw usageError(error instanceof Error ? error.message : String(error));
+  }
+}
+
 export function hasAgentConfigOptions(parsed: ParsedRoleOptions): boolean {
   return [...parsed.seen].some((option) => AGENT_CONFIG_OPTIONS.has(option));
+}
+
+/** Stage updates are deliberately separate from binding updates: clear means
+ * inherit, and --agent selects only this stage, never the default Agent. */
+export function leaderStagePatch(
+  role: GlobalRole,
+  parsed: ParsedRoleOptions,
+  getAgent: (id: string) => { id: string; adapterId: string; component: string },
+  validate?: (candidate: { agentId: string; config: RoleAgentConfig; cwd: string }) => void
+): Partial<Pick<GlobalRole, "leaderStages" | "agentBindings">> | undefined {
+  if (!parsed.has("--stage")) {
+    if (parsed.has("--clear-agent")) throw usageError("--clear-agent requires --stage.");
+    return undefined;
+  }
+  const stage = parsed.one("--stage");
+  if (role.name !== "leader" || (stage !== "draft" && stage !== "develop")) {
+    throw usageError("--stage requires the Leader and draft or develop.");
+  }
+  const allowed = new Set(["--stage", "--agent", "--model", "--effort", "--clear-agent",
+    "--clear-model", "--clear-effort", "--clear-agent-config", "--yes"]);
+  if ([...parsed.seen].some(option => !allowed.has(option))) {
+    throw usageError("Leader stage updates support only Agent, model, effort and their clear options.");
+  }
+  if (![...parsed.seen].some(option => option !== "--stage" && option !== "--yes")) {
+    throw usageError("A stage override or clear option is required.");
+  }
+  assertPairs(parsed, [["--agent", "--clear-agent"], ["--model", "--clear-model"], ["--effort", "--clear-effort"]]);
+  if (parsed.has("--clear-agent-config") && [...parsed.seen].some(option =>
+    !["--stage", "--clear-agent-config", "--yes"].includes(option))) {
+    throw usageError("--clear-agent-config clears the entire stage and cannot be combined with overrides.");
+  }
+  const stages = structuredClone(role.leaderStages ?? {});
+  const override = { ...stages[stage as LeaderStage] };
+  let bindings = role.agentBindings;
+  if (parsed.has("--clear-agent-config")) delete stages[stage];
+  else {
+    if (parsed.has("--agent")) {
+      override.agentId = requiredText(parsed.one("--agent"));
+      const agent = getAgent(override.agentId);
+      bindings = { ...bindings, [agent.id]: bindings[agent.id] ?? createRoleAgentBinding(agent) };
+    }
+    if (parsed.has("--clear-agent")) delete override.agentId;
+    patchText(override, parsed, "--model", "--clear-model", "model");
+    patchText(override, parsed, "--effort", "--clear-effort", "effort");
+    if (Object.keys(override).length === 0) delete stages[stage];
+    else stages[stage] = override;
+  }
+  const next = { ...role, leaderStages: stages, agentBindings: bindings };
+  const binding = resolveLeaderStageBinding(next, stage);
+  validate?.({ agentId: binding.agentId, config: binding.config, cwd: role.workspace });
+  return { leaderStages: stages, ...(bindings === role.agentBindings ? {} : { agentBindings: bindings }) };
+}
+
+export function validateLeaderStageConfigurations(
+  role: GlobalRole,
+  validate?: (candidate: { agentId: string; config: RoleAgentConfig; cwd: string }) => void
+): void {
+  for (const stage of ["draft", "develop"] as const) {
+    if (role.leaderStages?.[stage] === undefined) continue;
+    const binding = resolveLeaderStageBinding(role, stage);
+    validate?.({ agentId: binding.agentId, config: binding.config, cwd: role.workspace });
+  }
+}
+
+export function leaderStageConfigurationCandidates(role: GlobalRole) {
+  const candidates: { agentId: string; config: RoleAgentConfig; cwd: string }[] = [];
+  validateLeaderStageConfigurations(role, candidate => candidates.push(candidate));
+  return candidates;
 }
 
 export function patchRoleAgentBinding(
@@ -228,6 +320,8 @@ function permissionPatch(
     : undefined;
   const nativeOptions = [
     "--sandbox", "--approval", "--permission-mode",
+    "--exclude-tmpdir-env-var", "--exclude-slash-tmp",
+    "--clear-exclude-tmpdir-env-var", "--clear-exclude-slash-tmp",
     "--allowed-tool", "--clear-allowed-tools",
     "--disallowed-tool", "--clear-disallowed-tools"
   ].some((option) => parsed.has(option));
@@ -251,6 +345,17 @@ function permissionPatch(
   if (binding.adapterId === "codex") {
     if (parsed.has("--sandbox")) permission.sandbox = requiredText(parsed.one("--sandbox"));
     if (parsed.has("--approval")) permission.approval = requiredText(parsed.one("--approval"));
+    for (const [option, key] of [
+      ["exclude-tmpdir-env-var", "excludeTmpdirEnvVar"],
+      ["exclude-slash-tmp", "excludeSlashTmp"]
+    ] as const) {
+      if (parsed.has(`--${option}`)) {
+        const value = parsed.one(`--${option}`);
+        if (value !== "true" && value !== "false") throw usageError(`--${option} requires true or false.`);
+        permission[key] = value === "true";
+      }
+      if (parsed.has(`--clear-${option}`)) delete permission[key];
+    }
   } else if (binding.adapterId === "acp") {
     // An ACP Session's configured permission is exactly one mode id, matched
     // against what the Agent enumerates at launch. Tool rules are a Claude
@@ -313,7 +418,9 @@ function assertAgentOptionConflicts(parsed: ParsedRoleOptions): void {
     ["--effort", "--clear-effort"],
     ["--allowed-tool", "--clear-allowed-tools"],
     ["--disallowed-tool", "--clear-disallowed-tools"],
-    ["--search", "--clear-search"]
+    ["--search", "--clear-search"],
+    ["--exclude-tmpdir-env-var", "--clear-exclude-tmpdir-env-var"],
+    ["--exclude-slash-tmp", "--clear-exclude-slash-tmp"]
   ]);
   if (parsed.has("--clear-agent-config")
     && [...parsed.seen].some((option) => option !== "--clear-agent-config" && AGENT_CONFIG_OPTIONS.has(option))) {
@@ -322,7 +429,9 @@ function assertAgentOptionConflicts(parsed: ParsedRoleOptions): void {
 }
 
 function assertAdapterOptions(adapterId: string, parsed: ParsedRoleOptions): void {
-  const codex = ["--sandbox", "--approval", "--search", "--clear-search"];
+  const codex = ["--sandbox", "--approval", "--search", "--clear-search",
+    "--exclude-tmpdir-env-var", "--exclude-slash-tmp",
+    "--clear-exclude-tmpdir-env-var", "--clear-exclude-slash-tmp"];
   const tools = [
     "--allowed-tool", "--clear-allowed-tools",
     "--disallowed-tool", "--clear-disallowed-tools"

@@ -1,17 +1,24 @@
 # Bounded Provider recovery
 
-Yui can continue an owned input after a positively identified transient Provider
+Yui can continue an owned input after a transient or unrecognized Provider
 failure without discarding its Session or local work. The Driver supplies failure
 and native-state evidence; the Controller schedules and atomically admits the
 next input. Agents still own semantic recovery and acceptance.
 
-- At most five automatic attempts after the initial failure, within ten minutes.
+- Known transient errors allow at most five automatic attempts after the initial
+  failure, within ten minutes. An unrecognized error (missing `retryable`, not
+  an explicit `false`) allows only the first automatic attempt of that same chain.
+  This is one shared counter, not an extra allowance per error: unknown → transient
+  can use the remaining attempts up to five; transient → unknown stops if any
+  automatic attempt has already been spent. Neither change resets the deadline.
+  Known permanent errors always stop, even with a nested transient cause.
 - Exponential windows start at five seconds and cap at sixty seconds, with
   50–100% jitter. A trusted Retry-After is a minimum, with positive jitter.
   A wait beyond the remaining deadline ends automatic recovery.
 - Busy/admission waiting does not consume a model attempt. Acceptance, heartbeat
   and partial output do not reset the streak. Only the matching successful
-  native terminal ends the chain; audit history remains.
+  native terminal ends the chain; the displayed attempt count and audit history
+  remain. Native recovery is not Task/business acceptance.
 - A rejected input retains its original durable reference. An accepted failed
   Turn gets a new Turn in the same Session with a system recovery instruction:
   inspect existing work and receipts and continue only unfinished actions.
@@ -25,6 +32,17 @@ next input. Agents still own semantic recovery and acceptance.
   accepted failed Turn and original input. The error need not have qualified
   for automation; manual intent does not waive Session, authority, latest-Turn
   or background-quiescence checks.
+- A current-owner manual execution retry can recover that same failed Turn
+  across a message continuation and subsequent retries only when the durable
+  chain proves every intervening attempt was rejected before a Provider write.
+  Session, authority, Assignment, launch configuration and workspace must match.
+  It carries the current continuation input, not the earlier business directive,
+  and preserves the original automatic budget. Missing proof or any intervening
+  accepted/unknown input leaves ordinary admission fenced.
+- Once that exact recovery is accepted, its Agent can claim and acknowledge
+  the original continuation Message through the same verified lineage. This
+  is handling authority, not another delivery: recipient, continuation target,
+  prior claims and failure records stay unchanged; no Message is requeued.
 
 The records live on the existing Provider binding, with indexed pending-record
 reads and the existing Controller deadline timer. There is no retry Task status,
@@ -61,11 +79,26 @@ same safe retry rule continues within the original budget. Loss of that rule,
 authority or budget stops automatic submission.
 
 Codex's structured `codexErrorInfo: "serverOverloaded"` qualifies as temporary
-capacity failure. Capacity prose alone does not grant replay eligibility.
+capacity failure. Its structured stream/connection failure variants and
+`stream disconnected before completion: stream closed before response.completed`
+also qualify. Shared structured HTTP 408/429/500/502/503/504 and recognized
+transport codes supply transient evidence for the existing Adapters.
+Capacity prose alone gets no positive transient evidence; it can use only the
+unknown fallback, subject to the same native safety checks.
+Authentication, permission/policy denial, quota/balance exhaustion, invalid
+requests/models, context capacity/413, cancellation and unavailable Sessions take
+precedence over transient evidence. Only error-envelope fields are inspected for
+structured qualification, not echoed prompts or arbitrary tool output.
 Native nonterminal error/retry notifications do not create a Yui retry; only
 the exact failed terminal does. A missing retry record therefore does not
 prove budget exhaustion or an unrecoverable Session: inspect the original
 error and current Turn before choosing explicit recovery.
+
+`retry show` returns a separate `decision` even when `retry` is null: policy
+source, category, consumed/remaining automatic attempts, deadline when a chain
+exists, failure reference and the scheduling blocker. Context and current Run/
+Global health expose the same derived decision. A waiting decision still needs
+fresh native admission; it is not evidence that a write already succeeded.
 
 Task errors retain their original `runtime.agent-error` evidence and notify the
 Leader, or the Operator when the affected Role is the Leader. Global failures
@@ -103,7 +136,17 @@ remains closed. Missing protocol methods, a changed/active Turn, unresolved
 background execution or a changed Session/configuration require inspection,
 not automatic cleanup. Native chats without an owned input reference, old Hosts,
 and Adapters without this proof capability are not automatically replayed.
-Claude/ACP retain their normal error and explicit recovery behavior.
+Claude/ACP share classification and budget policy, but without the native proof
+capability they retain explicit recovery and report the unsupported admission.
+Unknown `sessionDisposition` is not rewritten to `recoverable`: an accepted
+terminal with an exact failed Turn and a capable Host may schedule the native
+proof check, which must pass before submission. Unknown delivery never qualifies.
+
+The finite defaults remain five attempts/ten minutes for known transient errors
+and one shared-count attempt for unknown failures. No new configuration knob or
+persistent field is introduced; existing valid retry records retain their count,
+window, controls and lineage. New policy applies when current failures are
+recorded; historical failures are not rescanned or automatically replayed.
 
 Storage transition 26→27 adds optional recovery/input facts and indexes without
 scanning or scheduling old failures. Adoption requires the normal explicitly

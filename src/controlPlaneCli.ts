@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { isatty } from "node:tty";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { agentAdapterLabel as adapterLabel } from "./agent/adapterCatalog.js";
@@ -12,6 +13,7 @@ import { recordTaskInterruptResult } from "./message/taskInterrupt.js";
 
 import type { ConfiguredAgent } from "./agent/agent.js";
 import { nativeAgentEnvironmentNames } from "./agent/launchEnvironment.js";
+import { runIterationCommand } from "./commands/iterationCommands.js";
 import {
   listArtifactsCapability,
   readArtifactCapability,
@@ -20,25 +22,25 @@ import {
 import {
   renderAgentConfigurationResolutionNotice
 } from "./cli/agentConfigurationPicker.js";
-import { describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
+import { describeCommandHelp, describeCommandTree, findCommandNode } from "./cli/commandCatalog.js";
 import { discoveryCommandTree } from "./cli/commandDiscovery.js";
 import { callerDiscoveryAudience } from "./cli/callerDiscovery.js";
-import { contextRecordReader } from "./context/taskContext.js";
+import { assertTaskReadable } from "./context/taskContext.js";
 import { renderCompletion } from "./cli/completion.js";
 import { runCompletionWizard } from "./cli/completionWizard.js";
 import { resolveCompletionCandidates } from "./cli/dynamicCompletion.js";
-import { renderCommandHelp } from "./cli/helpRenderer.js";
+import { renderCommandHelp, renderCommandPathHint } from "./cli/helpRenderer.js";
 import {
   allowsInteractiveSelection,
   resolveInteractiveArguments,
   type SelectionIo
 } from "./cli/interactiveSelection.js";
 import { routeInvocation } from "./cli/invocationRouter.js";
-import { operatorOfflineCommand, taskDiagnosticTarget } from "./cli/managedDiagnostics.js";
+import { operatorOfflineCommand, isTaskReadCommand } from "./cli/managedDiagnostics.js";
 import { assertConfigurationAuthority, assertTaskInvocationScope } from "./cli/invocationAuthority.js";
 import { requireManagedGlobalCaller, requireManagedGlobalReader, ManagedRuntimeDriftError } from "./runtime/managedCaller.js";
 import { assertJobAgentCommand } from "./job/agentRoleScope.js";
-import { requireManagedCaller } from "./runtime/sessionCaller.js";
+import { requireManagedCaller, sessionCallerEnvironment } from "./runtime/sessionCaller.js";
 import { maintenanceCallerEnvironment } from "./storage/maintenanceCaller.js";
 import { checkCurrentSkills, SKILL_REUSE_RULE } from "./context/currentSkills.js";
 import { roleSkillIds } from "./context/roleSessionContext.js";
@@ -52,6 +54,7 @@ import type { SelectionPorts } from "./cli/selectionPorts.js";
 import { runUpdateCommand } from "./cli/updateCommand.js";
 import { createUpdatePorts } from "./cli/updatePorts.js";
 import { runUpgradeCommand } from "./cli/upgradeCommand.js";
+import { runRepairCommand } from "./cli/repairCommand.js";
 import {
   runAgentCommand,
   type AgentCommandStore
@@ -111,7 +114,9 @@ import {
   runSessionStopCommand
 } from "./commands/sessionCommands.js";
 import { assertTaskDeliveryAuthority, taskLocalActor, resolveJobCaller } from "./task/taskAuthority.js";
+import { parseProcessCleanupArguments, runTaskProcessCleanup } from "./task/processCleanup.js";
 import { runTaskBaseStatusCommand } from "./commands/taskBaseCommands.js";
+import { runTaskProjectUpdateCommand } from "./commands/taskProjectUpdateCommands.js";
 import { runTaskChangeSetCommand } from "./commands/taskChangeSetCommands.js";
 import {
   assertWorkItemDependenciesCompletedForCommand,
@@ -126,6 +131,7 @@ import {
   requireWorkItemAssignee,
   readDispatchContextRefs,
   runTaskCommand,
+  taskProjectSessionScopes,
   validateTaskArchiveRequest
 } from "./commands/taskCommands.js";
 import {
@@ -155,6 +161,7 @@ import { checkSessionSkills, readSessionBootstrapManifest } from "./context/sess
 import { boundedDocument, readOptions } from "./output/boundedRead.js";
 import {
   assertFileTaskControllerStorageCompatible,
+  callFileTaskController,
   ensureFileTaskController,
   FileTaskWorkflowRuntime,
   refreshRunningFileTaskControllerConfiguration,
@@ -377,7 +384,7 @@ export async function main(): Promise<void> {
     return;
   }
   if (args.length === 0) {
-    emit(renderCommandHelp(discovery, VERSION), false, jsonOutput ? describeCommandTree(discovery) : undefined);
+    emit(renderCommandHelp(discovery, VERSION), false, jsonOutput ? describeCommandHelp(discovery) : undefined);
     return;
   }
   if (args[0] === "version" && args.length === 1) {
@@ -387,13 +394,20 @@ export async function main(): Promise<void> {
 
   const invocation = routeInvocation(args, discovery);
   if (invocation.kind === "help") {
-    emit(renderCommandHelp(invocation.node, VERSION), true, jsonOutput ? describeCommandTree(invocation.node) : undefined);
+    if (invocation.recursive && !jsonOutput) throw usageError("Recursive help requires --json.");
+    emit(renderCommandHelp(invocation.node, VERSION), true, jsonOutput
+      ? invocation.recursive ? describeCommandTree(invocation.node) : describeCommandHelp(invocation.node)
+      : undefined);
     return;
   }
   if (invocation.kind === "path-error") {
     throw usageError(
-      `Unknown command: ${invocation.typedPath}`,
-      renderCommandHelp(invocation.helpNode, VERSION)
+      invocation.discoveryOnly
+        ? `Command not listed in the current caller's help view: ${invocation.typedPath}. `
+          + "Help is filtered discovery, not an execution or permission check. "
+          + "Follow current instructions and exact read links; execution still validates authority."
+        : `Unknown command: ${invocation.typedPath}`,
+      renderCommandPathHint(invocation.helpNode)
     );
   }
   if (invocation.kind === "incomplete") {
@@ -598,6 +612,11 @@ export async function main(): Promise<void> {
     else emit(result.output, false, result.data);
     return;
   }
+  if (args[0] === "repair") {
+    const result = await runRepairCommand(args.slice(1), home, process.env);
+    emit(result.output, false, result.data);
+    return;
+  }
   if (args[0] === "internal") {
     if (args[1] === "agent-host" && args.length === 3) {
       process.exitCode = await runAgentHost({
@@ -721,8 +740,9 @@ export async function main(): Promise<void> {
           { timeoutMs: 2_000 }
         );
         runtime = parseControllerRuntimeSnapshot(result, droppedEvents);
-      } catch {
-        runtime = { source: "unsupported", droppedEvents };
+      } catch (error) {
+        runtime = { source: "unsupported", droppedEvents,
+          error: describeCliFailure(error, failureContext()).message.slice(0, 1000) };
       }
       const mismatch = summarizeDurablePhysicalMismatch(snapshot);
       const identitySection = renderRuntimeIdentitySection({
@@ -865,7 +885,6 @@ export async function main(): Promise<void> {
     {
       yuiHome: home,
       historyLimit: resolveTmuxHistoryLimit(store.getConfig().tmuxHistoryLimit),
-      terminalInput: process.stdin,
       onWarning: (message) => writeCliWarning(message)
     }
   );
@@ -1077,7 +1096,11 @@ export async function main(): Promise<void> {
         const parsed = readOptions(resolved.slice(2), ["--cursor"]);
         if (parsed.positionals.length !== 0) throw usageError("Usage: yui session skills [--cursor <cursor>] --json");
         const path = process.env.YUI_SESSION_MANIFEST;
-        const caller = requireManagedCaller(store, process.env);
+        const caller = process.env.YUI_SESSION_SCOPE === "task" ? (() => {
+          const env = sessionCallerEnvironment(store, process.env, true);
+          const reader = resolveManagedTaskReader(store, env)!;
+          return { scope: "task" as const, ...reader, agentId: env.YUI_AGENT_ID! };
+        })() : requireManagedCaller(store, process.env);
         const set = caller.scope === "global" ? store.getGlobalRoleSessionSet(caller.roleName)
           : store.getTaskRoleSessionSet(caller.taskId, caller.roleName);
         const effective = set!.sessions[caller.agentId]!.effective;
@@ -1328,6 +1351,17 @@ export async function main(): Promise<void> {
       return;
     }
     if (resolved[0] === "task") {
+      if (resolved[1] === "process-cleanup") {
+        const request = parseProcessCleanupArguments(resolved.slice(2));
+        const result = await runTaskProcessCleanup(store, request, process.env, async taskId => {
+          if (runtime.assertTaskPhysicalResourcesReleased === undefined) {
+            throw usageError("Physical resource inspection is unavailable; process cleanup refused.");
+          }
+          await runtime.assertTaskPhysicalResourcesReleased(taskId);
+        });
+        emit(JSON.stringify(result, null, 2), false, result);
+        return;
+      }
       if (resolved[1] === "archive-preflight") {
         const request = parseTaskArchiveArguments(resolved.slice(2), "archive-preflight");
         if (process.env.YUI_SESSION_SCOPE === "task" && process.env.YUI_TASK_ID !== request.taskId) {
@@ -1354,6 +1388,11 @@ export async function main(): Promise<void> {
         emit(renderArchiveDiagnostics(result), false, { taskId, ...result });
         return;
       }
+      if (resolved[1] === "iteration") {
+        const data = await runIterationCommand(resolved.slice(2), store, process.env);
+        emit(JSON.stringify(data, null, 2), false, data);
+        return;
+      }
       if (resolved[1] === "artifact") {
         // File/directory artifacts live in the Task's local Git repository, so
         // their save/read/list are asynchronous and handled here rather than in
@@ -1367,21 +1406,21 @@ export async function main(): Promise<void> {
         if (taskId === undefined || action === undefined || !["list", "read", "save"].includes(action)) {
           throw usageError(usage);
         }
-        if (process.env.YUI_SESSION_SCOPE === "task" && process.env.YUI_TASK_ID !== taskId) {
+        if (action === "save" && process.env.YUI_SESSION_SCOPE === "task" && process.env.YUI_TASK_ID !== taskId) {
           throw usageError("Artifact is outside the managed Task scope.");
         }
         if (store.getTask(taskId) === null) throw usageError(`Task not found: ${taskId}.`);
         let data: unknown;
         if (action === "list") {
           if (resolved.length !== 4) throw usageError(usage);
-          data = await listArtifactsCapability(home, taskId);
+          data = await listArtifactsCapability(home, taskId, () => store.getConfig());
         } else if (action === "read") {
           const relativePath = resolved[4];
           const commit = resolved[5];
           if (relativePath === undefined || resolved.length > 6) throw usageError(usage);
           data = await readArtifactCapability(home, taskId, {
             relativePath, ...(commit === undefined ? {} : { commit })
-          });
+          }, () => store.getConfig());
         } else {
           // save: a delivery-authoritative action; a managed Task caller must be the current Leader.
           taskLocalActor(store, process.env, taskId);
@@ -1403,7 +1442,7 @@ export async function main(): Promise<void> {
             relativePath, content, ...(encoding === undefined ? {} : { encoding }),
             ...(message === undefined ? {} : { message }),
             ...(expectedHead === undefined ? {} : { expectedHead })
-          });
+          }, () => store.getConfig());
         }
         emit(JSON.stringify(data, null, 2), false, data);
         return;
@@ -1872,6 +1911,13 @@ export async function main(): Promise<void> {
         emit(result.output, false, result.data);
         return;
       }
+      if (resolved[1] === "project" && resolved[2] === "update") {
+        const result = await runTaskProjectUpdateCommand(resolved.slice(3), store,
+          { runtime, environment: process.env, yuiHome: home });
+        if (result.kind !== "output") throw new Error("Unexpected Project update result.");
+        emit(result.output, false, result.data);
+        return;
+      }
       if (resolved[1] === "upstream") {
         const result = await runTaskUpstreamCommand(resolved.slice(2), store, home, {
           environment: process.env,
@@ -2029,6 +2075,7 @@ export async function main(): Promise<void> {
             : store.getReviewRound(requestedRound.taskId, requestedRound.id);
           let reviewOutput = "";
           let reviewData: unknown;
+          let workspaceConfiguration: { sessions: ReturnType<typeof taskProjectSessionScopes>; mode: "in-place" } | undefined;
           const resumesReviewDispatch = (resolved[1] === "review" && resolved[2] === "request")
             || (resolved[1] === "work" && resolved[2] === "review")
             || (resolved[1] === "run" && resolved[2] === "retry");
@@ -2150,6 +2197,11 @@ export async function main(): Promise<void> {
             const task = taskId === undefined ? null : store.getTask(taskId);
             if (task?.status === "active") {
               await workspacePreparer.prepareTaskWorkspace(task.id);
+              // Publish the adopted configuration; no Host/Provider control
+              // operation or current-Turn handoff is involved.
+              await runtime.notifyMailboxChanged({ kind: "task", taskId: task.id });
+              const sessions = taskProjectSessionScopes(store, task.id);
+              workspaceConfiguration = { sessions, mode: "in-place" };
             }
           }
           const controlData = result.data as { steer?: { code?: string }; interrupt?: { code?: string } } | undefined;
@@ -2158,9 +2210,11 @@ export async function main(): Promise<void> {
             emitControlFailure(result.output, failureCode, result.data);
             return;
           }
-          const commandData = reviewData === undefined
-            ? result.data
-            : { command: result.data, ...reviewData as object };
+          const commandData = workspaceConfiguration !== undefined
+            ? { ...result.data as object, workspaceConfiguration }
+            : reviewData === undefined
+              ? result.data
+              : { command: result.data, ...reviewData as object };
           const completionData = resolved[1] === "complete" ? {
             // Review dispatch may have advanced or failed after the command
             // prepared its Round. Report that observed stage, not preparation.
@@ -2173,12 +2227,16 @@ export async function main(): Promise<void> {
             baseFreshness: completionBaseFreshness ?? null,
             warnings: completionWarnings
           } : undefined;
-          emit(`${result.output}${reviewOutput}`, false, completionData === undefined
+          const workspaceOutput = workspaceConfiguration === undefined ? ""
+            : workspaceConfiguration.sessions.map(session =>
+              `${session.roleName}: ${session.scope}${session.detail ? ` — ${session.detail}` : ""}\n`).join("")
+              + "Project configuration adopted in place. No Host restart or Agent Turn interruption requested.\n";
+          emit(`${result.output}${reviewOutput}${workspaceOutput}`, false, completionData === undefined
             ? commandData
             : { ...commandData as object, ...completionData });
           return;
         }
-        if (jsonOutput && result.kind !== "session-stop"
+        if (jsonOutput && result.kind !== "session-stop" && result.kind !== "session-resume"
           && result.kind !== "input-steer" && result.kind !== "input-interrupt") {
           throw usageError("Task Role view/takeover requires an interactive terminal.");
         }
@@ -2206,6 +2264,18 @@ export async function main(): Promise<void> {
             stopped: true,
             reason: result.reason
           });
+          return;
+        }
+        if (result.kind === "session-resume") {
+          await callFileTaskController(home, "runtime.ensure-role-session", {
+            scope: "task", taskId: result.taskId, roleName: result.roleName,
+            expectedNativeSessionId: result.nativeSessionId
+          });
+          const resumed = store.getTaskRoleSessionSet(result.taskId, result.roleName);
+          if (resumed?.sessions[resumed.activeAgentId]?.nativeSessionId !== result.nativeSessionId) {
+            throw runtimeError("Retained conversation changed during Host restoration.");
+          }
+          emit(`Restored Host for ${result.taskId}/${result.roleName} in the same conversation; no input was resent.\n`, false, result);
           return;
         }
         if (result.kind === "view") {
@@ -2473,10 +2543,14 @@ type ManagedTaskControlPlanePreflight = Readonly<{
 }>;
 
 async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPlanePreflight> {
+  const retainedTaskEntry = args[0] === "session" && args[1] === "skills"
+    || args[0] === "task" && (
+      args[1] === "work" && args[2] === "continue"
+      || args[1] === "role" && args[2] === "session" && args[3] === "resume");
   if (taskFinalReviewInvocation.error !== undefined) {
     throw new Error(taskFinalReviewInvocation.error);
   }
-  if (["doctor", "upgrade", "update"].includes(args[0] ?? "")) {
+  if (["doctor", "upgrade", "update", "repair"].includes(args[0] ?? "")) {
     const home = resolveYuiHome(process.env);
     Object.assign(process.env, maintenanceCallerEnvironment(home, process.env, args[0] !== "doctor"));
     if (!hasManagedIdentity(process.env)
@@ -2498,7 +2572,8 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
   // Home only, and never creates a Session or mutates its registration.
   if ((process.env.CODEX_THREAD_ID !== undefined || process.env.YUI_NATIVE_SESSION_ID !== undefined)
     && (process.env.YUI_SESSION_SCOPE === undefined || process.env.YUI_ROLE === undefined)) {
-    Object.assign(process.env, maintenanceCallerEnvironment(resolveYuiHome(process.env), process.env, false));
+    Object.assign(process.env, maintenanceCallerEnvironment(resolveYuiHome(process.env), process.env,
+      false, retainedTaskEntry || isTaskReadCommand(args)));
   }
   if (process.env.YUI_SESSION_SCOPE !== "task") {
     if (process.env.YUI_SESSION_SCOPE === "global") {
@@ -2518,12 +2593,7 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
     && ["agent-host", "session-notify", "runtime-hook"].includes(args[1] ?? "");
   const home = resolveYuiHome(process.env);
   assertManagedSessionManifest(home, "task");
-  const diagnosticTarget = taskDiagnosticTarget(args);
-  const diagnostic = diagnosticTarget !== undefined
-    && diagnosticTarget === process.env.YUI_TASK_ID;
-  if (diagnosticTarget !== undefined && !diagnostic) {
-    throw usageError("Diagnostics must remain within this Session's Task.");
-  }
+  const diagnostic = isTaskReadCommand(args) || (args[0] === "session" && args[1] === "skills");
   // One gate for every managed command: the current CLI, Home, and Controller
   // must agree. Internal callbacks must still be able to append their immutable
   // fact while the Controller is offline.
@@ -2540,16 +2610,9 @@ async function preflightManagedTaskControlPlane(): Promise<ManagedTaskControlPla
   // command needing it reads, never a fact frozen into a process environment.
   const runtime = internalCallback
     ? undefined
-    : diagnostic
+    : diagnostic || retainedTaskEntry
       ? resolveManagedTaskReader(verifiedStore, process.env)
       : requireManagedTaskCaller(verifiedStore, process.env);
-  if (diagnostic && runtime?.roleName !== "leader"
-    && !(args[1] === "show"
-      || (args[1] === "role" && args[2] === "session" && args[3] === "inspect"
-        && args[5] === runtime?.roleName))) {
-    // Non-Leaders keep their Assignment-scoped read authorization.
-    requireManagedTaskCaller(verifiedStore, process.env);
-  }
   const request = taskFinalReviewInvocation.request;
   if (request !== undefined && diagnostic) requireManagedTaskCaller(verifiedStore, process.env);
   if (request === undefined) {
@@ -3076,7 +3139,7 @@ async function deltaRecheckPreflightForTaskCommand(
     repositoryPaths,
     previousRound: previous,
     candidate: actualTaskReviewCandidate,
-    git: new NodeGitWorkspace()
+    git: new NodeGitWorkspace(() => store.getConfig())
   });
   if (assessment.kind === "ineligible") {
     throw usageError(
@@ -3204,6 +3267,7 @@ async function executeOperatorSessionControl(
 
   await prepareInteractiveCodexApp(control.targetAgentId, store, home);
   await ensureFileTaskController(home, { environment: process.env });
+  let stopDisposition = "not-required";
   if (
     paneRunning
     || (
@@ -3215,9 +3279,22 @@ async function executeOperatorSessionControl(
     || (sessionSet?.providerBinding?.goal != null && sessionSet.providerBinding.goal.status !== "complete")
   ) {
     await runtime.stopGlobalRoleSession(role.name);
+    stopDisposition = "completed";
   }
-  applyOperatorSessionControl(control, store);
-  await runtime.prepareGlobalRoleEnter(role.name);
+  try {
+    applyOperatorSessionControl(control, store);
+  } catch (error) {
+    throw new Error(`Operator replacement selection failed; prior stop=${stopDisposition}; `
+      + "new Session startup has not begun. Inspect the retained Session state.", { cause: error });
+  }
+  try {
+    await runtime.prepareGlobalRoleEnter(role.name);
+  } catch (error) {
+    throw new Error(`Operator replacement selection committed; prior stop=${stopDisposition}; its startup phase failed `
+      + "without readiness confirmation. Whether native startup began is unconfirmed. "
+      + "Inspect the exact current Session/Host before retrying; "
+      + "do not infer that startup had no effect.", { cause: error });
+  }
   tmux.attachRole("operator", role.name, "auto");
 }
 
@@ -3373,7 +3450,9 @@ async function resolveTerminalArguments(
   store: TaskStore,
   catalogs: AgentConfigurationCatalogService
 ): Promise<string[] | null> {
-  const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  // Probe the descriptor without constructing a stdin stream: Node makes
+  // pipes nonblocking on stream creation, breaking later --body-file - reads.
+  const interactive = isatty(0) && process.stdout.isTTY === true;
   if (!interactive || !allowsInteractiveSelection(commandArgs, jsonOutput)) {
     return [...commandArgs];
   }
@@ -3447,6 +3526,7 @@ type AgentConfigurationMutation = Readonly<{
   agentId: string;
   config: RoleAgentConfig;
   cwd: string;
+  related?: readonly AgentConfigurationMutation[];
 }>;
 
 type AgentConfigurationMutationValidator = (
@@ -3467,30 +3547,25 @@ async function preflightAgentConfigurationMutation(
     await warmConfigurationMutationCatalog(commandArgs, store, catalogs);
     return undefined;
   }
-  const agent = store.getConfiguredAgent(mutation.agentId);
-  if (agent === null) throw agentNotFound(mutation.agentId);
-  const resolved = await catalogs.resolve({
-    agent,
-    cwd: mutation.cwd,
-    config: mutation.config
-  });
-  try {
-    validateAgentLaunchConfiguration(resolved.catalog, mutation.config);
-  } catch (error) {
-    throw usageError(error instanceof Error ? error.message : String(error));
-  }
+  const checked = await Promise.all([mutation, ...(mutation.related ?? [])].map(async candidate => {
+    const agent = store.getConfiguredAgent(candidate.agentId);
+    if (agent === null) throw agentNotFound(candidate.agentId);
+    const resolved = await catalogs.resolve({ agent, cwd: candidate.cwd, config: candidate.config });
+    try { validateAgentLaunchConfiguration(resolved.catalog, candidate.config); }
+    catch (error) { throw usageError(error instanceof Error ? error.message : String(error)); }
+    return { candidate, resolved };
+  }));
   return (candidate) => {
-    if (
-      candidate.agentId !== mutation.agentId
-      || resolve(candidate.cwd) !== resolve(mutation.cwd)
-      || !isDeepStrictEqual(candidate.config, mutation.config)
-    ) {
+    const match = checked.find(entry => candidate.agentId === entry.candidate.agentId
+      && resolve(candidate.cwd) === resolve(entry.candidate.cwd)
+      && isDeepStrictEqual(candidate.config, entry.candidate.config));
+    if (match === undefined) {
       throw usageError(
         "Agent configuration changed after capability preflight; retry the command."
       );
     }
     try {
-      validateAgentLaunchConfiguration(resolved.catalog, candidate.config);
+      validateAgentLaunchConfiguration(match.resolved.catalog, candidate.config);
     } catch (error) {
       throw usageError(error instanceof Error ? error.message : String(error));
     }
@@ -3758,7 +3833,7 @@ function completionSelectionPorts(home: string): SelectionPorts {
   );
   if (process.env.YUI_SESSION_SCOPE !== "task") return ports;
   const taskId = process.env.YUI_TASK_ID!;
-  const readable = contextRecordReader(store, taskId, process.env);
+  assertTaskReadable(store, taskId, process.env);
   const families: Record<string, string> = {
     "task.list": "task", "project.list": "project-policy", "task.role.list": "role",
     "task.work.list": "work-item", "task.message.list": "task-message", "task.input.list": "input-request",
@@ -3777,7 +3852,7 @@ function completionSelectionPorts(home: string): SelectionPorts {
       const id = String(value.id ?? value.name ?? "");
       if (method === "task.list" && id !== taskId) return false;
       if (method === "project.list" && !store.getTask(taskId)?.projectBindings.some(binding => binding.projectId === id)) return false;
-      return readable(family, id);
+      return true;
     });
   } };
 }

@@ -161,7 +161,7 @@ async function start(
     throw usageError(`Task main worktree is not ready; reconcile the Task first: ${task.id}.`);
   }
   taskIntegrationTargetCheckout(store, options.environment, task.id, project.id, targetRef);
-  const expectedHead = (await new NodeGitWorkspace().inspect(mainEntry!.path, targetRef)).baseCommit;
+  const expectedHead = (await new NodeGitWorkspace(() => store.getConfig()).inspect(mainEntry!.path, targetRef)).baseCommit;
   const snapshotEntry = candidate.workspace.entries.find(
     ({ projectId }) => projectId === project.id
   );
@@ -219,7 +219,7 @@ async function continueIntegration(
   ) {
     throw usageError(`Integration is not ready to continue: ${integration.id}/${integration.status}.`);
   }
-  return runIntegration(store, home, integration, now, options);
+  return runIntegration(store, home, integration, now, options, "continue");
 }
 
 async function runIntegration(
@@ -227,7 +227,8 @@ async function runIntegration(
   home: string,
   integration: IntegrationAttempt,
   now: () => Date,
-  options: TaskIntegrationCommandOptions
+  options: TaskIntegrationCommandOptions,
+  intent?: "continue"
 ): Promise<Readonly<{ output: string; data: unknown }>> {
   const result = await new GitIntegrationService(
     home,
@@ -237,7 +238,7 @@ async function runIntegration(
     options.environment,
     undefined,
     options.jobPort
-  ).integrate(integration.taskId, integration.id);
+  ).integrate(integration.taskId, integration.id, undefined, intent);
   const output = result.status === "committed"
     ? `Integrated ${integrationSourceLabel(result.attempt)} into ${
         result.attempt.targetRef

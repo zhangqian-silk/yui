@@ -6,9 +6,10 @@ import {
 } from "../../dist/runtime/providerRuntimeIdentity.js";
 import {
   recordProviderFailure, admitProviderRetry, providerRetryProjection,
-  cancelProviderRetry, deferProviderRetry, providerRetryAttemptId, providerRetryPrompt, providerRunRetry
+  cancelProviderRetry, deferProviderRetry, providerRetryAttemptId, providerRetryContext, providerRunRetry,
+  providerRetryDecision
 } from "../../dist/runtime/providerRetry.js";
-import { mapCodexAgentError, mapClaudeAgentError } from "../../dist/runtime/builtinAgentErrorMappers.js";
+import { mapCodexAgentError, mapClaudeAgentError, mapAcpAgentError } from "../../dist/runtime/builtinAgentErrorMappers.js";
 
 const epoch = Date.parse("2026-09-13T00:00:00Z");
 const iso = ms => new Date(ms).toISOString();
@@ -40,6 +41,100 @@ function fail(value, at, error = failure) {
   return recordProviderFailure(value, { error, failureRef: value.run.attemptId, at, random: () => 0 });
 }
 
+const unknownFailure = { ...failure, category: "unknown", code: "unknown",
+  message: "unrecognized failure", raw: "{}", retryable: undefined, sessionDisposition: "unknown" };
+function nextFailure(value, error) {
+  const due = Date.parse(value.retry.nextEligibleAt);
+  const attemptId = providerRetryAttemptId(value.retry);
+  value = admitProviderRetry(value, { attemptId, at: due });
+  value = beginProviderTurn(value, { attemptId, authorityEpoch: 1, submittedAt: iso(due), retrySupported: true });
+  value = acceptProviderTurn(value, { attemptId, nativeTurnId: attemptId, acceptedAt: iso(due) });
+  return fail(JSON.parse(JSON.stringify(value)), due + 1, error);
+}
+
+test("native stream failures qualify; permanent evidence dominates nested transient errors", () => {
+  const message = "stream disconnected before completion: stream closed before response.completed";
+  assert.equal(mapCodexAgentError({ message,
+    raw: JSON.stringify({ message, codexErrorInfo: "other", additionalDetails: null })
+  }).retryable, true);
+  for (const codexErrorInfo of ["responseStreamDisconnected", "responseStreamConnectionFailed", "httpConnectionFailed"]) {
+    assert.equal(mapCodexAgentError({ message: "failed",
+      raw: JSON.stringify({ codexErrorInfo: { [codexErrorInfo]: { httpStatusCode: null } } })
+    }).retryable, true);
+  }
+  for (const mapper of [mapCodexAgentError, mapClaudeAgentError, mapAcpAgentError]) {
+    for (const fatal of [
+      { message: "context window exceeded" }, { statusCode: 413 }, { code: "invalid_model" },
+      { code: "insufficient_quota", statusCode: 429 }, { message: "permission denied" },
+      { message: "request cancelled" }, { message: "session revoked" },
+      { codexErrorInfo: "contextWindowExceeded" }, { message: "policy violation" }
+    ]) {
+      const result = mapper({ message: "stream disconnected",
+        raw: JSON.stringify({ ...fatal, cause: { statusCode: 503 } }) });
+      assert.equal(result.retryable, false, JSON.stringify(fatal));
+    }
+    assert.equal(mapper({ message: "failed", raw: '{"statusCode":429}' }).retryable, true);
+    assert.equal(mapper({ message: "failed", raw: '{"statusCode":503}' }).retryable, true);
+    assert.notEqual(mapper({ message: "failed",
+      raw: '{"toolOutput":{"statusCode":503},"prompt":"stream disconnected before completion: stream closed before response.completed"}'
+    }).retryable, true, "Display prose never establishes positive transient evidence.");
+  }
+  assert.equal(mapAcpAgentError({ message: "internal failure",
+    raw: '{"code":-32603,"cause":{"statusCode":503}}' }).retryable, true);
+});
+
+test("unknown fallback spends the same durable budget and can upgrade without resetting it", () => {
+  const original = fail(binding(), epoch, unknownFailure);
+  assert.equal(original.retry.status, "waiting");
+  assert.equal(providerRetryProjection(original).limit, 1);
+  const repeated = nextFailure(original, { ...unknownFailure, message: "different unknown wording" });
+  assert.equal(repeated.retry.status, "exhausted");
+  assert.equal(repeated.retry.attempts, 1);
+  assert.throws(() => admitProviderRetry(repeated, { attemptId: "again", at: epoch + 10_000 }));
+  let upgraded = nextFailure(original, failure);
+  assert.equal(upgraded.retry.chainId, original.retry.chainId);
+  assert.equal(upgraded.retry.deadline, original.retry.deadline);
+  assert.equal(upgraded.retry.attempts, 1);
+  assert.equal(providerRetryProjection(upgraded).limit, 5);
+  assert.equal(providerRetryProjection(upgraded).remaining, 4);
+  upgraded = nextFailure(upgraded, { ...failure, retryable: false, category: "access" });
+  assert.equal(upgraded.retry.status, "cancelled");
+  assert.equal(upgraded.retry.attempts, 2);
+  assert.equal(nextFailure(fail(binding(), epoch), unknownFailure).retry.status, "exhausted");
+});
+
+test("unknown classification cannot replace terminal, delivery, identity or Host safety proof", () => {
+  const failed = settleProviderTurn(binding(), {
+    attemptId: "original", nativeTurnId: "turn-0", status: "failed", settledAt: iso(epoch)
+  });
+  for (const [change, error, reason] of [
+    [{ retryDisabled: true }, unknownFailure, "retry-disabled"],
+    [{}, { ...unknownFailure, inputDisposition: "unknown" }, "input-delivery-unknown"],
+    [{ run: { ...failed.run, nativeTurnId: undefined } }, unknownFailure, "exact-failed-turn-unavailable"],
+    [{ run: { ...failed.run, retrySupported: false } }, unknownFailure, "session-recovery-unproven"],
+    [{ authority: { ...failed.authority, epoch: 2 } }, unknownFailure, "authority-changed"],
+    [{ conversations: failed.conversations.map(c => ({ ...c, recoverability: "unrecoverable" })) },
+      unknownFailure, "session-unrecoverable"],
+    [{}, { ...failure, category: "cancelled" }, "known-non-retryable"],
+    [{}, { ...failure, category: "context" }, "known-non-retryable"]
+  ]) {
+    const result = recordProviderFailure({ ...failed, ...change }, { error, failureRef: "f", at: epoch });
+    assert.equal(result.retry, undefined, reason);
+    assert.equal(providerRetryDecision(result).reason, reason);
+  }
+  const waiting = fail(binding(), epoch, unknownFailure);
+  const deferred = admitProviderRetry(waiting, { attemptId: "busy", at: Date.parse(waiting.retry.nextEligibleAt) });
+  const busy = beginProviderTurn(deferred, {
+    attemptId: "busy", authorityEpoch: 1, submittedAt: iso(epoch + 5_000), retrySupported: true
+  });
+  const retriable = deferProviderRetry(settleProviderTurnSubmission(busy, {
+    attemptId: "busy", status: "deferred", resolvedAt: iso(epoch + 5_000), reason: "native busy"
+  }), epoch + 5_000);
+  assert.equal(retriable.retry.attempts, 0);
+  assert.equal(retriable.retry.deadline, waiting.retry.deadline);
+  assert.equal(providerRetryProjection(retriable).limit, 1);
+});
+
 test("structured Codex capacity is retryable without granting replay from capacity prose", () => {
   const message = "Selected model is at capacity. Please try a different model.";
   const raw = JSON.stringify({ message, codexErrorInfo: "serverOverloaded", additionalDetails: null, misalignment: null });
@@ -58,11 +153,11 @@ test("structured Codex capacity is retryable without granting replay from capaci
 });
 
 test("explicit recovery requires current accepted failure proof, not an automatic classification", () => {
-  const failed = fail(binding(), epoch, { ...failure, retryable: undefined });
+  const failed = fail(binding(), epoch, { ...failure, retryable: false });
   const original = { ...failed, run: { ...failed.run, runId: "run-1" } };
   const retry = providerRunRetry(original, "run-1", epoch + 1);
   assert.equal(retry.failedNativeTurnId, "turn-0");
-  assert.equal(retry.error.retryable, undefined, "Manual intent must not manufacture automatic qualification.");
+  assert.equal(retry.error.retryable, false, "Manual intent must not manufacture automatic qualification.");
   assert.equal(retry.successorAutomatic, false);
   assert.equal(providerRunRetry(original, "another-run", epoch + 1), undefined);
   for (const change of [
@@ -107,7 +202,7 @@ test("five consecutive automatic attempts survive new Turns; only exact success 
     attemptId: "recovered", nativeTurnId: "success", status: "completed", settledAt: iso(due + 1)
   });
   assert.equal(recovered.retry.status, "recovered");
-  assert.equal(providerRetryProjection(recovered).attempts, 0);
+  assert.equal(providerRetryProjection(recovered).attempts, 1, "Native success retains the audit count.");
   recovered = beginProviderTurn(recovered, {
     attemptId: "new-work", authorityEpoch: 1, submittedAt: iso(due + 2),
     input: { kind: "text", text: "Next work" }, retrySupported: true
@@ -142,7 +237,7 @@ test("terminal proof, Retry-After, deadline and cancellation bound automatic adm
   });
   for (const error of [
     { ...failure, inputDisposition: "unknown" },
-    { ...failure, retryable: undefined },
+    { ...failure, sessionDisposition: "unrecoverable" },
     { ...failure, retryable: false, category: "access" }
   ]) assert.equal(recordProviderFailure(failed, { error, failureRef: "f", at: epoch, random: () => 0 }).retry, undefined);
   const waiting = recordProviderFailure(failed, {
@@ -170,11 +265,21 @@ test("terminal proof, Retry-After, deadline and cancellation bound automatic adm
   assert.equal(mapCodexAgentError({
     message: "limited", raw: '{"statusCode":429,"headers":{"Retry-After":"30"}}'
   }).retryAfterMs, 30_000);
+  const unknownWait = mapCodexAgentError({
+    message: "unknown failure", raw: '{"codexErrorInfo":"other","headers":{"Retry-After":"30"}}'
+  });
+  assert.equal(unknownWait.retryable, undefined);
+  const unknown = recordProviderFailure(failed, {
+    error: { ...unknownFailure, ...unknownWait }, failureRef: "unknown-wait", at: epoch, random: () => 0
+  });
+  assert.ok(Date.parse(unknown.retry.nextEligibleAt) > epoch + 30_000);
+  assert.equal(providerRetryProjection(unknown).limit, 1);
 });
 
 test("busy admission has a fresh transport identity without spending a model attempt or changing recovery intent", () => {
   let value = fail(binding(), epoch);
-  const before = providerRetryPrompt(value.retry, "Original reference");
+  const before = providerRetryContext(value.retry);
+  assert.equal(providerRetryContext({ ...value.retry, failedNativeTurnId: undefined }), undefined);
   const firstId = providerRetryAttemptId(value.retry);
   const due = Date.parse(value.retry.nextEligibleAt);
   value = admitProviderRetry(value, { attemptId: firstId, at: due });
@@ -187,7 +292,7 @@ test("busy admission has a fresh transport identity without spending a model att
   value = deferProviderRetry(value, due);
   assert.equal(value.retry.attempts, 0);
   assert.notEqual(providerRetryAttemptId(value.retry), firstId);
-  assert.equal(providerRetryPrompt(value.retry, "Original reference"), before);
+  assert.equal(providerRetryContext(value.retry), before);
   const nextId = providerRetryAttemptId(value.retry);
   const nextAt = Date.parse(value.retry.nextEligibleAt);
   value = admitProviderRetry(value, { attemptId: nextId, at: nextAt });

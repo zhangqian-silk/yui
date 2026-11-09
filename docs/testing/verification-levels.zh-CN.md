@@ -39,12 +39,12 @@ Yui 是一个单用户本地产品。永久验证保护关键的 happy path 和�
 两者均包含 `test/core` 和 `test/platform`。已构建的 checkout 可分别运行
 `npm run test:business` 与 `npm run test:platform`，它们不会再次构建。
 CI 每个作业只显式构建一次。
-稳定套件维护当前存储 1.24 和明确声明的 1.0 至 1.23 连续小版本迁移，
+稳定套件维护当前存储 1.36 和明确声明的 1.0 至 1.35 连续小版本迁移，
 不包含未声明的历史格式兼容路径。
 
 当前覆盖包括：
 
-1. 新建存储 1.24、精确结构与记录校验、禁止覆盖未知数据库、无修改拒绝旧整数格式。
+1. 新建存储 1.36、精确结构与记录校验、禁止覆盖未知数据库、无修改拒绝旧整数格式。
 2. 精确版本暂存、目标不匹配拒绝、同主版本连续小版本预检、交接锁显式所有者，
    以及恢复时核对捕获的协议和存储身份，不接受缺失字段。
 3. 持久 Task／Message／Decision 上下文、Draft 激活权威、mailbox 认领、
@@ -66,6 +66,25 @@ CI 每个作业只显式构建一次。
 真实模型或真实 Home 检查需要显式授权。
 当前记录按声明的字段集合拒绝未知字段，不维护退役字段名称黑名单。
 
+## 上下文评测检查
+
+评测代码按专题组织在 [scripts/eval](../../scripts/eval/README.md)：
+通用证据工具、Provider统计适配与下述Yui上下文场景分开；代码审查材料评测
+也是独立专题，不继承上下文场景的义务判定。
+
+`npm run eval:check` 不启动 Home，只检查评测契约。
+`npm run eval:context:wiring -- --product <绝对路径> --out <全新目录>` 显式运行
+[维护框架](../../scripts/eval/context/README.md)的多输入
+CLI/Controller/Host/fake Provider 闭环和有限故障验证。它不加入默认 `npm test`
+或平台矩阵；安装包与 OS wiring 仍由现有 package smoke 负责。
+fake 通过不证明真实模型、原生压缩或无损观测；框架验证不重置历史性能账本，
+真实资源需另行明确授权和冻结。
+fake 专用 `native-normal` 场景不写 participant 文件，经真实适配分支检查完成的
+native 工具证据；读取/加载限定 Role、Thread、上下文代次与决策时间。
+不支持的证据仍为 unknown；当前观测条件不能产生无保留 valid-pass。
+代理检查同时覆盖 managed 和无管理身份的 detached control；
+后者仅保留控制传输记录，不能提供主体原文/加载证据。
+
 ## Skill 与指令变更
 
 一并审阅共享的 Runtime 合同和受影响的 Role/Project Skill。用几个相关场景检查指令
@@ -82,17 +101,17 @@ package-start 检查跟随已安装树中的本地 Skill 引用，包括跨 Role
 ## CI 与发布
 
 `ci.yml` 在 PR 和 master 上执行。业务契约与完整业务链路仅在 Linux x64/Node 24
-运行一次；平台测试在 Linux Node 24/26、Intel/Apple Silicon Mac Node 24 上运行。
+运行一次；平台测试在 Linux Node 24/26、Apple Silicon Mac Node 24 上运行。
 每个作业只构建一次，不重复 lint 或隐含 pretest 构建。保留现有作业名称；发布仍要求
 精确 master SHA 的整个 Core CI 成功，不复用另一源码的结果。
 
 | 证据 | PR/master | 精确发布 tarball |
 | --- | --- | --- |
 | 业务、状态、授权契约（`test/core`） | Linux 24 一次 | 复用精确 SHA 的成功 Core CI |
-| OS/helper/PTY/Git/SQLite（`test/platform`） | Linux 24/26、双 Mac 24 | 12 组真实 SQL/GC；其余安装边界见下 |
+| OS/helper/PTY/Git/SQLite（`test/platform`） | Linux 24/26、Apple Silicon Mac 24 | 8 组真实 SQL/GC；其余安装边界见下 |
 | `full`：Jobs/Schedules 业务链路 + lifecycle + compatibility | Linux 24 一次 | 复用精确 SHA 业务证据 |
-| `lifecycle`：重启、Session/Host 交接、归档 + compatibility | 双 Mac 24，Linux 已在 full 内 | 三平台 Node 24 |
-| `compatibility`：setup、CLI/bin、helper、Doctor/PTY/SQLite | Linux 26，其余已包含 | 三平台 × Node 20/22/24/26，24 已包含在 lifecycle 内 |
+| `lifecycle`：重启、Session/Host 交接、归档 + compatibility | Apple Silicon Mac 24，Linux 已在 full 内 | 两平台 Node 24 |
+| `compatibility`：setup、CLI/bin、helper、Doctor/PTY/SQLite | Linux 26，其余已包含 | 两平台 × Node 20/22/24/26，24 已包含在 lifecycle 内 |
 
 `node scripts/smoke-runtime-package.mjs --assembled .release-stage` 经过真实
 CLI/Controller/Host/SQLite 与隔离 tmux，仅用确定性夹具替换外部 Provider。它验证

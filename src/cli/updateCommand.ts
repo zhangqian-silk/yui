@@ -3,6 +3,8 @@ import { createUpdatePorts, type UpdateSpawner } from "./updatePorts.js";
 import { runUpdate, type UpdatePorts, type UpdateResult } from "./updateOrchestrator.js";
 import { isConcreteVersion } from "../domain/validation.js";
 import { usageError } from "../errors/cliError.js";
+import type { HostUpgradeResult } from "../controller/hostUpgrade.js";
+import { renderBackupRetention } from "../output/backupRetentionPresentation.js";
 
 export type { UpdateSpawner } from "./updatePorts.js";
 
@@ -23,9 +25,15 @@ export function runUpdateCommand(
   write: (text: string) => void = (text) => process.stdout.write(text),
   ports?: UpdatePorts
 ): number {
-  const version = parseUpdateVersion(args);
+  const statusOnly = args.length === 1 && args[0] === "--hosts-status";
+  const version = statusOnly ? undefined : parseUpdateVersion(args);
   const home = resolveYuiHome(environment);
   const resolvedPorts = ports ?? createUpdatePorts(environment, spawn);
+  if (statusOnly) {
+    if (!resolvedPorts.hostStatus) throw usageError("Host status inspection is unavailable.");
+    write(`${renderHosts(resolvedPorts.hostStatus(home)).join("\n")}\n`);
+    return 0;
+  }
   const result = runUpdate(resolvedPorts, { home, version });
   write(`${renderUpdateResult(result)}\n`);
   if (result.outcome === "aborted") return 5;
@@ -37,7 +45,14 @@ function parseUpdateVersion(args: readonly string[]): string | undefined {
   if (args.length === 2 && args[0] === "--version" && isConcreteVersion(args[1]!)) {
     return args[1]!.trim();
   }
-  throw usageError("Update usage: yui update [--version <exact-version>]");
+  throw usageError("Update usage: yui update [--version <exact-version>] | --hosts-status");
+}
+
+function renderHosts(hosts: readonly HostUpgradeResult[]): string[] {
+  return hosts.length === 0 ? ["Hosts: no recorded active Sessions."] : hosts.map(host =>
+    `Host ${host.owner.scope === "task" ? `${host.owner.taskId}/` : "global/"}${host.owner.roleName} `
+    + `(${host.nativeSessionId}): ${host.status}; loaded Host=${host.hostImplementation?.generation ?? "unreported"}; `
+    + `loaded Endpoint=${host.endpointImplementation?.generation ?? "unreported"}${host.detail ? ` — ${host.detail}` : ""}`);
 }
 
 /** Render an {@link UpdateResult} as concise, CLI-style text. */
@@ -74,8 +89,14 @@ export function renderUpdateResult(result: UpdateResult): string {
   })();
   return [
     rendered,
+    ...renderBackupRetention(result.backupRetention),
     ...(result.outcome === "updated" ? [
-      "Runtime: existing Hosts are retained, not upgraded in place. Host control capabilities and event delivery are checked separately; accepted input is never replayed."
+      result.controllerStarted ? "Controller: target startup verified." : "Controller: not started by this update.",
+      "Hosts: graceful switching is separate from installation; accepted input is never replayed.",
+      ...(result.hosts === undefined ? ["Hosts: not confirmed; existing Hosts may still run older code."]
+        : renderHosts(result.hosts)),
+      "Inspect later without reinstalling: yui update --hosts-status",
+      ...(result.hostUpgradeError === undefined ? [] : [result.hostUpgradeError])
     ] : []),
     ...(result.controllerReconciliation === undefined ? [] : [
       `Controller reconciliation: ${JSON.stringify(result.controllerReconciliation)}`

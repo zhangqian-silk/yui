@@ -42,6 +42,10 @@ export function mapCodexAgentError(
 
 function mapCodexDisplayError(input: AgentDriverErrorInput): AgentErrorClassification {
   const text = `${input.message}\n${input.raw}`;
+  if (/Codex Session availability is systemError; no input was submitted\./u.test(text)) {
+    return { category: "session", code: "provider.session-system-error",
+      inputDisposition: "not-accepted", sessionDisposition: "unknown" };
+  }
   if (/^server_error$/iu.test(input.message)) {
     return recoverable("availability", "provider.server-error");
   }
@@ -77,6 +81,10 @@ function mapCodexDisplayError(input: AgentDriverErrorInput): AgentErrorClassific
 export function mapAcpAgentError(
   input: AgentDriverErrorInput
 ): AgentErrorClassification {
+  return withTransientEvidence(mapAcpDisplayError(input), input);
+}
+
+function mapAcpDisplayError(input: AgentDriverErrorInput): AgentErrorClassification {
   const text = `${input.message}\n${input.raw}`;
   // -32800 is ACP's own "request cancelled". It is the expected answer to
   // `session/cancel`, not a fault.
@@ -126,6 +134,7 @@ function mapSharedAgentError(
   if (/\b429\b/u.test(text) || /rate[\s_-]?limit/iu.test(text)) {
     return recoverable("rate-limit", "provider.rate-limit");
   }
+  if (/\b408\b/u.test(text)) return recoverable("transport", "transport.timeout");
   if (/\b40[0-9]\b/u.test(text)) return classification("invalid-request", "provider.http-4xx");
   if (/\b50[0-9]\b/u.test(text)
     || /bad gateway|service unavailable|temporarily unavailable/iu.test(text)) {
@@ -239,10 +248,7 @@ function sessionUnavailable(code: string): AgentErrorClassification {
 
 /** Replay qualification is stricter than the readable, best-effort category.
  * Never promote a number occurring in provider prose to submission safety. */
-function structuredTransientError(input: AgentDriverErrorInput, codex: boolean): AgentErrorClassification | undefined {
-  if (/insufficient[_ -]quota|quota.{0,25}(exhaust|exceed)|billing[_ -]hard[_ -]limit|usageLimitExceeded|credits?.{0,20}(exhaust|insufficient)/iu.test(
-    `${input.message}\n${input.raw}`
-  )) return { category: "access", code: "provider.quota-exhausted", retryable: false };
+function errorNodes(input: AgentDriverErrorInput): Record<string, unknown>[] {
   const nodes: Record<string, unknown>[] = [];
   const visit = (value: unknown, depth: number): void => {
     if (depth > 8 || value === null || typeof value !== "object" || Array.isArray(value)) return;
@@ -254,16 +260,48 @@ function structuredTransientError(input: AgentDriverErrorInput, codex: boolean):
     }
   };
   try { visit(JSON.parse(input.raw), 0); } catch { /* Display classification may still use prose. */ }
+  return nodes;
+}
+
+/** Inspect error envelopes only, never echoed prompts, tool output or arbitrary
+ * payload strings. Fatal evidence wins across the whole bounded cause chain. */
+function permanentError(input: AgentDriverErrorInput, nodes: Record<string, unknown>[]): AgentErrorClassification | undefined {
+  const text = [input.message, ...nodes.flatMap(n => [n.message, n.code, n.type, n.error, n.codexErrorInfo])]
+    .filter(v => typeof v === "string").join("\n");
+  const statuses = nodes.flatMap(n => [n.httpStatusCode, n.statusCode, n.status]);
+  const denied = (category: AgentErrorClassification["category"], code: string): AgentErrorClassification =>
+    ({ category, code, retryable: false });
+  if (nodes.some(n => n.code === -32800) || /request[\s_-]?cancell?ed|turn[\s_-]?aborted|user[\s_-]?(?:cancelled|stopped)|^(?:cancelled|canceled|interrupted|aborted)$/imu.test(text)) {
+    return denied("cancelled", "provider.cancelled");
+  }
+  if (/insufficient[_ -]quota|quota.{0,25}(exhaust|exceed)|billing[_ -]hard[_ -]limit|usage[_ -]?limit[_ -]?exceeded|hit.{0,15}usage limit|usage limit.{0,15}(?:reached|exceeded)|credits?.{0,20}(exhaust|insufficient)|insufficient.{0,15}(?:credits?|balance|funds)|balance.{0,20}(?:exhaust|insufficient|too[_ -]low)|spending[_ -]limit/iu.test(text)) {
+    return denied("access", "provider.quota-exhausted");
+  }
+  if (statuses.some(s => s === 401 || s === 403)
+    || /authentication[_ -]?(?:error|failed|required)|permission[_ -]?(?:error|denied)|invalid[_ -]?api[_ -]?key|unauthorized|access[_ -]?denied|auth[\s_-]?required|requires? authentication/iu.test(text)) {
+    return denied("access", "provider.access-denied");
+  }
+  if (/cyber[_-]?policy|policy[\s_-]?(?:violation|denied)|(?:usage|content|safety)[\s_-]?policy/iu.test(text)) {
+    return denied("access", "provider.policy-denied");
+  }
+  if (statuses.includes(413)
+    || /context[_ -]?(?:window|length)[_ -]?(?:is[_ -]?)?(?:full|exceeded)|maximum context length|prompt (?:is )?too long|too many tokens|request[_ -]?(?:entity[_ -]?)?too[_ -]?large/iu.test(text)) {
+    return denied("context", "provider.context-capacity");
+  }
+  if (/session[\s_-]?(?:has[\s_-]?(?:been[\s_-]?)?)?(?:revoked|replaced|expired|ended|not[\s_-]?found)|thread[\s_-]?not[\s_-]?found|no[\s_-]?such[\s_-]?(?:session|thread)|No conversation found with session ID/iu.test(text)) {
+    return { ...sessionUnavailable("provider.session-unavailable"), retryable: false };
+  }
+  if (statuses.some(s => typeof s === "number" && s >= 400 && s < 500 && s !== 408 && s !== 429)
+    || nodes.some(n => [-32600, -32601, -32602, -32700].includes(Number(n.code)))
+    || /invalid[_ -]?(?:model|params?|parameters?|arguments?|options?|request|schema)|unrecognized[_ -]?model|model[_ -]?not[_ -]?found|bad[_ -]?request|validation[_ -]?error|model.*(?:not supported|not found|does not exist)|unknown[\s_-]?(?:flag|tool|argument)|unexpected argument/iu.test(text)) {
+    return denied("invalid-request", "provider.invalid-request");
+  }
+  return undefined;
+}
+
+function structuredTransientError(input: AgentDriverErrorInput, codex: boolean, nodes: Record<string, unknown>[]): AgentErrorClassification | undefined {
   const codes = nodes.flatMap(n => [n.code, n.type, n.error, n.codexErrorInfo]).filter(v => typeof v === "string");
-  if (codes.some(c => ["authentication_error", "permission_error", "invalid_api_key", "invalid_model",
-    "model_not_found", "usage_limit_exceeded", "insufficient_quota"].includes(c))
-    || codex && nodes.some(n => ["usageLimitExceeded", "unauthorized", "badRequest"].includes(String(n.codexErrorInfo)))) {
-    return { category: "access", code: "provider.access-denied", retryable: false };
-  }
   const statuses = nodes.flatMap(n => [n.httpStatusCode, n.statusCode, n.status]).filter(v => typeof v === "number");
-  if (statuses.some(s => s === 401 || s === 403 || s === 400 || s === 404)) {
-    return { category: "invalid-request", code: "provider.http-4xx", retryable: false };
-  }
   const nativeCode = input.message.trim();
   let result: AgentErrorClassification | undefined;
   if (statuses.includes(429) || codes.includes("rate_limit_error") || nativeCode === "rate_limit_error") {
@@ -271,13 +309,22 @@ function structuredTransientError(input: AgentDriverErrorInput, codex: boolean):
   } else if (codex && nodes.some(n => n.codexErrorInfo === "serverOverloaded")) {
     result = recoverable("availability", "provider.model-capacity");
   } else if (statuses.some(s => [500, 502, 503, 504].includes(s))
-    || codes.some(c => ["server_error", "overloaded_error"].includes(c))
+    || codes.some(c => ["server_error", "overloaded_error", "api_error", "service_unavailable"].includes(c))
     || ["server_error", "overloaded_error"].includes(nativeCode)) {
     result = recoverable("availability", "provider.server-error");
-  } else if (codes.some(c => ["ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ETIMEDOUT", "EPIPE"].includes(c))) {
+  } else if (statuses.includes(408)
+    || codes.some(c => ["ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ETIMEDOUT", "EPIPE"].includes(c))
+    || codex && nodes.some(n => ["httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected"]
+      .some(code => n.codexErrorInfo === code || Object.hasOwn(n, code)))
+    || codex && /^stream disconnected before completion: stream closed before response\.completed\.?$/iu.test(input.message.trim())) {
     result = recoverable("transport", "transport.temporary-failure");
   }
-  if (result === undefined) return undefined;
+  return result === undefined ? undefined : { ...result, retryable: true };
+}
+
+/** Waiting hints apply to the conservative fallback too; they do not upgrade
+ * its classification or establish permission to replay. */
+function retryAfterHint(nodes: Record<string, unknown>[]): number | undefined {
   const waits: number[] = [];
   for (const node of nodes) {
     for (const value of [node.retry_after_ms, node.retryAfterMs]) {
@@ -295,20 +342,27 @@ function structuredTransientError(input: AgentDriverErrorInput, codex: boolean):
     }
   }
   const retryAfterMs = Math.max(...waits.filter(Number.isSafeInteger));
-  return { ...result, retryable: true,
-    ...(Number.isFinite(retryAfterMs) ? { retryAfterMs } : {}) };
+  return Number.isFinite(retryAfterMs) ? retryAfterMs : undefined;
 }
 
 /** Add positive evidence without renaming established diagnostics or letting
  * a transient nested cause override a known fatal Session/request failure. */
 function withTransientEvidence(base: AgentErrorClassification, input: AgentDriverErrorInput, codex = false): AgentErrorClassification {
-  const evidence = structuredTransientError(input, codex);
-  if (evidence === undefined) return base;
-  const possiblyTransient = ["rate-limit", "availability", "transport", "unknown"].includes(base.category);
-  if (evidence.retryable === false) return possiblyTransient ? evidence : { ...base, retryable: false };
+  const nodes = errorNodes(input);
+  const permanent = permanentError(input, nodes);
+  if (permanent !== undefined) {
+    // Keep established specific diagnostic codes when they already express
+    // the permanent class; never retain a transient category over fatal proof.
+    return base.category === permanent.category
+      ? { ...base, ...permanent, code: base.code } : permanent;
+  }
+  const evidence = structuredTransientError(input, codex, nodes);
+  const retryAfterMs = retryAfterHint(nodes);
+  const wait = retryAfterMs === undefined ? {} : { retryAfterMs };
+  if (evidence === undefined) return { ...base, ...wait };
+  const possiblyTransient = ["rate-limit", "availability", "transport", "runtime", "unknown"].includes(base.category);
   if (!possiblyTransient || base.sessionDisposition === "unrecoverable") return base;
   return {
-    ...(base.category === "unknown" ? evidence : base), retryable: true,
-    ...(evidence.retryAfterMs === undefined ? {} : { retryAfterMs: evidence.retryAfterMs })
+    ...(base.category === "unknown" ? evidence : base), retryable: true, ...wait
   };
 }

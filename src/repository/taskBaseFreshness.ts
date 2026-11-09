@@ -158,7 +158,7 @@ export async function inspectTaskBaseFreshness(
   options: Readonly<{ git?: GitWorkspacePort; refresh?: boolean }> = {}
 ): Promise<TaskBaseFreshnessReport> {
   const task = requireTask(store, taskId);
-  const git = options.git ?? newGitWorkspace();
+  const git = options.git ?? new NodeGitWorkspace(() => store.getConfig());
   const workspace = store.getTaskWorkspace(taskId);
   // Collect active AgentRun workspace snapshots once so every Project entry can
   // report whether a live AgentRun is pinned to a different commit.
@@ -288,10 +288,6 @@ export function renderTaskBaseFreshnessReport(report: TaskBaseFreshnessReport): 
     if (entry.error !== undefined) lines.push(`  error: ${entry.error}`);
   }
   return lines.join("\n").concat("\n");
-}
-
-function newGitWorkspace(): GitWorkspacePort {
-  return new NodeGitWorkspace();
 }
 
 function requireTask(store: TaskStore, taskId: string): Task {

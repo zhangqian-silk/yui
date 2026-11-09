@@ -1,5 +1,6 @@
 import { usageError } from "../errors/cliError.js";
 import type { TaskStore } from "../storage/taskStore.js";
+import { StorageRecordError } from "../storage/taskStore.js";
 import { contextContentDigest } from "./contextSnapshot.js";
 import { materialize, resolveContextReader } from "./taskContext.js";
 import {
@@ -56,39 +57,41 @@ export function parseTaskCatalogOptions(args: readonly string[]): TaskCatalogOpt
   };
 }
 
-/** Task-local Leaders discover only their Task. Assignment Roles use their
- * existing Context pack: whole-Task counts would leak unrelated assignments. */
-export function taskCatalogScope(store: TaskStore, environment: NodeJS.ProcessEnv) {
-  const caller = resolveContextReader(store, environment);
-  if (caller !== undefined && caller.roleName !== "leader") {
-    throw usageError("Task discovery is unavailable to an Assignment-scoped Role; use its authorized Run Context.");
-  }
-  return caller?.taskId;
-}
-
 export function readTaskCatalog(
   store: TaskStore, options: TaskCatalogOptions, environment: NodeJS.ProcessEnv = {}
 ) {
   return store.transaction(reader => {
-    const taskId = taskCatalogScope(reader, environment);
+    resolveContextReader(reader, environment);
     const { cursor: rawCursor, ...filters } = options;
     if (!Number.isSafeInteger(filters.limit) || filters.limit < 1 || filters.limit > MAX_LIMIT) {
       throw usageError("Task catalog limit must be between 1 and 100.");
     }
-    const scope = contextContentDigest({ taskId: taskId ?? null, ...filters });
+    const scope = contextContentDigest({ taskId: null, ...filters });
     const cursor = rawCursor === undefined ? undefined : decodeCursor(rawCursor, scope);
     const facts = reader.queryTaskCatalog({
-      ...filters, ...(taskId === undefined ? {} : { taskId }),
+      ...filters,
       ...(cursor === undefined ? {} : { after: cursor.after, through: cursor.through }),
       limit: options.limit + 1
     });
-    const refs = new Map<string, CatalogRef>();
+    const refs = new Map<string, CatalogRef | null>();
+    const tasks = new Map<string, NonNullable<ReturnType<TaskStore["getTask"]>>>();
+    const recordErrors = new Map<string, string>();
     const getRef = (id: string) => {
       let ref = refs.get(id);
       if (ref === undefined) {
-        const task = reader.getTask(id);
-        if (task === null) throw usageError("Task catalog changed during the read; retry.");
-        ref = { taskId: id, ...materialize("task", id, task).ref };
+        ref = null;
+        try {
+          const task = reader.getTask(id);
+          if (task === null) {
+            recordErrors.set(id, "Task record is missing.");
+          } else {
+            tasks.set(id, task);
+            ref = { taskId: id, ...materialize("task", id, task).ref };
+          }
+        } catch (error) {
+          if (!(error instanceof StorageRecordError) && !(error instanceof SyntaxError)) throw error;
+          recordErrors.set(id, truncateUtf8(error.message, SUMMARY_BYTES));
+        }
         refs.set(id, ref);
       }
       return ref;
@@ -98,7 +101,7 @@ export function readTaskCatalog(
       const selected: CatalogRef[] = [];
       for (const id of source.taskIds) {
         const ref = getRef(id);
-        if (bytes([...selected, ref]) <= 2048) selected.push(ref);
+        if (ref !== null && bytes([...selected, ref]) <= 2048) selected.push(ref);
       }
       return [kind, {
         count: source.count,
@@ -116,7 +119,7 @@ export function readTaskCatalog(
     }>;
     const response = {
       view: "compact" as const,
-      scope: { taskId: taskId ?? null, archived: options.all ? "included" : "excluded",
+      scope: { taskId: null, archived: options.all ? "included" : "excluded",
         attention: "authorized-catalog-before-filters", executionSignals: "raw-inspection-candidates-not-execution-status" },
       filters, total: facts.total, counts: facts.counts, attention,
       tasks: [] as Array<{
@@ -124,7 +127,7 @@ export function readTaskCatalog(
         source: import("../task/task.js").TaskSource | null;
         summary: string | null; summaryStatus: string; omitted: { title: boolean; summary: boolean };
         counts: { workItems: number; activeRuns: number };
-        attention: Record<CatalogAttentionKind, number>; ref: CatalogRef;
+        attention: Record<CatalogAttentionKind, number>; ref: CatalogRef | null; recordError?: string;
       }>,
       nextCursor: null as string | null,
       consistency: "current-per-page; refresh for membership changes; new creation keys after the upper bound excluded",
@@ -135,15 +138,17 @@ export function readTaskCatalog(
       : Buffer.from(JSON.stringify({ version: 1, scope, after, through } satisfies Cursor)).toString("base64url");
     for (const row of facts.rows.slice(0, options.limit)) {
       const ref = getRef(row.id);
-      const summary = row.summary === null ? null : truncateUtf8(row.summary, SUMMARY_BYTES);
-      const title = truncateUtf8(row.title, 256);
+      const recordError = recordErrors.get(row.id);
+      const summary = recordError !== undefined || row.summary === null ? null : truncateUtf8(row.summary, SUMMARY_BYTES);
+      const title = truncateUtf8(tasks.get(row.id)?.title ?? "(unavailable)", 256);
       // SQL already limits these fields. Compare against the selected original
       // only when necessary; length-at-limit is conservatively marked omitted.
       const item = {
         id: row.id, title, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
-        source: reader.getTask(row.id)?.source ?? null,
-        summary, summaryStatus: row.summaryPresent ? "available" : "missing",
-        omitted: { title: row.title.length >= 256 || title !== row.title,
+        source: tasks.get(row.id)?.source ?? null,
+        summary, summaryStatus: recordError !== undefined ? "unavailable" : row.summaryPresent ? "available" : "missing",
+        ...(recordError === undefined ? {} : { recordError }),
+        omitted: { title: (row.title?.length ?? 0) >= 256 || title !== row.title,
           summary: row.summary !== null && (row.summary.length >= 512 || summary !== row.summary) },
         counts: { workItems: row.workItems, activeRuns: row.activeRuns },
         attention: Object.fromEntries(CATALOG_ATTENTION.map(kind => [kind, row[kind]])) as Record<CatalogAttentionKind, number>,
@@ -166,7 +171,7 @@ export function readTaskCatalog(
 export function renderTaskCatalog(result: ReturnType<typeof readTaskCatalog>): string {
   return [
     `Tasks (compact): ${result.tasks.length} shown; ${result.total} matching`,
-    ...result.tasks.map(task => `${task.id}\t${task.status}\t${task.title}\n  ${task.summary ?? "(summary missing)"}`),
+    ...result.tasks.map(task => `${task.id}\t${task.status}\t${task.title}\n  ${task.recordError ?? task.summary ?? "(summary missing)"}`),
     `Attention across catalog: ${CATALOG_ATTENTION.map(kind => `${kind}=${result.attention[kind].count}`).join(", ")}`,
     "Expand: yui task context <task-id>; inspect the Task ref for original requirements.",
     ...(result.nextCursor === null ? [] : [`Next cursor: ${result.nextCursor}`])

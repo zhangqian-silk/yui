@@ -1,4 +1,5 @@
 import { openTaskArtifactRepository, type ArtifactContent, type ArtifactEntry } from "./taskArtifactRepository.js";
+import type { GitConfig } from "../config/yuiConfig.js";
 import { requireCommitId } from "./managedGit.js";
 import { safeRelativeArtifactPath } from "./artifactPaths.js";
 
@@ -98,9 +99,9 @@ export function parseGitArtifactRef(value: string, taskId: string): GitArtifactR
  * though for a correctly pinned commit this can only happen if the recorded
  * digest was wrong, since the commit freezes the bytes.
  */
-export async function resolveGitArtifact(home: string, ref: GitArtifactRef): Promise<ArtifactContent> {
+export async function resolveGitArtifact(home: string, ref: GitArtifactRef, getConfig?: () => GitConfig): Promise<ArtifactContent> {
   const valid = validateGitArtifactRef(ref);
-  const repo = openTaskArtifactRepository(home, valid.taskId);
+  const repo = openTaskArtifactRepository(home, valid.taskId, getConfig);
   if (!repo.exists()) {
     throw new Error(`Artifact repository is unavailable for ${valid.taskId}.`);
   }
@@ -125,9 +126,10 @@ export async function resolveGitArtifact(home: string, ref: GitArtifactRef): Pro
 export async function saveArtifactFile(
   home: string,
   taskId: string,
-  input: Readonly<{ relativePath: string; bytes: Buffer; message?: string; expectedHead?: string }>
+  input: Readonly<{ relativePath: string; bytes: Buffer; message?: string; expectedHead?: string }>,
+  getConfig?: () => GitConfig
 ): Promise<GitArtifactRef> {
-  const repo = openTaskArtifactRepository(home, taskId);
+  const repo = openTaskArtifactRepository(home, taskId, getConfig);
   const relativePath = safeRelativeArtifactPath(input.relativePath);
   const result = await repo.save({
     files: [{ relativePath, bytes: input.bytes }],
@@ -147,9 +149,10 @@ export async function saveArtifactFile(
 export async function readCurrentArtifact(
   home: string,
   taskId: string,
-  relativePath: string
+  relativePath: string,
+  getConfig?: () => GitConfig
 ): Promise<ArtifactContent> {
-  const repo = openTaskArtifactRepository(home, taskId);
+  const repo = openTaskArtifactRepository(home, taskId, getConfig);
   if (!repo.exists()) throw new Error(`Artifact repository is unavailable for ${taskId}.`);
   return repo.read(safeRelativeArtifactPath(relativePath));
 }
@@ -157,9 +160,10 @@ export async function readCurrentArtifact(
 /** Ordinary listing: tracked artifacts at HEAD (ASYNC, not frozen). Empty when no repo yet. */
 export async function listCurrentArtifacts(
   home: string,
-  taskId: string
+  taskId: string,
+  getConfig?: () => GitConfig
 ): Promise<readonly ArtifactEntry[]> {
-  const repo = openTaskArtifactRepository(home, taskId);
+  const repo = openTaskArtifactRepository(home, taskId, getConfig);
   if (!repo.exists()) return [];
   return repo.list();
 }
@@ -172,9 +176,10 @@ export async function listCurrentArtifacts(
 export async function pinCurrentArtifacts(
   home: string,
   taskId: string,
-  relativePaths: readonly string[]
+  relativePaths: readonly string[],
+  getConfig?: () => GitConfig
 ): Promise<readonly GitArtifactRef[]> {
-  const repo = openTaskArtifactRepository(home, taskId);
+  const repo = openTaskArtifactRepository(home, taskId, getConfig);
   if (!repo.exists()) throw new Error(`Artifact repository is unavailable for ${taskId}.`);
   const head = await repo.head();
   if (head === null) throw new Error(`Artifact repository has no commits for ${taskId}.`);

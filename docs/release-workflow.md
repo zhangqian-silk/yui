@@ -51,6 +51,366 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.29.0 compatibility and migration notes
+
+Storage advances **1.32 → 1.33 → 1.34** through the centralized upgrade path.
+The first transition copies experimental Leader configuration into ordinary
+Task-owned configuration; later global edits no longer dynamically change it.
+The second keeps frozen Context identities, digests and references in SQLite
+and moves exact resource values into immutable, Task-owned `task-data` files.
+Existing frozen values and their digests are preserved.
+
+Upgrades preserve Task workspaces, including uncommitted files, and do not run
+history cleanup. Missing historical workspaces, artifacts or Context value files
+are not reconstructed or backed up automatically: the consuming read returns
+its actual missing-file or integrity error for the Agent to handle. Unrelated
+Task creation and Home admission no longer require all historical records to be
+readable. Task catalog entries may expose `recordError` with a null read reference;
+explicit full-record audits still report damaged history.
+
+`task process-cleanup` explicitly removes archived Task telemetry details using
+a preview digest and a durable receipt. It is not complete Task deletion, artifact
+deletion or workspace cleanup. Portable Project context omits machine-local
+registration paths and full Knowledge history; explicit Project reads remain
+available and already-frozen Context is unchanged.
+
+Offline `repair inspect`, `repair config` and `repair identity` expose bounded
+recovery for an authorized user or Operator. Applying requires a fresh preview
+digest and no active runtime. Configuration repair changes named fields only;
+identity restoration requires an existing valid backup matching the surviving
+Home identity. It never guesses credentials, silently creates a new identity,
+starts a Controller or creates an automatic backup.
+
+Use the normal upgrade/migration path. The migration retains its database backup;
+there is no additional automatic backup or restore of historical files. After
+1.34, a manually chosen complete backup must include the database, Task data and
+artifacts. Do not open an upgraded Home with an older binary. Controller/Host
+protocols remain v1, and supported platforms are unchanged. Publication does not
+upgrade the global CLI, migrate production data or restart shared services.
+
+### 2.28.0 compatibility and migration notes
+
+Tasks can explicitly select `--mode experiment`, independently of their project
+type. The specialized Leader inherits current global Leader configuration;
+existing ordinary Tasks retain their existing configuration behavior. Creation
+still produces a Draft and grants no measurement, model or shared-resource
+authority. See [Experimental Tasks](experiments.md).
+
+Directions explicitly select current experiments and conclusions. Plans,
+experiments, executions and analyses use immutable Git-backed references;
+failed or unknown measurements remain evidence rather than successful samples.
+Typed reads and current selections validate their local reference integrity.
+The packaged Experiment Leader includes the record contract and bounded,
+on-demand context instructions.
+
+Evaluation tooling now pins the checkout CLI and isolated Home, checks native
+working-directory ownership, and supports a bounded Linux sandbox bridge to the
+fixture Controller. This is evaluation-only transport, not a production
+Controller fallback. Unknown observation evidence remains unknown.
+
+Storage advances **1.31 → 1.32** through the centralized migration for explicit
+Task mode and inherited experiment Leader metadata, preserving existing history.
+Back up the Home and use the normal upgrade/migration path; do not open a migrated
+Home with an older binary. Controller/Host protocols remain v1.
+
+Supported platforms remain Linux x64 (glibc) and macOS Apple Silicon with native
+arm64 Node.js. Exact-merge Core CI and the same archive's eight-row Node
+20/22/24/26 fresh-install matrix gate publication. Publication does not upgrade
+the global CLI, migrate production data or restart shared services.
+
+### 2.27.0 compatibility and migration notes
+
+Provider failures use a shared classification and bounded retry policy. An
+unclassified failure may now receive one automatic fallback attempt; known
+transient failures retain at most five attempts within ten minutes. Both use
+the same durable attempt history, backoff and server waiting hints. Permanent
+authentication, quota and other non-retryable failures take precedence.
+Automatic recovery still requires the exact accepted failed native turn and
+provider/Host recovery capability; unknown input delivery, a newer turn or
+unsettled background work remains fenced. Unsupported providers do not gain
+automatic recovery. Diagnostics expose the selected policy, remaining budget
+and refusal reason. See [Provider retry](provider-retry.md).
+
+Leader configuration can optionally override Agent/model/effort separately for
+draft and develop launches. Existing bindings remain the default; new Tasks
+freeze the template and existing Tasks require explicit updates. Desired
+settings neither mutate a running turn nor replay input. See
+[Leader stage configuration](roles-and-configuration.md#optional-leader-draftdevelop-configuration).
+
+Storage advances **1.30 → 1.31** through the centralized additive migration for
+Leader stage settings and launch provenance, preserving existing history.
+The retry changes add no storage fields. Back up the Home and use the normal
+upgrade/migration path; do not open a migrated Home with an older binary.
+Controller/Host protocols remain v1.
+
+Supported platforms remain Linux x64 (glibc) and macOS Apple Silicon with
+native arm64 Node.js. Exact-merge Core CI and the same archive's eight-row
+Node 20/22/24/26 fresh-install matrix gate publication. Deterministic checks
+do not establish real-model behavior. Publication does not upgrade the global
+CLI, migrate production data or restart shared services.
+
+### 2.26.0 compatibility and migration notes
+
+WorkItems can continue same-scope modifications in their original native
+conversation through `yui task work continue`. Core associates the already
+accepted current Turn with a fresh Run; it does not resend input or create a
+replacement conversation. Questions remain read-only. Repair of an accepted
+WorkItem clears its current acceptance and Candidate pointers while preserving
+historical evidence; the new result must pass normal review and acceptance.
+`yui task role session resume` restores an idle retained WorkItem Host without
+submitting input. Stopped/completed Tasks, revoked or superseded ownership,
+released workspaces, changed scope, unsettled execution and unknown delivery
+remain fenced. Retain the workspace while direct repair is wanted.
+See [WorkItem continuation](workitem-continuation.md).
+
+This release also includes Project-binding updates without interrupting existing
+Agent conversations. Scope changes remain explicit and checked against current
+authority; preserving a conversation does not grant additional Project access.
+
+Storage advances **1.29 → 1.30** through the centralized migration for WorkItem
+continuation. Existing history is preserved byte-for-byte; no SQL schema change
+is required. Back up the Home and use the normal upgrade/migration path; do not
+open a migrated Home with an older binary. Controller/Host protocols remain v1.
+Runtime/Leader/Worker Skills advance to 47/17/5 respectively.
+
+Supported platforms remain Linux x64 (glibc) and macOS Apple Silicon with native
+arm64 Node.js. Exact-merge Core CI and the same archive's Node 20/22/24/26
+fresh-install matrix gate publication. Deterministic checks do not establish
+real-model behavior. Publication does not upgrade the global CLI, migrate
+production data or restart shared services.
+
+### 2.25.0 compatibility and migration notes
+
+This minor release removes macOS Intel support. Supported runtimes are now
+Linux x64 (glibc) and macOS Apple Silicon with native arm64 Node.js. macOS x64,
+including x64 Node.js under Rosetta on Apple Silicon, is rejected before either
+CLI product is loaded or the Home is opened. Intel Macs must remain on 2.23.0;
+Apple Silicon users must switch to native arm64 Node.js before upgrading.
+The combined npm manifest cannot express OS/CPU pairs, so npm installation can
+still succeed on an unsupported combination. Runtime startup fails explicitly;
+no install scripts, fallback helpers or first-use downloads are added.
+The existing updater's staged-target preflight also rejects that runtime before
+Controller shutdown, global binary activation or storage migration.
+
+Native builds, package contents, Core CI and release smoke now cover only those
+two platforms. Every supported Node 20/22/24/26 install remains gated (8 rows),
+with process lifecycle coverage on Node 24 for each platform. The `v2.24.0`
+tag is retained as unpublished evidence: required Intel smoke jobs did not
+acquire hosted runners, and neither npm nor GitHub Release was published.
+2.25.0 includes its complete configurable Git budget/error-handling changes
+described below.
+
+Storage remains **1.29**; the platform removal adds no migration. Updating from
+2.23.0 still applies the declared **1.28 → 1.29** Git configuration migration.
+Back up the Home and use the normal upgrade/migration path; do not open a
+migrated Home with an older binary. Controller/Host protocols remain v1.
+Publication does not update the global CLI, migrate production data or restart
+shared services. Deterministic package/OS checks do not establish real-model
+or real remote-server behavior.
+
+### 2.24.0 unpublished tag: Git budgets and migration
+
+Git workspace and artifact operations now use a configurable local total
+budget, independent of clone, remote fetch and network `ls-remote`. Configure
+`git-local-timeout-seconds` (default 30),
+`git-remote-inactivity-timeout-seconds` (default 120), and
+`git-remote-timeout-seconds` (default 1800) under `yui config tools` or Web
+settings. Each accepts integer seconds from 1 to 86400. Changes apply to the
+next command, including Controller-owned commands; in-flight budgets do not
+change. See [Git operation budgets](roles-and-configuration.md#git-operation-budgets).
+
+Clone/fetch request progress without a terminal. Output resets only the
+inactivity clock, never the total deadline; activity is not semantic progress
+proof. Remote stderr keeps a bounded tail. Timeout errors retain their kind
+and budget, elapsed time, exit code, signal and stderr instead of reporting
+only the last progress line. Deadline termination includes the invocation's
+owned transport helpers; no automatic Git retry or rollback is introduced.
+
+Storage advances **1.28 → 1.29** through the centralized additive migration
+for the three optional settings. Existing config bytes remain unchanged and
+missing values use runtime defaults. Back up the Home and use the normal
+upgrade/migration path; do not open a migrated Home with an older binary.
+Controller/Host protocols remain v1. Exact-merge Core CI and the same runtime
+archive's fresh-install matrix gate publication. These deterministic checks
+do not establish real remote-server or real-model behavior. Publication does
+not update the global CLI, migrate production data or restart shared services.
+
+### 2.23.0 compatibility and migration notes
+
+Host upgrades use explicit lifecycle signals and safe drain/reattachment
+boundaries without replaying business input or replacing native identity.
+Routine Skill checks remain inside the Host; unchanged Turns carry no Skill
+notice. Cold attachment, explicit context loss/compaction and changed Skills
+provide only the current loading pointers.
+
+Codex keeps original user input separate from application context on start and
+steer. Failed-Turn recovery does not duplicate the original input or imply lost
+Skill context. This requires the native `additionalContext` contract verified
+against Codex CLI 0.159.2; older native implementations are not covered and there
+is no fallback that reinserts metadata into user input.
+
+Native titles reuse the Role/Task/Draft/instance format through an independent,
+bounded metadata process, never blocking Startup, Goal or Turn. Exact identity,
+persisted intent and native readback distinguish confirmed naming from unknown
+effects. Observed manual names are preserved; unknown writes are not replayed.
+Historical polluted names without ownership evidence are diagnosed, not renamed.
+The native naming API has no compare-and-swap, so a final concurrent external
+rename cannot be protected atomically.
+
+Storage advances to **1.28**, preserving **1.26 → 1.27** Host-upgrade signals and
+adding **1.27 → 1.28** native-title receipts without rewriting history. Back up
+the Home and use the normal upgrade/migration path; do not open a migrated Home
+with an older binary. Controller/Host protocols remain v1. Publishing does not
+update the global CLI, migrate production data or restart shared services.
+
+### 2.22.0 compatibility and migration notes
+
+Context reads now support bounded discovery, precise batched original retrieval,
+body transport receipts and focused notifications. Runtime/Role Skills organize
+required material around actions and recovery after compaction; pointers and
+transport receipts never prove semantic reading or acknowledge an input.
+Full originals remain available. Automated consumers must follow explicit
+pagination and retrieval references rather than assuming every default response
+contains every body. Help is focused by default; consumers needing the complete
+recursive command tree must explicitly request recursive help, including JSON
+consumers affected by the changed child projection.
+
+Host restoration and Controller scheduling/SQLite transaction boundaries are
+bounded without replaying unknown effects. Codex Host native title mutation is
+omitted where it could stall execution; Yui presentation retains Role instance
+codes and planning markers, but an unapplied native title is not recorded as
+success. Codex temporary-directory exclusion options are preserved end to end.
+
+Storage advances to **1.26** through the centralized **1.25 → 1.26** migration;
+the already-published 1.24 → 1.25 migration is unchanged. Back up the Home and
+use the normal upgrade/migration path; do not open a migrated Home with an older
+binary. Controller/Host protocols remain v1. Publishing this version does not
+update the global CLI, migrate a production Home or restart its services.
+
+The maintained evaluation entry is `scripts/eval/`, with shared infrastructure
+separate from context-specific logic. Context guidance and historical analyses
+live under `docs/evaluations/context/`; the old `scripts/collaboration-eval/`
+entry is retired. Engineering gathers measurements; Agents interpret actual
+experimental and production traces, including compaction boundaries and missing
+evidence. Local output reductions are not a claim of universal token savings.
+
+### 2.21.0 compatibility and migration notes
+
+Ordinary Task, Assignment and frozen-context evidence reads now use the local
+resource boundary rather than Task ownership as a confidentiality boundary.
+Catalog/search and relevant records are readable without borrowing the target
+Task's identity or execution authority. Cross-Task context explicitly reports
+`reference-only`. Consumers must not treat readable records, returned instructions,
+or a frozen pack as permission to write, claim input, dispatch, or control work.
+Real user/tenant, filesystem, authenticated transport and explicit read limits
+remain. Native conversation reads use existing legal native tools, not a new gateway.
+
+Leader follow-up guidance permits the existing reopen operation for same-result
+tracked diagnosis, evidence handoff, necessary coordination or delivery authorized
+by the user's request or an explicit unfinished commitment. Simple questions stay
+completed, diagnosis stays read-only, and reopen does not lift stop, archive,
+cancelled-intent, Session, workspace or external-effect restrictions. Existing
+reopen and InputRequest operations remain separate; no completed-state write
+exception or automatic replay is introduced.
+
+Storage remains **1.25** and Controller/Host protocols remain v1; no migration is
+added. Runtime and Role Skill versions advance independently of the package.
+Exact-merge Core CI and the same runtime archive's fresh-install matrix gate npm
+publication. These deterministic checks do not establish model semantic behavior.
+Publishing does not authorize a global installation update or production restart.
+
+### 2.20.0 compatibility and migration notes
+
+This minor adds independent optional Role instance codes (`--instance-code` /
+`--clear-instance-code`) and a `Draft` marker for Leader Sessions with planning
+authority. Operator-only configuration does not propagate to Leader or other
+Roles. Task Role template copies remain independent; codes are presentation,
+not identity, authorization or launch-configuration drift. Full lowercase Task
+IDs remain unchanged. See [Role configuration](roles-and-configuration.md).
+
+New Sessions use the configured code. Normal Codex Host launches/resumes can refresh
+confirmed Yui-owned titles without forcing a stop/replacement. Historical untagged
+titles and recorded custom names are preserved. Codex resume naming requires
+the native name to match the previous generated title; missing metadata and
+user renames are left untouched. Title provenance advances only after a successful
+native naming receipt, not pre-start registration or live Host reuse. Other
+Providers receive generated names only on creation, never on resume. Provider
+naming remains best effort.
+
+Storage advances **1.24 → 1.25** through an additive, no-rewrite transition for
+optional Role code and Session title provenance. Older supported Homes follow
+the centralized contiguous chain; do not open an upgraded Home with older
+software. Controller/Host protocols remain v1. Publication does not authorize
+installing the release, migrating a production Home, restarting shared services,
+replacing Sessions or choosing codes for existing Roles.
+
+Release gates require exact-merge Core CI and the same runtime tarball's
+fresh-install matrix before npm `latest` publication. These deterministic
+checks do not establish real-model behavior.
+
+### 2.19.0 compatibility and migration notes
+
+This minor adds message backlog and blocked-delivery monitoring with Operator
+alerts (PR #492). Observations distinguish live work, paused execution and bounded
+retry from stalled delivery, retain original evidence, and deduplicate alerts
+across Controller restarts. Alerts include evidence-matched management guidance:
+inspect the exact input and execution first, distinguish rejected retry from
+unknown-result resolution, and require scoped stop proof or explicit replacement
+authority where applicable. Monitoring never retries, stops or replaces execution
+automatically; an alert is not recovery authority or proof of a unique root cause.
+
+Storage remains **1.24**, and Controller/Host protocols remain v1. Existing
+messages and events are preserved; this release adds no storage migration.
+Older supported Homes still use the centralized contiguous migration chain.
+With separate update authority, the Operator verifies the published artifact
+then runs `yui update --version 2.19.0`. Compatible live Sessions are retained;
+publishing alone does not update the installed program or recover other Tasks.
+Exact-merge Core CI and the same tarball's fresh-install platform/Node matrix
+remain release gates. These checks do not establish real-model behavior.
+
+### 2.18.0 compatibility and migration notes
+
+This minor includes the already-merged independent Jobs workspace and global
+Shell script Jobs (PR #490), plus Controller reliability and diagnostics.
+Exact Session stop/replacement no longer waits for unrelated global scheduling
+to drain. Stop proof, single-writer ownership and unknown-input replay fences
+remain required. Session health distinguishes historical failures from the
+current authority; conclusively rejected obsolete inputs can be retired without
+erasing their original evidence.
+
+Task-scoped lazy read caches, indexed observation queries and persistence
+timings reduce projection work and separate request/worker/database costs.
+With the default persistence worker, periodic maintenance lock waits no longer
+block the socket thread; idle Global recovery and settled retry checks are
+read-only. Actual admission and other business writes may still contend.
+Bounded, redacted asynchronous diagnostics retain incident evidence in
+`runtime/controller-diagnostics.jsonl` and two rotated files. These changes
+address reproduced mechanisms, not a proven unique cause of every historical
+timeout. See [managed runtime](managed-turn-and-session-runtime.md).
+
+Storage advances from **1.22 through 1.23 to 1.24**: 1.23 declares revisioned
+global Shell script definitions and Run snapshots; 1.24 adds Task read-revision
+tokens and triggers without rewriting historical payloads. A production 1.21
+Home first applies the existing 1.22 Role/Profile availability transition.
+Use the centralized contiguous same-major migration, never manual schema edits.
+Controller RPC and Host control/event protocols remain v1. Compatible live
+Hosts/Sessions are retained, not hot-upgraded; unreported Host capabilities and
+unknown results remain explicit.
+
+With separate production authority, the Operator uses
+`yui update --version 2.18.0` after verifying the published artifact. Refresh a
+consistent maintenance backup and capture the current executable/Controller
+identity before migration. An earlier online DB snapshot alone is not a complete
+rollback point and cannot overwrite subsequently accepted input. Do not open a
+1.24 Home with an older binary; rollback requires the matching pre-upgrade
+program and consistent Home backup, with intervening effects reconciled.
+
+Release gates require exact-merge-commit Core CI and the same runtime archive's
+fresh-install platform/Node matrix before npm publication. Local deterministic
+tests and prior smoke evidence do not replace those gates or prove real-model
+behavior. Publication does not itself update a production Home or resolve
+another Task's execution.
+
 ### 2.17.0 compatibility and migration notes
 
 This minor adds persistent Role/Profile enable and disable controls in CLI and
@@ -590,7 +950,7 @@ protection and valid exact-identity caches remain normal runtime behavior.
 
 Stable releases use npm `latest`; prereleases use `next`, never the stable
 default. The release workflow builds one runtime archive, verifies it across
-supported Node versions on Linux x64, macOS x64 and macOS arm64, publishes that exact archive to npm, then creates the
+supported Node versions on Linux x64 and macOS arm64, publishes that exact archive to npm, then creates the
 matching GitHub Release. Every release carries the runtime archive, checksum and
 provenance. A stable tag becomes GitHub latest; a prerelease does not.
 
@@ -753,6 +1113,12 @@ and timeout hierarchy. A no-target activation, help, `--json`, and every other
 command remain on the global CLI. Activation does not add another ordinary CLI
 routing path.
 
+Activation's two storage preflights use the verified target's existing read-only
+upgrade primitive in an isolated process, not its ordinary inactive CLI entry.
+The target must be installed in this Home with matching integrity and smoke
+evidence before each preflight. This neither migrates storage nor permits an
+inactive release or checkout CLI to read/write the Home through ordinary commands.
+
 ## Step catalog
 
 The plan is a fixed, predeclared subset of operations. Each plan entry has an
@@ -909,7 +1275,7 @@ It reuses the exact commit that passed core CI and adds only artifact assembly,
 fresh installation, and provenance checks required to publish.
 
 Business contracts and full Jobs/Schedules wiring run once in Core CI on Linux
-Node 24. Release still installs the same checksummed archive on all three
+Node 24. Release still installs the same checksummed archive on both supported
 platforms × Node 20/22/24/26: every install checks CLI/setup/native helpers,
 Doctor/PTY and real SQLite SQL/GC. Node 24 additionally checks real process
 lifecycle on each platform. See the [coverage table](testing/verification-levels.md#ci-and-release).

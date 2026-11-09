@@ -1,4 +1,5 @@
 import { supportedAgentAdapterIds } from "../agent/adapterCatalog.js";
+import { CONTEXT_FAMILIES } from "../context/contextFamilies.js";
 import { supportedAgentExecutionComponentIds } from "../agent/executionComponents.js";
 import { productConfigurationOptions } from "../nativeAgent/product/config.js";
 import { catalogCommands, catalogCommandOptions } from "../nativeAgent/product/catalog.js";
@@ -12,7 +13,7 @@ import {
 
 export type CommandNodeKind = "group" | "leaf" | "hybrid";
 export type CompletionProviderId = "role-agent";
-export type DiscoveryAudience = "public" | "operator" | "leader" | "assignment" | "global" | "unbound";
+export type DiscoveryAudience = "public" | "operator" | "leader" | "experiment-leader" | "assignment" | "global" | "unbound";
 export type CommandDiscovery = Readonly<{
   audiences: readonly DiscoveryAudience[];
   surface: "public" | "managed" | "runtime";
@@ -227,20 +228,23 @@ const agentChildren: readonly NodeInput[] = [
 ];
 
 const roleProfileOptions = [
+  "--instance-code",
   "--description", "--responsibility", "--constraint",
   "--expected-output", "--system-prompt", "--skill"
 ] as const;
 const roleAgentOptions = [
   "--model", "--effort", "--permission-strategy", "--sandbox", "--approval", "--permission-mode",
+  "--exclude-tmpdir-env-var", "--exclude-slash-tmp",
   "--allowed-tool", "--disallowed-tool", "--search"
 ] as const;
 const roleProfileClearOptions = [
+  "--clear-instance-code",
   "--clear-description", "--clear-responsibilities", "--clear-constraints",
   "--clear-expected-output", "--clear-system-prompt", "--clear-skills"
 ] as const;
 const roleAgentClearOptions = [
   "--clear-model", "--clear-effort", "--clear-allowed-tools", "--clear-disallowed-tools",
-  "--clear-search", "--clear-agent-config"
+  "--clear-search", "--clear-agent-config", "--clear-exclude-tmpdir-env-var", "--clear-exclude-slash-tmp"
 ] as const;
 const agentProfileOptions = [
   "--description", "--instructions", "--skill",
@@ -253,6 +257,8 @@ const agentProfileClearOptions = [
 const roleAgentOptionValues = {
   "--sandbox": ["read-only", "workspace-write", "danger-full-access"],
   "--approval": ["untrusted", "on-request", "never"],
+  "--exclude-tmpdir-env-var": ["true", "false"],
+  "--exclude-slash-tmp": ["true", "false"],
   "--permission-strategy": ["default", "bypass", "configured"],
   "--search": ["true"]
 } as const;
@@ -273,10 +279,10 @@ const roleChildren: readonly NodeInput[] = [
   {
     name: "update", discovery: { surface: "public", audiences: ["public","operator"] },
     summary: "Update a global Role.",
-    usage: "yui config role update <name> [profile options] [clear options]",
-    options: ["--enabled", "--agent", "--workspace", ...roleProfileOptions, ...roleAgentOptions,
+    usage: "yui config role update <name> [--stage draft|develop] [profile options] [clear options]",
+    options: ["--stage", "--clear-agent", "--enabled", "--agent", "--workspace", ...roleProfileOptions, ...roleAgentOptions,
       ...roleProfileClearOptions, ...roleAgentClearOptions, "--yes"],
-    optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"] },
+    optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"], "--stage": ["draft", "develop"] },
     fileOptions: ["--workspace"]
   },
   { name: "remove", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Remove a global Role.", usage: "yui config role remove <name>" },
@@ -326,7 +332,8 @@ const globalSessionChildren: readonly NodeInput[] = [
   {
     name: "retry", discovery: { surface: "public", audiences: ["public","operator"] },
     summary: "Inspect or control bounded Provider recovery for this Global Session.",
-    usage: "yui session retry <role> [show|cancel|disable|enable]"
+    usage: "yui session retry <role> [show|cancel|disable|enable] [--cursor <cursor> (show only)]",
+    options: ["--cursor"]
   }
 ];
 
@@ -369,14 +376,32 @@ const taskChildren: readonly NodeInput[] = [
   {
     name: "create", discovery: { surface: "public", audiences: ["public","operator"] },
     summary: "Create a Draft Task.",
-    usage: "yui task create <title> [--type <project-defined-type>] [--project <project> ...] [--base <project>=<ref> ...]",
-    options: ["--type", "--project", "--base"],
-    optionValues: { "--type": ["feature", "bugfix"] }
+    usage: "yui task create <title> [--mode experiment] [--type <project-defined-type>] [--project <project> ...] [--base <project>=<ref> ...]",
+    options: ["--mode", "--type", "--project", "--base"],
+    optionValues: { "--mode": ["experiment"], "--type": ["feature", "bugfix"] }
+  },
+  {
+    name: "iteration", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+    summary: "Read and maintain fixed experimental knowledge; no execution is started.",
+    sections: [{ id: "knowledge", title: "Experimental knowledge", entries: ["init", "overview", "read", "compare", "save"] }],
+    children: [
+      { name: "init", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader"] },
+        summary: "Initialize the local artifact repository and return its HEAD.", usage: "yui task iteration init <task>" },
+      { name: "overview", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+        summary: "Read bounded current directions and exact evidence pointers.", usage: "yui task iteration overview <task> [--experiment <ref-json>] [--cursor <cursor>]", options: ["--experiment", "--cursor"] },
+      { name: "read", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+        summary: "Read an exact immutable knowledge reference.", usage: "yui task iteration read <task> <reference-json> [--experiment <ref-json>]", options: ["--experiment"] },
+      { name: "compare", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+        summary: "Compare fixed conditions or results without deciding improvement.", usage: "yui task iteration compare <task> <left-ref-json> <right-ref-json> [--experiment <ref-json>]", options: ["--experiment"] },
+      { name: "save", discovery: { surface: "public", audiences: ["public", "operator", "experiment-leader", "assignment"] },
+        summary: "Validate and commit knowledge with a request receipt.", usage: "yui task iteration save <task> <record-json> --request-id <id> --expected-head <commit> [--experiment <ref-json>]",
+        options: ["--request-id", "--expected-head", "--experiment"] }
+    ]
   },
   {
     name: "project", discovery: { surface: "managed", audiences: ["operator","leader"] },
     summary: "Manage Projects bound to a Task.",
-    sections: [{ id: "manage", title: "Commands", entries: ["list", "add", "delivery"] }],
+    sections: [{ id: "manage", title: "Commands", entries: ["list", "add", "update", "delivery"] }],
     children: [
       {
         name: "list", discovery: { surface: "public", audiences: ["public","operator","leader"] },
@@ -388,6 +413,12 @@ const taskChildren: readonly NodeInput[] = [
         summary: "Add a Project to a Task.",
         usage: "yui task project add <task> <project> [--base <ref>] [--directory <name>]",
         options: ["--base", "--directory"]
+      },
+      {
+        name: "update", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+        summary: "Update an existing binding's upstream reference with a binding-set guard; preserve commits and worktree. Real baseline changes require upstream integration.",
+        usage: "yui task project update <task> <project> --base <ref> --if-current <writeGuard>",
+        options: ["--base", "--if-current"]
       },
       {
         name: "delivery", discovery: { surface: "public", audiences: ["public","operator","leader"] },
@@ -496,19 +527,19 @@ const taskChildren: readonly NodeInput[] = [
     fileOptions: ["--summary-file"]
   },
   {
-    name: "list", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+    name: "list", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] },
     summary: "Discover Tasks through a bounded, filterable catalog.",
     usage: "yui task list [--all] [--source <ordinary|job>] [--status <status>] [--project <id>] [--search <text>] [--attention <category>] [--limit <1..100>] [--cursor <cursor>]",
     options: ["--all", "--source", "--status", "--project", "--search", "--attention", "--limit", "--cursor"]
   },
   {
-    name: "search", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+    name: "search", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] },
     summary: "Search authorized Task bodies and return exact, reference-only source citations.",
     usage: "yui task search <query> [--task <id>] [--kind <brief|message|decision|result|completion>] [--limit <1..100>] [--cursor <cursor>]",
     options: ["--task", "--kind", "--limit", "--cursor"]
   },
   { name: "show", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] }, summary: "Show Task metadata and counts; long details use contentPage.", usage: "yui task show <id> [--cursor <cursor>]", options: ["--cursor"] },
-  { name: "usage", discovery: { surface: "public", audiences: ["public","operator","leader"] }, summary: "Read bounded Task usage and sourced costs; request detail pages explicitly.", usage: "yui task usage <task> [--limit <0..50>] [--offset <n>]", options: ["--limit", "--offset"] },
+  { name: "usage", discovery: { surface: "public", audiences: ["public","operator","leader","assignment"] }, summary: "Read bounded Task usage and sourced costs; request detail pages explicitly.", usage: "yui task usage <task> [--limit <0..50>] [--offset <n>]", options: ["--limit", "--offset"] },
   {
     name: "artifact", discovery: { surface: "managed", audiences: ["operator","leader"] },
     summary: "Save Task files in local Git and read current or commit-pinned content.",
@@ -521,10 +552,41 @@ const taskChildren: readonly NodeInput[] = [
   },
   {
     name: "context", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","unbound"] },
-    summary: "Read compact authorized facts, fixed-bound delta, or inspect a Context reference.",
-    usage: "yui task context [read|list|delta|inspect] <task> [--after <cursor>] [--continuation <cursor>] [--cursor <cursor>] [--limit <n>] [--store <store> --ref <id>] [--digest <digest>] [--view <current|all>]",
-    options: ["--after", "--continuation", "--cursor", "--limit", "--store", "--ref", "--digest", "--status", "--work-item", "--view"],
-    optionValues: { "--view": ["current", "all"] }
+    summary: "Read current authorized facts; discover references or inspect complete originals with a focused subcommand.",
+    executable: true,
+    usage: "yui task context <task>",
+    sections: [{ id: "read", title: "Context reads", entries: ["read", "list", "inspect", "delta"] }],
+    children: [
+      {
+        name: "read", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","unbound"] },
+        summary: "Read the current bounded Task index, equivalent to task context <task>.",
+        usage: "yui task context read <task>"
+      },
+      {
+        name: "list", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","unbound"] },
+        summary: "Discover one authorized family. --after filters creation time, not later edits; current excludes explicit ACK/retirement.",
+        usage: "yui task context list <task> --store <store> [--cursor <cursor>] [--limit <1..100>] [--view current|all] [--status <status>] [--after <timestamp>] [--work-item <id>]",
+        options: ["--store", "--cursor", "--limit", "--view", "--status", "--after", "--work-item"],
+        optionValues: { "--view": ["current", "all"], "--store": CONTEXT_FAMILIES }
+      },
+      {
+        name: "inspect", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","unbound"] },
+        summary: "Read complete originals. Choose one single-ref or 1–8-ref batch form; finish contentPage using the same selection and cursor.",
+        usage: [
+          "yui task context inspect <task> --store <store> --ref <id> [--digest <digest>] [--cursor <cursor>]",
+          "yui task context inspect <task> --context-ref <store/refId@digest> ... [--cursor <cursor>]",
+          "yui task context inspect <task> --refs <JSON-array-of-store-refId-digest> [--cursor <cursor>]"
+        ],
+        options: ["--store", "--ref", "--digest", "--context-ref", "--refs", "--cursor"],
+        optionValues: { "--store": CONTEXT_FAMILIES }
+      },
+      {
+        name: "delta", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","unbound"] },
+        summary: "Read fixed-bound event history after coreCursor, not current record bodies. Use throughCursor for the next window.",
+        usage: "yui task context delta <task> --after <cursor> [--continuation <cursor>] [--limit <1..100>]",
+        options: ["--after", "--continuation", "--limit"]
+      }
+    ]
   },
   {
     name: "next-action", discovery: { surface: "managed", audiences: ["operator","leader"] },
@@ -548,6 +610,15 @@ const taskChildren: readonly NodeInput[] = [
     name: "archive-cleanup", discovery: { surface: "public", audiences: ["public","operator","leader"] },
     summary: "Retry one foreground exact-owner cleanup for an archived Task; retain unsafe resources and all history.",
     usage: "yui task archive-cleanup <id>"
+  },
+  {
+    name: "process-cleanup", discovery: { surface: "public", audiences: ["public","operator","leader"] },
+    summary: "Explicitly preview or clear archived Task telemetry details only; preserve aggregates, history and all files. Never runs during upgrade.",
+    usage: [
+      "yui task process-cleanup <id> --preview",
+      "yui task process-cleanup <id> --confirm <preview-digest> --request-id <id>"
+    ],
+    options: ["--preview", "--confirm", "--request-id"]
   },
   {
     name: "archive", discovery: { surface: "public", audiences: ["public","operator","leader"], optionAudiences: { "--force": ["public", "operator"] } },
@@ -786,7 +857,7 @@ const taskChildren: readonly NodeInput[] = [
     ]
   },
   {
-    name: "role", discovery: { surface: "managed", audiences: ["operator","leader"] },
+    name: "role", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
     summary: "Manage Roles within a Task.",
     sections: [{ id: "manage", title: "Commands", entries: [
       "add", "list", "status", "show", "update", "enable", "disable", "remove", "bind", "unbind",
@@ -803,40 +874,46 @@ const taskChildren: readonly NodeInput[] = [
       { name: "list", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Discover recorded Role health; Host is unchecked until role status.", usage: "yui task role list <task> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
       {
         name: "status", discovery: { surface: "managed", audiences: ["operator","leader"] },
-        summary: "Show persisted and live runtime state for one Task Role.",
-        usage: "yui task role status <task> <role> [--cursor <cursor>]",
-        options: ["--cursor"]
+        summary: "Show current execution observations; full includes nested original records.",
+        usage: "yui task role status <task> <role> [--view current|full] [--cursor <cursor>]",
+        options: ["--view", "--cursor"], optionValues: { "--view": ["current", "full"] }
       },
-      { name: "show", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Show one Task Role.", usage: "yui task role show <task> <role> [--cursor <cursor>]", options: ["--cursor"] },
+      { name: "show", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Show current Role configuration; full adds Session and Run history.", usage: "yui task role show <task> <role> [--view current|full] [--cursor <cursor>]", options: ["--view", "--cursor"], optionValues: { "--view": ["current", "full"] } },
       { name: "enable", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Enable this Task Role; does not change Task execution authority.", usage: "yui task role enable <task> <role>" },
       { name: "disable", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Block new execution of this Task Role without stopping its current Run.", usage: "yui task role disable <task> <role>" },
       { name: "capabilities", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Read native options using this Role's desired or exact failed launch configuration.",
-        usage: "yui task role capabilities <task> <role> [--error <event-id>] [--refresh]",
-        options: ["--error", "--refresh"] },
+        usage: "yui task role capabilities <task> <role> [--stage draft|develop | --error <event-id>] [--refresh]",
+        options: ["--error", "--stage", "--refresh"], optionValues: { "--stage": ["draft", "develop"] } },
       {
         name: "update", discovery: { surface: "managed", audiences: ["operator","leader"] },
-        summary: "Update a Task Role; Agent settings target the named or active binding without switching it.",
-        usage: "yui task role update <task> <role> [--profile <id>] [--agent <id>] [--environment <preparation-id> | --managed-environment] [Role and Agent settings]",
-        options: ["--enabled", "--profile", "--agent", "--environment", "--managed-environment", ...roleProfileOptions, ...roleAgentOptions,
+        summary: "Update default bindings, or optional Leader --stage draft|develop Agent/model/effort overrides.",
+        usage: "yui task role update <task> <role> [--stage draft|develop] [--profile <id>] [--agent <id>] [--environment <preparation-id> | --managed-environment] [Role and Agent settings]",
+        options: ["--stage", "--clear-agent", "--enabled", "--profile", "--agent", "--environment", "--managed-environment", ...roleProfileOptions, ...roleAgentOptions,
           ...roleProfileClearOptions, ...roleAgentClearOptions, "--yes"],
-        optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"] }
+        optionValues: { ...roleAgentOptionValues, "--enabled": ["true", "false"], "--stage": ["draft", "develop"] }
       },
       { name: "remove", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Remove a Task Role.", usage: "yui task role remove <task> <role>" },
       { name: "bind", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Bind and activate an Agent for a Task Role.", usage: "yui task role bind <task> <role> <agent-id>" },
       { name: "unbind", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Unbind a dormant Agent from a Task Role.", usage: "yui task role unbind <task> <role> <agent-id>" },
       {
-        name: "session", discovery: { surface: "managed", audiences: ["operator","leader"] },
+        name: "session", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
         summary: "Inspect, stop or explicitly select a new Task Role Session.",
         executable: true,
-        sections: [{ id: "manage", title: "Commands", entries: ["inspect", "retry", "stop", "new"] }],
+        sections: [{ id: "manage", title: "Commands", entries: ["inspect", "resume", "retry", "stop", "new"] }],
         children: [
+          {
+            name: "resume", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
+            summary: "Restore an idle retained WorkItem Host in its exact conversation without replaying input or reopening work.",
+            usage: "yui task role session resume <task> <role>"
+          },
           {
             name: "retry", discovery: { surface: "managed", audiences: ["operator","leader"] },
             summary: "Inspect or control Provider recovery without stopping an admitted Turn.",
-            usage: "yui task role session retry <task> <role> [show|cancel|disable|enable]"
+            usage: "yui task role session retry <task> <role> [show|cancel|disable|enable] [--cursor <cursor> (show only)]",
+            options: ["--cursor"]
           },
           {
-            name: "inspect", discovery: { surface: "managed", audiences: ["operator","leader"] },
+            name: "inspect", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
             summary: "Read the current Session, Host process, and AgentRun facts.",
             usage: "yui task role session inspect <task> <role> [--cursor <cursor>]",
             options: ["--cursor"]
@@ -879,13 +956,13 @@ const taskChildren: readonly NodeInput[] = [
     ]
   },
   {
-    name: "work", discovery: { surface: "managed", audiences: ["operator","leader"] },
+    name: "work", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
     summary: "Manage finite Task work items.",
     sections: [{
       id: "manage",
       title: "Commands",
       entries: [
-        "create", "list", "show", "edit", "update", "scope", "dispatch", "synthesize", "isolate", "capture", "cleanup",
+        "create", "list", "show", "edit", "update", "scope", "dispatch", "continue", "synthesize", "isolate", "capture", "cleanup",
         "review", "accept", "reject", "retire"
       ]
     }],
@@ -928,6 +1005,12 @@ const taskChildren: readonly NodeInput[] = [
         summary: "Dispatch a work item to its Role.",
         usage: "yui task work dispatch <task>/<work> [--input <text>] [--context-ref <store/refId@digest> ...] [--lane-role <role> ...]",
         options: ["--input", "--context-ref", "--lane-role"]
+      },
+      {
+        name: "continue", discovery: { surface: "managed", audiences: ["assignment", "leader"] },
+        summary: "Associate an explicit same-scope repair in the original conversation with a new AgentRun; never resend input or accept the result.",
+        usage: "yui task work continue <task>/<work> --request-id <id> --expected-turn <native-turn-id> --input <original-user-request>",
+        options: ["--request-id", "--expected-turn", "--input"]
       },
       {
         name: "synthesize", discovery: { surface: "managed", audiences: ["operator","leader"] },
@@ -1007,9 +1090,9 @@ const taskChildren: readonly NodeInput[] = [
       { name: "list", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] }, summary: "Discover AgentRuns for a Task or one WorkItem.", usage: "yui task run list <task|task/work> [--limit <1..100>] [--cursor <cursor>]", options: ["--limit", "--cursor"] },
       {
         name: "show", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
-        summary: "Show one AgentRun and its retained audit evidence.",
-        usage: "yui task run show <task>/<run> [--cursor <cursor>] [--json]",
-        options: ["--cursor", "--json"]
+        summary: "Read full audit evidence, current status, or the complete original result without input/configuration bodies.",
+        usage: "yui task run show <task>/<run> [--view full|status|result] [--cursor <cursor>] [--json]",
+        options: ["--view", "--cursor", "--json"]
       },
       {
         name: "retry", discovery: { surface: "managed", audiences: ["operator","leader"] },
@@ -1032,9 +1115,12 @@ const taskChildren: readonly NodeInput[] = [
         children: [
           {
             name: "expand", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
-            summary: "Expand one authorized AgentRun context reference.",
-            usage: "yui task run context expand <task>/<run> <ref-id> --store <store> [--mode full] [--cursor <cursor>]",
-            options: ["--store", "--mode", "--cursor"]
+            summary: "Read one frozen original or 1–8 explicitly selected originals from the same authorized Run.",
+            usage: [
+              "yui task run context expand <task>/<run> <ref-id> --store <store> [--mode full] [--cursor <cursor>]",
+              "yui task run context expand <task>/<run> --context-ref <store/refId[@digest]> ... [--cursor <cursor>]"
+            ],
+            options: ["--store", "--context-ref", "--mode", "--cursor"]
           },
           {
             name: "delta", discovery: { surface: "managed", audiences: ["operator","leader","assignment"] },
@@ -1217,7 +1303,7 @@ const taskChildren: readonly NodeInput[] = [
       { name: "show", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Show fixed wake inputs/results; expand diagnostics with --history.", usage: "yui task wake show <task> <wake> [--history] [--cursor <cursor>]", options: ["--history", "--cursor"] },
       { name: "retry", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Retry a rejected notification after correcting its cause; preserve original input.",
         usage: "yui task wake retry <task> <wake> --reason <correction>", options: ["--reason"] },
-      { name: "resolve", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Release an unknown notification claim after explicit quiescence evidence, without replay.",
+      { name: "resolve", discovery: { surface: "managed", audiences: ["operator","leader"] }, summary: "Release an unknown or rejected notification for explicit handling after quiescence evidence, without replay.",
         usage: "yui task wake resolve <task> <wake> --reason <quiescence-evidence>", options: ["--reason"] }
     ]
   },
@@ -1244,7 +1330,7 @@ export const ROOT_COMMAND = buildNode({
   examples: ["yui setup", "yui start", "yui operator enter", "yui task list"],
   sections: [
     { id: "general", title: "General", entries: [
-      "help", "version", "update", "upgrade", "setup", "start", "doctor"
+      "help", "version", "update", "upgrade", "setup", "start", "doctor", "repair"
     ] },
     { id: "workflow", title: "Workflow", entries: ["agent", "operator", "role", "inbox", "project", "task"] },
     { id: "configuration", title: "Configuration", entries: ["config"] },
@@ -1335,13 +1421,18 @@ export const ROOT_COMMAND = buildNode({
         }
       ]
     },
-    { name: "help", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global","unbound"] }, summary: "Show root or scoped command help.", usage: "yui help [command ...]", commandPathArguments: true },
+    {
+      name: "help", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global","unbound"] },
+      summary: "Show root or scoped command help; JSON defaults to immediate child summaries.",
+      usage: ["yui help [command ...]", "yui --json help [command ...] --recursive"],
+      options: ["--recursive"], commandPathArguments: true
+    },
     { name: "version", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global","unbound"] }, summary: "Print the installed Yui version." },
     {
       name: "update", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Install the latest or an exact published Yui version after storage preflight.",
-      usage: "yui update [--version <exact-version>]",
-      options: ["--version"]
+      usage: "yui update [--version <exact-version>] | --hosts-status",
+      options: ["--version", "--hosts-status"]
     },
     {
       name: "upgrade", discovery: { surface: "public", audiences: ["public","operator"] },
@@ -1356,6 +1447,24 @@ export const ROOT_COMMAND = buildNode({
     },
     { name: "start", discovery: { surface: "public", audiences: ["public","operator"] }, summary: "Start the Controller and Codex shared runtime needed by active Roles." },
     { name: "doctor", discovery: { surface: "public", audiences: ["public","operator","leader","assignment","global","unbound"] }, summary: "Check Yui dependencies and file state." },
+    {
+      name: "repair", discovery: { surface: "public", audiences: ["public", "operator"] },
+      summary: "Inspect or explicitly repair damaged Home control fields without starting a Controller.",
+      sections: [{ id: "commands", title: "Commands", entries: ["inspect", "config", "identity"] }],
+      children: [
+        { name: "inspect", discovery: { surface: "public", audiences: ["public", "operator"] }, summary: "Diagnose Home identity and config without loading Task history." },
+        {
+          name: "config", discovery: { surface: "public", audiences: ["public", "operator"] }, summary: "Preview a named-field JSON patch; apply only with its exact preview digest.",
+          usage: "yui repair config --patch <JSON-file> [--apply --expect <digest>]",
+          options: ["--patch", "--apply", "--expect"], fileOptions: ["--patch"]
+        },
+        {
+          name: "identity", discovery: { surface: "public", audiences: ["public", "operator"] }, summary: "Restore invalid metadata from a backup matching the surviving Home ID.",
+          usage: "yui repair identity --from-backup <database> [--apply --expect <digest>]",
+          options: ["--from-backup", "--apply", "--expect"], fileOptions: ["--from-backup"]
+        }
+      ]
+    },
     {
       name: "web", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Serve the control room using the running Controller's capability Host.",
@@ -1738,7 +1847,7 @@ export const ROOT_COMMAND = buildNode({
       name: "task", discovery: { surface: "public", audiences: ["public","operator"] },
       summary: "Manage Tasks, WorkItems, AgentRuns, and integration.",
       sections: [
-        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "replace", "reconcile", "upstream", "artifact"] },
+        { id: "lifecycle", title: "Lifecycle", entries: ["create", "project", "base", "update", "activate", "activation", "execution", "complete", "cancel", "reopen", "retire", "list", "show", "context", "next-action", "remote-delivery", "archive-preflight", "archive", "archive-cleanup", "process-cleanup", "replace", "reconcile", "upstream", "artifact", "iteration"] },
         { id: "collaboration", title: "Collaboration", entries: ["message", "input", "grant", "workflow", "publication", "work", "run", "review", "integration", "role", "overlap", "change-set"] },
         { id: "knowledge", title: "Task Knowledge", entries: ["search", "brief", "decision", "milestone", "event", "continuation", "wake", "usage"] }
       ],
@@ -1949,8 +2058,7 @@ export type CommandDescription = Readonly<{
   children: readonly CommandDescription[];
 }>;
 
-/** Structured help projection consumed by `config describe --json` and Operator. */
-export function describeCommandTree(node: CommandNode): CommandDescription {
+function describeCommand(node: CommandNode): Omit<CommandDescription, "children"> {
   return {
     path: node.path.slice(1).join(" "),
     summary: node.summary,
@@ -1959,8 +2067,36 @@ export function describeCommandTree(node: CommandNode): CommandDescription {
     options: node.options,
     optionValues: node.optionValues,
     argumentValues: node.argumentValues,
-    values: node.values,
-    children: visibleChildren(node).map(describeCommandTree)
+    values: node.values
+  };
+}
+
+/** Complete caller-filtered tree for explicit recursive help and offline tools. */
+export function describeCommandTree(node: CommandNode): CommandDescription {
+  return { ...describeCommand(node), children: visibleChildren(node).map(describeCommandTree) };
+}
+
+export type CommandHelpDescription = Omit<CommandDescription, "children"> & Readonly<{
+  children: readonly Pick<CommandDescription, "path" | "summary">[];
+  discovery: Readonly<{
+    children: "complete-immediate-summaries";
+    details: string;
+    tree: string;
+  }>;
+}>;
+
+/** Complete current-command details; descendants require explicit navigation. */
+export function describeCommandHelp(node: CommandNode): CommandHelpDescription {
+  return {
+    ...describeCommand(node),
+    children: visibleChildren(node).map(child => ({
+      path: child.path.slice(1).join(" "), summary: child.summary
+    })),
+    discovery: {
+      children: "complete-immediate-summaries",
+      details: "yui --json help <command ...>",
+      tree: "yui --json help [command ...] --recursive"
+    }
   };
 }
 
@@ -1993,7 +2129,6 @@ export function validateCommandCatalog(root: CommandNode): void {
         || node.children.length > 0
         || node.values.length > 0
         || node.sections.length > 0
-        || node.options.length > 0
         || node.hiddenOptions.length > 0
         || Object.keys(node.optionValues).length > 0
         || Object.keys(node.argumentValues).length > 0
@@ -2001,7 +2136,7 @@ export function validateCommandCatalog(root: CommandNode): void {
         || node.fileArguments.length > 0
         || node.executableOptions.length > 0;
       if (ownsOtherCompletionMetadata) {
-        throw new Error(`Command-path provider must be a visible metadata-free leaf: ${node.path.join(" ")}`);
+        throw new Error(`Command-path provider must be a visible leaf with only flag options: ${node.path.join(" ")}`);
       }
     }
 

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { supportedGit } from "../repository/gitCompatibility.js";
+import { resolveGitLocalTimeoutSeconds, type GitConfig } from "../config/gitConfig.js";
 
 import { acquireArtifactCommitLock } from "./artifactCommitLock.js";
 import {
@@ -147,6 +148,8 @@ export type TaskArtifactRepository = Readonly<{
   save(input: ArtifactSaveInput): Promise<ArtifactSaveResult>;
   /** Read one artifact at HEAD (or at a pinned commit) as bytes + digest. */
   read(relativePath: string, commit?: string): Promise<ArtifactContent>;
+  /** Exact tree membership without enumerating unrelated artifact history. */
+  has(relativePath: string, commit: string): Promise<boolean>;
   /** List tracked artifacts at HEAD (or at a pinned commit). */
   list(commit?: string): Promise<readonly ArtifactEntry[]>;
   /** Uncommitted (work-in-progress) paths, if any. Empty when the tree is clean. */
@@ -167,15 +170,15 @@ export type ArtifactSaveInput = Readonly<{
  * (e.g. `store.rootDirectory()`), so ownership is derived from the Task, never
  * from ambient state.
  */
-export function openTaskArtifactRepository(home: string, taskId: string): TaskArtifactRepository {
+export function openTaskArtifactRepository(home: string, taskId: string, getConfig?: () => GitConfig): TaskArtifactRepository {
   const repoPath = taskArtifactRepoPath(home, taskId);
-  const repo = openVersionedArtifactRepository(home, taskId, repoPath);
+  const repo = openVersionedArtifactRepository(home, taskId, repoPath, getConfig);
   return { ...repo, taskId, save: async input => ({ ...await repo.save(input), taskId }) };
 }
 
 /** Shared local-only storage. Callers derive paths from validated owning identities,
  * never from a user-supplied filesystem location. Task layout/commits stay intact. */
-export function openVersionedArtifactRepository(home: string, key: string, repoPath: string) {
+export function openVersionedArtifactRepository(home: string, key: string, repoPath: string, getConfig?: () => GitConfig) {
   const taskId = key; // Existing error fields retain their public spelling.
   const checkBoundary = async () => {
     await resolveContainedArtifactPath(home, `${relative(home, repoPath).split("\\").join("/")}/boundary-check`);
@@ -193,22 +196,22 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
   const head = async (): Promise<string | null> => {
     await checkBoundary();
     if (!exists()) return null;
-    return currentHead(repoPath);
+    return currentHead(repoPath, getConfig);
   };
 
   const ensureUnlocked = async (): Promise<void> => {
     await checkBoundary();
-    supportedGit();
+    supportedGit(resolveGitLocalTimeoutSeconds(getConfig?.().gitLocalTimeoutSeconds) * 1_000);
     if (exists()) {
-      await assertNoRemote(taskId, repoPath);
+      await assertNoRemote(taskId, repoPath, getConfig);
       return;
     }
     await mkdir(repoPath, { recursive: true, mode: 0o700 });
-    await managedGit(repoPath, ["init", "-b", ARTIFACT_BRANCH]);
+    await managedGit(repoPath, ["init", "-b", ARTIFACT_BRANCH], { getConfig });
     // An empty root commit guarantees HEAD exists, so scoped per-path commits
     // and expected-HEAD checks work uniformly from the very first save.
-    await managedGit(repoPath, ["commit", "--allow-empty", "-m", "init artifact repo"]);
-    await assertNoRemote(taskId, repoPath);
+    await managedGit(repoPath, ["commit", "--allow-empty", "-m", "init artifact repo"], { getConfig });
+    await assertNoRemote(taskId, repoPath, getConfig);
   };
   const ensure = async (): Promise<void> => {
     const release = await acquireArtifactCommitLock(home, key);
@@ -245,10 +248,10 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
     const release = await acquireArtifactCommitLock(home, key);
     try {
       await ensureUnlocked();
-      await assertNoRemote(taskId, repoPath);
+      await assertNoRemote(taskId, repoPath, getConfig);
       // Expected-HEAD check under the lock: a conflict stops without writing.
       if (input.expectedHead !== undefined) {
-        const actual = await currentHead(repoPath);
+        const actual = await currentHead(repoPath, getConfig);
         if (actual !== input.expectedHead) {
           throw new ArtifactHeadConflictError(taskId, input.expectedHead, actual);
         }
@@ -264,17 +267,17 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
 
       const pathspecs = prepared.map((file) => file.relativePath);
       // Stage exactly the saved paths so new files become known to Git...
-      await managedGit(repoPath, ["add", "--", ...pathspecs]);
+      await managedGit(repoPath, ["add", "--", ...pathspecs], { getConfig });
       // ...but if nothing actually changed, do not create an empty commit.
       const noChanges = await managedGitSucceeds(repoPath, [
         "diff", "--cached", "--quiet", "--", ...pathspecs
-      ]);
+      ], { getConfig });
       if (noChanges) {
-        return { commit: await currentHead(repoPath), savedPaths: pathspecs };
+        return { commit: await currentHead(repoPath, getConfig), savedPaths: pathspecs };
       }
       // `--only <paths>` records exactly these paths; any other WIP stays WIP.
-      await managedGit(repoPath, ["commit", "--only", "-m", message, "--", ...pathspecs]);
-      return { commit: await currentHead(repoPath), savedPaths: pathspecs };
+      await managedGit(repoPath, ["commit", "--only", "-m", message, "--", ...pathspecs], { getConfig });
+      return { commit: await currentHead(repoPath, getConfig), savedPaths: pathspecs };
     } finally {
       release();
     }
@@ -286,16 +289,16 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
     // A pinned commit reads frozen evidence; otherwise read the current HEAD.
     // Both resolve `<commit>:<path>`, an OBJECT spec (never the working tree, so
     // a read never follows a symlink or sees unrelated WIP).
-    const pinned = await artifactCommit(repoPath, commit);
+    const pinned = await artifactCommit(repoPath, commit, getConfig);
     const objectSpec = `${pinned}:${safeRelative}`;
     // `<commit>:<path>` for a DIRECTORY resolves to a tree, and `git show` would
     // print a tree listing rather than fail — silently returning directory
     // metadata as if it were file bytes. Verify the object is a blob first, so a
     // read only ever yields real file content.
     const objectType = (
-      await managedGit(repoPath, ["cat-file", "-t", objectSpec]).catch((error) => {
+      await managedGit(repoPath, ["cat-file", "-t", objectSpec], { getConfig }).catch((error) => {
         if (error instanceof ManagedGitError) {
-          throw new Error(`Artifact ${safeRelative} is unavailable at ${pinned}.`, { cause: error });
+          throw new Error(`Artifact ${safeRelative} is unavailable at ${pinned}: ${error.message}`, { cause: error });
         }
         throw error;
       })
@@ -303,15 +306,16 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
     if (objectType !== "blob") {
       throw new Error(`Artifact ${safeRelative} at ${pinned} is not a file (${objectType}).`);
     }
-    const size = Number((await managedGit(repoPath, ["cat-file", "-s", objectSpec])).trim());
+    const size = Number((await managedGit(repoPath, ["cat-file", "-s", objectSpec], { getConfig })).trim());
     if (!Number.isSafeInteger(size) || size > MAX_ARTIFACT_BYTES) {
       throw new Error(`Artifact ${safeRelative} exceeds the ${MAX_ARTIFACT_BYTES}-byte limit.`);
     }
     const bytes = await managedGitBuffer(repoPath, ["cat-file", "blob", objectSpec], {
+      getConfig,
       maxBuffer: MAX_ARTIFACT_BYTES + 4096
     }).catch((error) => {
       if (error instanceof ManagedGitError) {
-        throw new Error(`Artifact ${safeRelative} is unavailable at ${pinned}.`, { cause: error });
+        throw new Error(`Artifact ${safeRelative} is unavailable at ${pinned}: ${error.message}`, { cause: error });
       }
       throw error;
     });
@@ -326,10 +330,10 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
   const list = async (commit?: string): Promise<readonly ArtifactEntry[]> => {
     await checkBoundary();
     if (!exists()) return [];
-    const pinned = await artifactCommit(repoPath, commit);
+    const pinned = await artifactCommit(repoPath, commit, getConfig);
     const output = await managedGit(repoPath, [
       "ls-tree", "-r", "-z", "--long", "--full-tree", pinned
-    ]);
+    ], { getConfig });
     const entries: ArtifactEntry[] = [];
     for (const record of output.split("\0").filter(Boolean)) {
       // Format: "<mode> <type> <object> <size>\t<path>"
@@ -343,13 +347,20 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
     }
     return entries;
   };
+  const has = async (relativePath: string, commit: string): Promise<boolean> => {
+    await checkBoundary();
+    const pinned = await artifactCommit(repoPath, commit, getConfig);
+    const safe = safeRelativeArtifactPath(relativePath);
+    const output = await managedGit(repoPath, ["ls-tree", "-z", pinned, "--", safe], { getConfig });
+    return output.length > 0;
+  };
 
   const workingChanges = async (): Promise<readonly string[]> => {
     await checkBoundary();
     if (!exists()) return [];
     const output = await managedGit(repoPath, [
       "status", "--porcelain=v1", "--untracked-files=all", "-z"
-    ]);
+    ], { getConfig });
     // Porcelain v1 -z records: "XY <path>\0" (rename adds a second \0 field).
     const changes: string[] = [];
     for (const record of output.split("\0").filter(Boolean)) {
@@ -359,18 +370,18 @@ export function openVersionedArtifactRepository(home: string, key: string, repoP
     return changes;
   };
 
-  return { repoPath, ensure, exists, head, save, read, list, workingChanges };
+  return { repoPath, ensure, exists, head, save, read, has, list, workingChanges };
 }
 
-async function currentHead(repoPath: string): Promise<string> {
-  return requireCommitId(await managedGit(repoPath, ["rev-parse", "HEAD^{commit}"]));
+async function currentHead(repoPath: string, getConfig?: () => GitConfig): Promise<string> {
+  return requireCommitId(await managedGit(repoPath, ["rev-parse", "HEAD^{commit}"], { getConfig }));
 }
 
-async function artifactCommit(repoPath: string, value?: string): Promise<string> {
-  if (value === undefined) return currentHead(repoPath);
+async function artifactCommit(repoPath: string, value?: string, getConfig?: () => GitConfig): Promise<string> {
+  if (value === undefined) return currentHead(repoPath, getConfig);
   const commit = requireCommitId(value);
-  const type = await managedGit(repoPath, ["cat-file", "-t", commit]).catch(error => {
-    if (error instanceof ManagedGitError) throw new Error(`Artifact commit ${commit} is unavailable.`, { cause: error });
+  const type = await managedGit(repoPath, ["cat-file", "-t", commit], { getConfig }).catch(error => {
+    if (error instanceof ManagedGitError) throw new Error(`Artifact commit ${commit} is unavailable: ${error.message}`, { cause: error });
     throw error;
   });
   if (type.trim() !== "commit") {
@@ -385,8 +396,8 @@ async function artifactCommit(repoPath: string, value?: string): Promise<string>
  * program on add/diff/commit. Both are external violations — we report and stop,
  * never silently remove them.
  */
-async function assertNoRemote(taskId: string, repoPath: string): Promise<void> {
-  const output = await managedGit(repoPath, ["remote"]);
+async function assertNoRemote(taskId: string, repoPath: string, getConfig?: () => GitConfig): Promise<void> {
+  const output = await managedGit(repoPath, ["remote"], { getConfig });
   const remotes = output.split("\n").map((line) => line.trim()).filter(Boolean);
   if (remotes.length > 0) {
     throw new ArtifactRemoteViolationError(taskId, remotes);
@@ -394,7 +405,7 @@ async function assertNoRemote(taskId: string, repoPath: string): Promise<void> {
   // A repo's own `.git/config` is read even with global/system config disabled,
   // so a committed `.gitattributes` filter paired with a repo-local
   // `filter.<n>.clean = <cmd>` would run `<cmd>` on `git add`. Detect and stop.
-  const configListZ = await managedGit(repoPath, ["config", "--local", "--list", "-z"]);
+  const configListZ = await managedGit(repoPath, ["config", "--local", "--list", "-z"], { getConfig });
   const violations = externalProgramConfigViolations(configListZ);
   if (violations.length > 0) {
     throw new ArtifactManagedConfigViolationError(taskId, violations);

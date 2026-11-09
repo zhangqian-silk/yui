@@ -54,6 +54,64 @@ outside that lineage is physical drift, not a reason to guess or repair ownershi
 An explicitly adopted environment can select a different native cwd while the
 managed workspace remains the Git/control ownership record.
 
+### Updating Project bindings without replacing conversations
+
+Read `yui task project list <task> --json`, then use its `writeGuard`:
+
+```sh
+yui task project update <task> <project> --base <branch> --if-current <writeGuard>
+```
+
+This is a Task-management operation for the current Leader, Operator or user.
+It validates the remote branch, rechecks the binding set and workspace after
+observation, and atomically records the change and its audit event. It never
+grants Project write access. `task update` does not accept binding fields.
+Use `project add` only for a genuinely new binding, not to replace an existing one.
+
+An alias resolving to the recorded base is `reference-only`. A different
+upstream commit is `upstream-target`: **HEAD, base/current commits, dirty files
+and workspace ownership remain unchanged**. The result explicitly reports
+`workspaceMigrated: false` and the existing `task upstream integrate <task>
+--project <project>` operation needed to apply and check the actual baseline.
+That integration retains its own dirty-worktree, authority and conflict fences.
+Draft/unmaterialized bindings change the future preparation target.
+Directory relocation and access revocation are not metadata updates.
+
+`project add` creates a direct child of Task main. When cwd, existing paths,
+branches, access grants and the native execution boundary remain unchanged,
+workspace preparation atomically adopts the project catalog and current Session
+scope. This is **configuration-only hot adoption**: no Host creation, Provider
+reconnect, native resume, interrupt, or wait for the current Turn to finish.
+The Leader can add and use the Project in the same Turn. `project update --base`
+also preserves the Host, connection and conversation; a changed upstream
+selection still does not rebase the physical worktree.
+
+`project add` returns `workspaceConfiguration.mode: "in-place"`.
+`task project list` exposes each Session's current workspace, writable Project
+IDs and lifecycle observation. Startup `YUI_*PROJECT*` environment values are
+historical launch snapshots, not live configuration or authorization. Hot
+adoption leaves the attached Provider's original options and sandbox unchanged;
+it does not relax protected paths or bypass native tool restrictions.
+An explicitly adopted scratch/local directory different from Task main is a
+different execution boundary; adding a Task-main Project there is rejected,
+not treated as an implicit directory grant or a reason to replace the Host.
+Only Task-main attachments are eligible; isolated WorkItem/Review Sessions,
+planning authority, model/account settings and explicit Assignment scope are
+not expanded by this operation. Read-only Leaders remain read-only, and
+existing AgentRun snapshots/Provider receipts are never rewritten.
+An already adopted execution directory retains its identity and reserved
+resource grants; binding changes do not select a new environment. Directory
+identity and grants are rechecked on resume, while unadopted preparations
+still reject changes to their original Task intent.
+
+An incompatible boundary or an existing runtime cleanup/upgrade reservation
+rejects adoption instead of interrupting execution or silently falling back to
+Host replacement. Binding intent may already be saved; inspect the result and
+current workspace before recovery. Paused Tasks/Roles stay paused. Missing
+configuration adoption defers queued input without replay. Host code upgrades
+remain a separate lifecycle operation with their existing drain/exit proofs;
+project configuration changes do not request that operation.
+
 ## Candidate, Review and Integration
 
 Provider terminal saves the exact original Run result. It does not accept the
@@ -72,6 +130,13 @@ workspace.
 An existing merge/rebase/cherry-pick without the attempt's own progress receipt
 is not adopted from Git markers. Preserve the scene and choose explicit recovery;
 normal continuation uses the original receipt and never replays a completed step.
+
+If Git stopped but persisting the conflict failed, explicit `task integration
+continue` can resume that same operation when the original progress receipt,
+workspace, branch, source and Git metadata all match. This recovery requires a
+nonempty staged resolution with no unresolved, unstaged or untracked files.
+Ordinary re-entry does not authorize it; missing evidence still refuses recovery.
+It does not invent a conflict record, restart the source command or bypass checks.
 
 When checks are a DurableJob, the Integration retains that exact jobId while
 running. Once the Job settles, `task integration continue <task>/<integration>`
@@ -435,6 +500,17 @@ retry safe exact-owner cleanup. `allResourcesReleased` reports the current pass
 and remaining ownership separately from historical warnings; no background retry or broader deletion authority
 is implied. Both archive paths preserve Task history and recovery information.
 Archived Tasks cannot reopen.
+
+To explicitly remove retained telemetry details, first run
+`yui task process-cleanup <task> --preview`, then confirm its exact digest with
+`yui task process-cleanup <task> --confirm <digest> --request-id <stable-id>`.
+This narrow operation preserves aggregates, semantic events, frozen evidence,
+Artifacts, logs and workspaces; it is not full process-file or Task deletion.
+Apply requires an archived, settled Task and verified physical quiescence,
+rechecks the preview under the SQLite writer fence, and commits removal with
+its audit receipt. Reuse the same request ID and digest after an uncertain
+response. Archived Tasks no longer ingest delayed online telemetry.
+Software upgrades deliver this capability but never invoke cleanup.
 
 Interrupted runtime cleanup may leave an adjacent `.cleanup-*` directory.
 Retries inspect these claims as well as the original path: only an exact Owner

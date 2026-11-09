@@ -758,6 +758,8 @@ export const EN = {
   "create.title": "New task",
   "create.name": "Task title",
   "create.projects": "Project context",
+  "create.experiment": "Long-running experimental Task",
+  "create.experimentHint": "Use an Experiment Leader and versioned directions, plans and evidence. This does not authorize measurements or start development.",
   "create.plan": "Create and plan",
   "create.only": "Create only",
   "create.hint": "Planning saves a Draft and queues the Leader. It does not start development. Uncheck to save only.",

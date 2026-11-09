@@ -7,6 +7,11 @@ import type { AgentHostSnapshot, openAgentHostControl as OpenAgentHostControl } 
 import { AGENT_HOST_CONTROL_PROTOCOL } from "./agentHostProtocol.js";
 import type { AgentHostLaunchPayload } from "./launchBroker.js";
 import { openCodexInteractiveConnection } from "./structuredProviderHost.js";
+import { createSessionSkillNotice, createSessionSkillLifecycleCheck } from "../context/sessionSkillNotice.js";
+import { isNativeContextRecovery } from "./contextRecovery.js";
+import { createHostSessionLifecycle, type HostSessionLifecycleEvent } from "./hostSessionLifecycle.js";
+import { createNonBlockingChecks } from "./lifecycleChecks.js";
+import { createNativeTitleSync } from "./nativeTitleSync.js";
 
 /**
  * Keep the native TUI and its transparent App Server attachment in one pane.
@@ -23,6 +28,8 @@ export async function runCodexInteractiveHost(
   openAgentHostControl: typeof OpenAgentHostControl
 ): Promise<number> {
   const environment = payload.environment;
+  const skillNotice = createSessionSkillNotice(home);
+  const pendingNotices = new Map<string | number, { commit(): void; expectedTurnId?: string }>();
   if (environment.YUI_SESSION_SCOPE !== "global" || environment.YUI_ADAPTER_ID !== "codex"
     || payload.providerControl !== undefined) {
     throw new Error("Interactive Codex Host requires a global native TUI launch.");
@@ -36,8 +43,19 @@ export async function runCodexInteractiveHost(
     throw new Error("Codex proxy base arguments are invalid.");
   }
   const expectedId = environment.YUI_NATIVE_SESSION_ID;
+  const lifecycleChecks = createNonBlockingChecks([createSessionSkillLifecycleCheck(home, () => environment)],
+    error => process.stderr.write(`Session lifecycle check failed: ${String(error)}\n`));
+  const lifecycle = createHostSessionLifecycle({ after: lifecycleChecks });
+  lifecycle.send({ type: "launch" });
   let snapshot: AgentHostSnapshot = {
-    schemaVersion: 1, state: "starting", adapterId: "codex", updatedAt: new Date().toISOString()
+    schemaVersion: 1, state: lifecycle.state, adapterId: "codex", updatedAt: new Date().toISOString()
+  };
+  const transition = (event: HostSessionLifecycleEvent, fields: Partial<Pick<AgentHostSnapshot,
+    "nativeSessionId" | "conversationId" | "detail">> = {}) => {
+    const result = lifecycle.send(event);
+    if (result.status === "ignored") return;
+    if (result.status === "invalid") throw new Error(result.reason);
+    snapshot = { ...snapshot, ...fields, state: result.state, updatedAt: new Date().toISOString() };
   };
   const control = await openAgentHostControl(home, payload, () => snapshot, async (request) => {
     if (request.type !== "status") {
@@ -49,17 +67,18 @@ export async function runCodexInteractiveHost(
   let client: WebSocket | undefined;
   let closing = false;
   let startupRequestId: string | number | undefined;
+  let initializeRequestId: string | number | undefined;
+  let nativeAccountHome: string | undefined;
+  let titleSync: ReturnType<typeof createNativeTitleSync> | undefined;
   let connection: Awaited<ReturnType<typeof openCodexInteractiveConnection>> | undefined;
   let relay: WebSocketServer | undefined;
   const signals = ["SIGTERM", "SIGHUP", "SIGINT"] as const;
   const stop = () => { child?.kill("SIGTERM"); };
   const fail = (error: unknown) => {
     if (closing || snapshot.state === "failed") return;
-    snapshot = {
-      ...snapshot, state: "failed",
-      detail: error instanceof Error ? error.message : String(error),
-      updatedAt: new Date().toISOString()
-    };
+    transition({ type: "failure", outcome: "failed" }, {
+      detail: error instanceof Error ? error.message : String(error)
+    });
     process.stderr.write(`Yui Codex attachment failed: ${snapshot.detail}\n`);
     client?.terminate();
     stop();
@@ -97,6 +116,9 @@ export async function runCodexInteractiveHost(
         try {
           if (binary) throw new Error("Codex TUI sent a binary App Server request.");
           const message = jsonObject(JSON.parse(data.toString()));
+          if (message.method === "thread/name/set") titleSync?.close();
+          if (message.method === "initialize"
+            && (typeof message.id === "string" || typeof message.id === "number")) initializeRequestId = message.id;
           if (snapshot.nativeSessionId === undefined
             && (message.method === "thread/start" || message.method === "thread/resume")) {
             if (startupRequestId !== undefined) throw new Error("Codex sent overlapping startup requests.");
@@ -111,6 +133,20 @@ export async function runCodexInteractiveHost(
             startupRequestId = message.id;
             message.params = codexInteractiveStartupParameters(payload, params);
           }
+          if (message.method === "turn/start" || message.method === "turn/steer") {
+            if (snapshot.nativeSessionId === undefined) throw new Error("Skill check requires the reserved native Thread.");
+            if (typeof message.id !== "string" && typeof message.id !== "number"
+              || pendingNotices.has(message.id)) throw new Error("Turn input requires a unique correlation id.");
+            const params = jsonObject(message.params);
+            if (params.threadId !== snapshot.nativeSessionId) throw new Error("Turn input targets another Thread.");
+            const prepared = codexInteractiveSkillInput(skillNotice, environment, snapshot.nativeSessionId, params);
+            message.params = prepared.params;
+            pendingNotices.set(message.id, {
+              commit: prepared.commit,
+              ...(message.method === "turn/steer" && typeof params.expectedTurnId === "string"
+                ? { expectedTurnId: params.expectedTurnId } : {})
+            });
+          }
           void connection!.send(message).catch(fail);
         } catch (error) {
           fail(error);
@@ -119,6 +155,28 @@ export async function runCodexInteractiveHost(
     });
     connection.onMessage((message) => {
       try {
+        if (snapshot.nativeSessionId !== undefined
+          && isNativeContextRecovery("codex", snapshot.nativeSessionId, message)) skillNotice.invalidate();
+        if (message.method === "thread/name/updated"
+          && (message.params as Record<string, unknown> | undefined)?.threadId === snapshot.nativeSessionId) titleSync?.close();
+        if (message.method === undefined && message.id === initializeRequestId) {
+          const initialized = message.result as Record<string, unknown> | undefined;
+          nativeAccountHome = typeof initialized?.codexHome === "string" ? initialized.codexHome : undefined;
+          initializeRequestId = undefined;
+        }
+        if (message.method === undefined && (typeof message.id === "string" || typeof message.id === "number")) {
+          const pending = pendingNotices.get(message.id);
+          if (pending !== undefined) {
+            pendingNotices.delete(message.id);
+            const result = message.result as { turn?: { id?: unknown }; turnId?: unknown } | undefined;
+            const turnId = result?.turn?.id ?? result?.turnId;
+            if (message.error === undefined && typeof turnId === "string" && turnId.length > 0
+              && (pending.expectedTurnId === undefined || pending.expectedTurnId === turnId)) {
+              pending.commit();
+              titleSync?.notify();
+            }
+          }
+        }
         let nativeSessionId: string | undefined;
         if (startupRequestId !== undefined && message.id === startupRequestId
           && message.method === undefined) {
@@ -135,12 +193,16 @@ export async function runCodexInteractiveHost(
         if (client?.readyState !== WebSocket.OPEN) throw new Error("Codex TUI attachment is closed.");
         client.send(JSON.stringify(message), (error) => {
           if (error) { fail(error); return; }
-          if (nativeSessionId === undefined || snapshot.state === "failed") return;
+          if (nativeSessionId === undefined || closing || snapshot.state === "failed") return;
           startupRequestId = undefined;
-          snapshot = {
-            ...snapshot, state: "ready", nativeSessionId, conversationId: nativeSessionId,
-            updatedAt: new Date().toISOString()
-          };
+          // Ready here means the native TUI attachment is ready, not a managed
+          // AgentRun acceptance or proof that the native Thread is idle.
+          transition({ type: "interactive-connected", nativeSessionId }, {
+            nativeSessionId, conversationId: nativeSessionId
+          });
+          titleSync = createNativeTitleSync(payload, nativeSessionId, nativeAccountHome,
+            result => process.stderr.write(`Native title: ${JSON.stringify(result)}\n`));
+          if (expectedId !== undefined) titleSync.notify();
         });
       } catch (error) {
         fail(error);
@@ -160,12 +222,15 @@ export async function runCodexInteractiveHost(
     });
     for (const signal of signals) process.on(signal, stop);
     const [code] = await once(child, "exit");
+    transition({ type: "exit" });
     return typeof code === "number" ? code : 1;
   } catch (error) {
     fail(error);
     throw error;
   } finally {
+    lifecycleChecks.close();
     closing = true;
+    titleSync?.close();
     for (const signal of signals) process.removeListener(signal, stop);
     stop();
     client?.terminate();
@@ -173,6 +238,30 @@ export async function runCodexInteractiveHost(
     if (relay !== undefined) await new Promise<void>((done) => relay!.close(() => done()));
     await control.close();
   }
+}
+
+/** Keep application metadata out of native user input, including on steer.
+ * Formal titles are synchronized separately; no automatic-title heuristic is assumed. */
+export function codexInteractiveSkillInput(
+  notice: ReturnType<typeof createSessionSkillNotice>,
+  environment: Readonly<Record<string, string | undefined>>,
+  nativeSessionId: string,
+  params: Readonly<Record<string, unknown>>
+): { params: Record<string, unknown>; commit(): void } {
+  if (!Array.isArray(params.input)) throw new Error("Turn input must be an array.");
+  const prepared = notice.prepare("", environment, nativeSessionId);
+  return {
+    params: {
+      ...params,
+      ...(prepared.context === undefined ? {} : {
+        additionalContext: {
+          ...(params.additionalContext == null ? {} : jsonObject(params.additionalContext)),
+          "yui.session-skills": { kind: "application", value: prepared.context }
+        }
+      })
+    },
+    commit: prepared.commit
+  };
 }
 
 /** The remote TUI can omit local launch configuration. Apply the reserved

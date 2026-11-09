@@ -18,6 +18,10 @@ export const DEFAULT_RESOURCES_QUARANTINE_TTL_HOURS = 24;
 export const MIN_RESOURCES_QUARANTINE_TTL_HOURS = 1;
 export const MAX_RESOURCES_QUARANTINE_TTL_HOURS = 720;
 
+export function resolveMigrationBackupKeep(value?: unknown): number {
+  return resolveBoundedPositiveInteger(value, 3, 1, 1000, "migrationBackupKeep");
+}
+
 /**
  * Resolves the Resource GC mode. `report` (default) only reports candidates;
  * `quarantine` allows `yui resources gc --apply` to quarantine releasable
@@ -116,6 +120,15 @@ export const MAX_CONTROLLER_TASK_CONCURRENCY = 32;
 export const DEFAULT_AGENT_LAUNCH_INACTIVITY_TIMEOUT_SECONDS = 300;
 export const DEFAULT_DELIVERY_TIMEOUT_SECONDS = 120;
 export const DEFAULT_TMUX_HISTORY_LIMIT = 100_000;
+export {
+  DEFAULT_GIT_LOCAL_TIMEOUT_SECONDS,
+  DEFAULT_GIT_REMOTE_INACTIVITY_TIMEOUT_SECONDS,
+  DEFAULT_GIT_REMOTE_TIMEOUT_SECONDS,
+  resolveGitLocalTimeoutSeconds,
+  resolveGitRemoteInactivityTimeoutSeconds,
+  resolveGitRemoteTimeoutSeconds,
+  type GitConfig
+} from "./gitConfig.js";
 
 export type RuntimeHealthConfig = Readonly<{
   quietAfterSeconds?: number;

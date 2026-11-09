@@ -178,7 +178,7 @@ export function resolveRuntimeHookRunFence(
     && !existingExecutionObservation) {
     throw new RuntimeHookRunFenceError("Runtime observation Hook Task does not accept this lifecycle boundary.");
   }
-  const runtimeIdentity = role === null ? null : taskRoleRuntimeIdentity(role, activeRun);
+  const runtimeIdentity = role === null ? null : taskRoleRuntimeIdentity(role, activeRun, session?.effective);
   if (!existingExecutionObservation && (runtimeIdentity === null || runtimeIdentity.agentId !== agentId
     || runtimeIdentity.adapterId !== adapterId
     || (sessions !== null && sessions.activeAgentId !== agentId))) {

@@ -1,10 +1,8 @@
-import { execFile } from "node:child_process";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { promisify } from "node:util";
 import { gitOutputLine, supportedGit } from "./gitCompatibility.js";
+import { executeGitCommand, type GitCommandBudget } from "./gitCommand.js";
 
-const execute = promisify(execFile);
 export type GitWorktreeRecord = Readonly<{
   path: string;
   head?: string;
@@ -14,14 +12,12 @@ export type GitWorktreeRecord = Readonly<{
   locked: boolean;
 }>;
 
-async function run(args: string[]): Promise<string> {
-  return (await execute(supportedGit().path, args, {
-    encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024
-  })).stdout;
+async function run(args: string[], budget?: GitCommandBudget): Promise<string> {
+  return (await executeGitCommand(supportedGit(budget?.totalMs).path, args, { budget })).stdout.toString("utf8");
 }
 
-export async function gitPath(cwd: string, args: string[]): Promise<string> {
-  return resolve(cwd, gitOutputLine(await run(["-C", cwd, "rev-parse", ...args])));
+export async function gitPath(cwd: string, args: string[], budget?: GitCommandBudget): Promise<string> {
+  return resolve(cwd, gitOutputLine(await run(["-C", cwd, "rev-parse", ...args], budget)));
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -38,13 +34,13 @@ async function exists(path: string): Promise<boolean> {
  * never write/prune them, and never infer ownership merely from a directory.
  * Mutating consumers still check the recorded owner and ask Git to remove it.
  */
-export async function readGitWorktrees(cwd: string): Promise<GitWorktreeRecord[]> {
-  const common = await realpath(await gitPath(cwd, ["--git-common-dir"]));
+export async function readGitWorktrees(cwd: string, budget?: GitCommandBudget): Promise<GitWorktreeRecord[]> {
+  const common = await realpath(await gitPath(cwd, ["--git-common-dir"], budget));
   const result: GitWorktreeRecord[] = [];
   // This is also Git's own main-worktree listing convention (including bare
   // and separate-git-dir repositories), not a claim of managed ownership.
   const main = basename(common) === ".git" ? dirname(common) : common;
-  result.push(await inspect(common, main, false));
+  result.push(await inspect(common, main, false, budget));
   const directory = join(common, "worktrees");
   let entries;
   try { entries = await readdir(directory, { withFileTypes: true }); }
@@ -64,13 +60,13 @@ export async function readGitWorktrees(cwd: string): Promise<GitWorktreeRecord[]
     const path = dirname(resolve(admin, pointer));
     const adminCommon = await realpath(resolve(cwd, gitOutputLine(await run([
       "-C", cwd, `--git-dir=${admin}`, "rev-parse", "--git-common-dir"
-    ]))));
+    ], budget))));
     if (adminCommon !== common) throw new Error(`Git worktree common directory mismatch: ${admin}; retained.`);
     if (await exists(path)) {
-      const actual = await realpath(await gitPath(path, ["--git-dir"]));
+      const actual = await realpath(await gitPath(path, ["--git-dir"], budget));
       if (actual !== admin) throw new Error(`Git worktree back-pointer mismatch: ${path}; retained.`);
     }
-    result.push(await inspect(admin, path, true));
+    result.push(await inspect(admin, path, true, budget));
   }
   if (new Set(result.map(entry => entry.path)).size !== result.length) {
     throw new Error("Duplicate Git worktree registrations; retained.");
@@ -78,12 +74,12 @@ export async function readGitWorktrees(cwd: string): Promise<GitWorktreeRecord[]
   return result;
 }
 
-async function inspect(admin: string, path: string, linked: boolean): Promise<GitWorktreeRecord> {
+async function inspect(admin: string, path: string, linked: boolean, budget?: GitCommandBudget): Promise<GitWorktreeRecord> {
   // Ask Git rather than parsing HEAD: Git owns ref storage (including newer
   // backends), symbolic resolution and per-worktree pseudorefs.
   let branch: string | undefined;
   try {
-    branch = gitOutputLine(await run([`--git-dir=${admin}`, "symbolic-ref", "--quiet", "HEAD"]));
+    branch = gitOutputLine(await run([`--git-dir=${admin}`, "symbolic-ref", "--quiet", "HEAD"], budget));
   } catch (error) {
     if ((error as { code?: unknown }).code !== 1) throw error;
   }
@@ -92,13 +88,13 @@ async function inspect(admin: string, path: string, linked: boolean): Promise<Gi
   }
   let head: string | undefined;
   try {
-    head = gitOutputLine(await run([`--git-dir=${admin}`, "rev-parse", "--verify", "HEAD"]));
+    head = gitOutputLine(await run([`--git-dir=${admin}`, "rev-parse", "--verify", "HEAD"], budget));
     if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/iu.test(head)) throw new Error("Invalid Git HEAD");
   } catch (error) {
     // A genuinely unborn branch (main or linked) is valid discovery, not cleanup proof.
     if (branch === undefined) throw error;
     try {
-      await run([`--git-dir=${admin}`, "show-ref", "--verify", "--quiet", branch]);
+      await run([`--git-dir=${admin}`, "show-ref", "--verify", "--quiet", branch], budget);
     } catch (missing) {
       if ((missing as { code?: unknown }).code === 1) {
         return {

@@ -146,7 +146,7 @@ export function authorizeRunRead(store: TaskStore, run: JobRun, caller: DurableJ
     if (caller.scope === "task" && caller.role !== "leader") throw new Error("Task delegation is not an Assignment grant.");
     return;
   }
-  // A revised definition's Assignment does not grant access to earlier Runs.
+  // Ordinary process-Run evidence does not transfer its execution Assignment.
   if ("taskId" in run) createDurableJobControl(store).getJob(run.taskId, run.id, caller);
 }
 
@@ -179,6 +179,7 @@ export function admitJobRun(
     const same = runs.find(run => run.trigger.key === trigger.key && run.trigger.source === trigger.source);
     if (same !== undefined) {
       authorizeRunRead(tx, same, caller);
+      if ("taskId" in same && !same.delegation) requireJobAssignment(tx, same, caller);
       if (same.definitionRevision !== job.revision || same.retryOf !== retryOf) {
         throw new Error(`JobRun trigger conflicts with its original snapshot: ${same.id}.`);
       }
@@ -189,6 +190,7 @@ export function admitJobRun(
       || run.status === "unknown-needs-attention");
     if (occupied !== undefined) {
       authorizeRunRead(tx, occupied, caller);
+      if ("taskId" in occupied && !occupied.delegation) requireJobAssignment(tx, occupied, caller);
       return { run: occupied, created: false, reason: "overlap" };
     }
     if (retryOf !== undefined && !runs.some(run => run.id === retryOf
@@ -306,7 +308,7 @@ export function authorizeGlobalJobStart(store: TaskStore, run: GlobalJobRun): vo
     if (run.action === "project.refresh") {
       const definition = store.getJobDefinition({ kind: "global" }, run.definitionId);
       if (definition?.builtin) requireProjectSyncTarget(store, definition);
-      const project = requireRefreshProject({ listProjects: () => projects, rootDirectory: () => home }, run.projectId!, true);
+      const project = requireRefreshProject({ listProjects: () => projects }, run.projectId!, true);
       if (projectRefreshTargetDigest(project) !== projectRefreshDigest({
         kind: "builtin", action: run.action, projectId: run.projectId, input: run.actionInput
       })) throw new Error("Project refresh target changed before execution.");

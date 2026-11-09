@@ -18,6 +18,99 @@ requiring a same-named global Role. A global Role is a creation template only
 when the requested Task Role does not exist. Availability, producer separation
 and the frozen review candidate still apply.
 
+## Migration backup retention
+
+`yui config resources set migration-backup-keep <1-1000>` sets the number of recent
+successful managed migration backup sets to retain (default 3).
+`yui config resources show` displays the effective value; `clear` restores the
+default. A setting change never deletes files or needs a restart. Cleanup runs
+only after the next successful, validated storage migration under `upgrade` or
+`update`, preserving recovery and unverified historical backups even above the
+limit. See [retention and protection rules](storage-baseline.md#migration-backup-retention).
+
+## Git operation budgets
+
+All three Git timeout budgets have durable settings. Local commands (including
+local ref copies and artifact repositories) have a total limit; clone, remote
+fetch and network `ls-remote` have independent inactivity and total limits:
+
+```sh
+yui config tools show
+yui config tools set git-local-timeout-seconds 30
+yui config tools set git-remote-inactivity-timeout-seconds 120
+yui config tools set git-remote-timeout-seconds 1800
+yui config tools clear git-local-timeout-seconds
+yui config tools clear git-remote-inactivity-timeout-seconds
+yui config tools clear git-remote-timeout-seconds
+```
+
+All three accept integer seconds from 1 to 86400. Defaults are 30 seconds total
+per local command, 120 seconds without stdout/stderr output and 1800 seconds
+total per remote command.
+They apply to the next command, including Controller-owned Project refresh
+and Task preparation, without a restart; an in-flight command keeps its budgets.
+Clone/fetch explicitly request progress even without a terminal. Each output
+chunk resets only the silence timer, not the total deadline. Output is evidence
+of activity, not proof that a transfer is advancing; the total limit still wins.
+Remote stderr retains its last 64 KiB so progress cannot exhaust the output
+buffer; stdout and local command output retain their existing buffer limits.
+
+At either hard deadline Yui kills that invocation's process group, including
+transport helpers, and waits for process/pipe closure. Errors preserve the
+timeout kind/budget, elapsed time, exit code, signal and stderr where available.
+No Git operation is automatically retried, and a failure is not rollback proof.
+Storage 1.28 → 1.29 admits these optional configuration fields without
+rewriting historical configuration or persisting default values.
+
+## Optional instance codes and Session titles
+
+Each Role can independently set a display-only instance code. For example,
+configure only Operator, leaving Leader and all other Roles unset:
+
+```sh
+yui config role update operator --instance-code dev-bj
+yui config role show operator
+yui config role update operator --clear-instance-code
+yui task role update task-159 leader --instance-code dev-sg
+```
+
+`add` also accepts `--instance-code`. Codes accept 1–24 UTF-16 units of Unicode
+letters, numbers, combining marks, hyphen and underscore; omit `@`. Whitespace,
+controls, escapes and punctuation are rejected, not silently normalized.
+There is no Home-wide fallback. A Global Role's code is copied when that template
+creates a Task Role; later template changes do not rewrite the copy. Agent
+Profiles do not supply display codes. Use Task Role update/clear for an existing
+copy. Codes do not alter launch revisions, permissions, IDs or message routing.
+Choose recognizable values; codes are not globally unique identities. Use
+Session inspection and the actual Home/native identity when resolving ambiguity.
+
+Generated Task titles use `Yui Leader task-159 Draft @dev-sg · Task name`.
+`Draft` means the Leader Session has planning authority, including a retained
+planning Session after activation; delivery Sessions omit it. Other Role names
+and the full lowercase Task ID remain intact. Operator uses
+`Yui Operator @dev-bj · MMDD`; without a code its existing
+`Yui · Operator · MMDD` format remains. The date derives from Session creation
+and the configured timezone. Other Global Roles get a generated title when a
+code is configured. Descriptions are truncated first without splitting surrogate
+pairs; if the identity itself cannot fit the 80-unit title limit, launch fails
+with a bounded diagnostic instead of truncating the identity.
+
+Configuration does not rename, stop or recreate a live Session. New Sessions
+use it; a subsequent normal Host launch/resume can refresh confirmed Yui-owned titles,
+not historical records. Existing untagged titles and recorded user names stay
+untouched. Codex applies a resume rename only when its returned native name still
+matches the previous generated title; absent metadata or a user rename prevents
+the rename. Codex records only successfully applied names; live Host reuse,
+skipped naming and naming failures do not advance title provenance. Naming is
+best effort; unsupported Providers or failures do not invalidate the Session.
+Other Providers receive generated names only on creation, never on resume,
+to protect native user renames. No restart is performed to force a naming change.
+On the safe Codex resume path, clearing a custom Global Role's code restores
+`Yui role`; clearing Operator's code restores its unconfigured format.
+
+Storage 1.24 → 1.25 adds optional code/title provenance without rewriting
+historical payloads or inferring who named an old Session.
+
 ## Enable and disable
 
 Availability is configuration, separate from active Agent selection, Session
@@ -79,6 +172,53 @@ Native children inherit their parent Agent and authority. A Profile can guide
 their behavior; model/effort overrides require actual native tool support.
 They do not acquire Yui Roles, independent Assignments or broader scope.
 
+## Optional Leader draft/develop configuration
+
+One logical Leader can use different runtime settings for planning (`draft`)
+and delivery (`develop`). These are optional Agent/model/effort overrides, not
+new Roles or permission sources. Worker and Reviewer configurations are unaffected.
+
+```sh
+yui config role update leader --stage draft --agent planner --model <model> --effort <effort>
+yui config role update leader --stage develop --model <model>
+yui task role update <task> leader --stage draft --effort <effort>
+yui task role show <task> leader
+yui task role capabilities <task> leader --stage draft
+```
+
+For ordinary Tasks, without `--stage`, binding configuration and `role bind` semantics remain
+unchanged. Within a stage, `--agent` selects that stage's Agent without changing
+the default active Agent. Omitted Agent uses the default active Agent; omitted
+model/effort use the **selected Agent's own frozen Role binding**, then its native
+defaults. Switching Agents never copies another Agent's model, effort, component,
+permissions, or provider-specific settings. A newly selected unbound Agent receives
+its adapter defaults; configure its binding separately if needed. Retained explicit
+stage model/effort overrides are validated for the selected Agent.
+
+`--clear-agent`, `--clear-model`, and `--clear-effort` remove the respective stage
+override; `--clear-agent-config` removes the whole stage. Clearing means inherit,
+not “force native default.” Stage updates cannot mix Profile, environment, or
+permission changes. Both stages may be entirely absent.
+
+New ordinary Tasks freeze the global Leader bindings and stage overrides. Global template
+edits never silently rewrite existing Tasks; use the Task-level update explicitly.
+The actual planning/delivery launch authority determines the stage, not the title,
+prompt, or a guessed purpose. Draft activation automatically selects develop at
+the existing workspace/permission handover. Existing lifecycle and compatibility
+rules govern replacement, without a new stage-specific replacement mechanism.
+Desired updates never alter a running turn or replay input. A retained Session/Host
+restoration uses its recorded effective snapshot; apply new desired settings
+through the existing explicit Session replacement boundary. Inspection shows desired
+overrides, resolved settings, and the effective launch's stage and per-field source.
+These are requested launch facts, not native model observations.
+
+Experimental Tasks use the same copied configuration, binding commands, stage
+precedence and clearing semantics as ordinary Tasks. They add the experimental
+Skill and knowledge capabilities, not another configuration or execution path.
+Both load current shared Skill files rather than freezing their bodies in the
+Task. See [experiment launch settings](experiments.md#task-local-launch-settings).
+Neither mode implicitly replaces a running Session.
+
 ## Desired, effective and observed
 
 Desired settings are next-launch intent. An AgentRun and Session capture the
@@ -105,6 +245,23 @@ Provider permission strategy, Profile access intent and Project write scope are
 different contracts. Provider bypass does not grant writes to another Project.
 Managed workspace owner, exact Assignment and resource grants enforce Yui
 operations; broad native permissions are not an OS sandbox.
+
+Codex configured permissions can explicitly exclude automatic writable temp roots:
+`--sandbox workspace-write --exclude-tmpdir-env-var true --exclude-slash-tmp true`.
+Each exclusion accepts `true` or `false`; `--clear-exclude-tmpdir-env-var` and
+`--clear-exclude-slash-tmp` remove the respective override. Omission preserves
+native defaults, not an implicit exclusion. Both fields require an explicit
+`workspace-write` sandbox and reject other adapters or conflicting strategies.
+Managed launches compile them into per-thread `sandbox_workspace_write`
+configuration on start/resume, never shared-daemon defaults or account files.
+Ordinary interactive launches use equivalent invocation-local structured options.
+The mapping follows the native
+[configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+These exclude automatic `$TMPDIR` and `/tmp` grants, not explicitly authorized
+writable roots within those paths. They do not establish read isolation or
+prevent effects through an authorized Controller RPC. Inspect the actual native
+receipt and validate enforcement in a separately authorized disposable fixture;
+accepting the configuration does not prove OS sandbox enforcement.
 
 A write-intent delivery Leader launched in its own Task-owned main workspace
 captures that workspace's bound writable Projects without needing an open
@@ -187,11 +344,22 @@ yui config role show <global-role>
 yui config profile show <profile>
 yui task role add <task> <role> --profile <profile>
 yui task role show <task> <role>
+yui task role show <task> <role> --view full
 yui task role update <task> <role> --environment <preparation-id>
 yui task role update <task> <role> --managed-environment
 yui task role session inspect <task> <role>
 yui task role session new <task> <role> --reason "<why a fresh Session is useful>"
 ```
+
+`task role show` defaults to the complete desired Role configuration and its
+current recorded Session configuration, not historical Run snapshots. Recorded
+configuration and a retained control target are not live-state or stop evidence;
+use the returned status/session inspection commands for those questions.
+`--view full` retains the previous complete `role`, `sessions`, and `runs`
+document with bounded pagination. JSON consumers needing those historical
+fields must now request that view and retain it on cursor continuations.
+This changes the CLI default JSON view, not storage or the `task.role.show`
+configuration RPC used by the interactive wizard.
 
 The global query uses the calling process's default native context. Task-scoped
 queries use the Controller's native account environment and the selected Role

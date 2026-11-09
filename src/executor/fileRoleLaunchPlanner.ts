@@ -52,7 +52,8 @@ import {
   assertProviderConversationReplaceable
 } from "../runtime/providerRuntimeIdentity.js";
 import {
-  operatorSessionTitle,
+  globalRoleSessionTitle,
+  taskRoleSessionTitle,
   resolveTaskRoleSessionTitle
 } from "../runtime/sessionTitle.js";
 import {
@@ -341,12 +342,21 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       resolveTaskRoleSessionTitle(
         input.mode === "resume" ? existing?.title : undefined,
         task,
-        role.name
+        role.name,
+        {
+          executionAuthority: (input.mode === "resume" ? existing?.effective : effective)?.executionAuthority,
+          instanceCode: role.instanceCode,
+          generatedTitle: existing?.generatedTitle
+        }
       ),
       input.mode === "resume" && compatibleExisting ? existing.nativeSessionId : undefined,
       effective,
       {
-        purpose
+        purpose,
+        nativeGeneratedTitle: taskRoleSessionTitle(task, role.name, {
+          executionAuthority: (input.mode === "resume" ? existing?.effective : effective)?.executionAuthority,
+          instanceCode: role.instanceCode
+        })
       }
     );
   }
@@ -379,12 +389,20 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       role,
       input,
       { scope: "global" },
-      input.mode === "new" && role.name === "operator"
-        ? operatorSessionTitle(this.#now(), this.store.getConfig().timeZone)
-        : undefined,
+      input.mode === "new"
+        ? globalRoleSessionTitle(role.name, this.#now(), this.store.getConfig().timeZone, role.instanceCode)
+        : existing?.generatedTitle !== undefined && existing.title === existing.generatedTitle
+          ? globalRoleSessionTitle(role.name, new Date(existing.createdAt), this.store.getConfig().timeZone, role.instanceCode)
+            ?? `Yui ${role.name}`
+          : undefined,
       input.mode === "resume" && compatibleExisting ? existing.nativeSessionId : undefined,
       effective,
-      { purpose: "execution" }
+      { purpose: "execution",
+        nativeGeneratedTitle: globalRoleSessionTitle(role.name,
+          input.mode === "resume" && existing !== undefined ? new Date(existing.createdAt) : this.#now(),
+          this.store.getConfig().timeZone, role.instanceCode)
+          ?? (input.mode === "resume" ? `Yui ${role.name}` : undefined)
+      }
     );
   }
 
@@ -404,7 +422,7 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
     sessionTitle: string | undefined,
     knownNativeSessionId: string | undefined,
     effective: EffectiveLaunchSnapshot,
-    sessionPolicy: Readonly<{ purpose: "execution" | "review" | "planning" }>
+    sessionPolicy: Readonly<{ purpose: "execution" | "review" | "planning"; nativeGeneratedTitle?: string }>
   ): PlannedRoleSession {
     const launchRole = effectiveRoleForLaunch(role, effective);
     const binding = activeRoleAgentBinding(launchRole);
@@ -571,7 +589,9 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       agent,
       config: effectiveConfig,
       workspace: agentWorkspace,
-      ...(sessionTitle === undefined || postCreateOperatorTitle
+      // CLI --name has no ownership check on resume. Only the Codex native
+      // metadata path below may rename an existing conversation.
+      ...(sessionTitle === undefined || postCreateOperatorTitle || input.mode === "resume"
         ? {}
         : { sessionTitle }),
       ...sessionContext
@@ -716,6 +736,9 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
               "Managed Provider restore native session id"
             ),
             ...(sessionTitle === undefined ? {} : { sessionTitle }),
+            ...(existingSession?.generatedTitle !== undefined
+              && existingSession.title === existingSession.generatedTitle
+              ? { previousSessionTitle: existingSession.generatedTitle } : {}),
             ...(managedCompiled!.codexThread === undefined
               ? {}
               : { codexThread: managedCompiled!.codexThread }),
@@ -764,6 +787,14 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
         YUI_DRIVER_ID: driver.id,
         YUI_WORKSPACE: effectiveWorkspace,
         YUI_SESSION_MANIFEST: sessionContext.sessionManifestPath,
+        // A proposal only. The independent metadata lane must prove native
+        // ownership; planning never reads/waits on title effects.
+        ...(configured.adapterId !== "codex" || sessionPolicy.nativeGeneratedTitle === undefined ? {} : {
+          YUI_NATIVE_TITLE_PROPOSAL: sessionPolicy.nativeGeneratedTitle
+        }),
+        ...(configured.adapterId !== "codex" || input.mode !== "resume" || existingSession?.title === undefined ? {} : {
+          YUI_NATIVE_TITLE_LOCAL: existingSession.title
+        }),
         ...(configured.adapterId === "codex"
           ? { YUI_AGENT_BASE_ARGS: JSON.stringify(configured.baseArgs) }
           : {}),
@@ -800,6 +831,10 @@ export class FileRoleLaunchPlanner implements RoleLaunchPlanner, AgentEnvironmen
       },
       launch: ordinaryConversationLaunch,
       session,
+      ...(sessionTitle !== undefined && (input.mode === "new"
+        || existingSession?.title === undefined
+        || existingSession.title === existingSession.generatedTitle)
+        ? { generatedTitle: sessionTitle } : {}),
       ...(sessionTitle === undefined ? {} : { sessionTitle })
     };
   }
@@ -960,6 +995,9 @@ function workspaceScopeEnvironment(
   environment: Readonly<Record<string, string>>,
   effective: EffectiveLaunchSnapshot
 ): Readonly<Record<string, string>> {
+  // Launch-time diagnostics only, never authority or a live project catalog.
+  // Native child environments cannot be rewritten. Current scope is exposed
+  // by task project list and enforced against the current Session in Store.
   const entries = effective.workspace.entries.map(entry => ({
     ...entry,
     access: entry.access === "write" && effective.writeProjectIds.includes(entry.projectId)

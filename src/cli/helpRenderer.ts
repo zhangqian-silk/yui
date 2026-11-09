@@ -1,4 +1,15 @@
-import { visibleCommandSections, type CommandNode } from "./commandCatalog.js";
+import { orderedImmediateTokens, visibleCommandSections, type CommandNode } from "./commandCatalog.js";
+
+/** A path error needs nearby choices, not another complete help document.
+ * The caller supplies the already-filtered discovery node. */
+export function renderCommandPathHint(node: CommandNode): string {
+  const choices = orderedImmediateTokens(node);
+  const path = node.path.slice(1).join(" ");
+  return [
+    ...(choices.length === 0 ? [] : [`Visible choices here: ${choices.join(", ")}`]),
+    `Full help: yui --json help${path ? ` ${path}` : ""}`
+  ].join("\n") + "\n";
+}
 
 export function renderCommandHelp(node: CommandNode, version: string): string {
   const title = node.path.length === 1
@@ -41,6 +52,7 @@ function describeOption(option: string): string {
     "--detach": "Return after Controller starts Web; use --status / --stop. Operator and --json starts always return.",
     "--port": "Set the local listen port.",
     "--json": "Emit machine-readable JSON.",
+    "--recursive": "Expand the complete caller-filtered command tree (requires --json).",
     "--project": "Select a Project.",
     "--role": "Select a Task role.",
     "--summary": "Set summary text.",

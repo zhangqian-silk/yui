@@ -35,7 +35,7 @@ export async function controlJobArtifact(store: TaskStore, home: string, value: 
     op: "run-get", scope: input.scope, caller: input.caller, id: input.id, runId: input.runId
   } as JsonValue, now) as JobRun;
   const run = current(); // Both definition and historical Assignment authorization.
-  const repo = openJobArtifactRepository(home, jobArtifactOwner(run), runReference(run));
+  const repo = openJobArtifactRepository(home, jobArtifactOwner(run), runReference(run), () => store.getConfig());
   if (input.op === "artifact-list") {
     const head = await repo.head();
     const files = head === null ? [] : await repo.list(head);
@@ -59,7 +59,7 @@ export async function controlJobArtifact(store: TaskStore, home: string, value: 
     if (!(run.artifacts ?? []).some(item => isDeepStrictEqual(item, ref))) {
       throw new Error("Artifact reference is not registered for this exact Run.");
     }
-    const content = await readJobArtifactReference(home, ref);
+    const content = await readJobArtifactReference(home, ref, () => store.getConfig());
     current(); // A replaced Session during I/O must not receive the material.
     return boundedJobArtifactPayload({ reference: ref, ...(input.op === "artifact-preview"
       ? previewArtifactContent(content, input.offset) : presentArtifactContent(content)) }, "Artifact response", MAX_JOB_ARTIFACT_RESPONSE_BYTES);
@@ -89,7 +89,7 @@ export async function controlJobArtifact(store: TaskStore, home: string, value: 
       }
       assertCallerAuthorized(store, input.caller, ref.owner.taskId);
     }
-    await readJobArtifactReference(home, ref);
+    await readJobArtifactReference(home, ref, () => store.getConfig());
   }
   try {
     return store.transaction(tx => {

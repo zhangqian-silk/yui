@@ -37,7 +37,7 @@ Separate lifecycle, execution gate and Session authority:
 - A completed, unarchived Task has separate local acceptance and remote delivery
   facts. An explicit user request to continue the same result authorizes the
   necessary `task reopen` before submitting that bounded request. Follow the
-  [authorized two-step path](../../yui-runtime/references/publication.md#post-completion-routing-boundary);
+  [authorized two-step path](../../yui-runtime/references/completed-followup.md);
   do not require a second mechanical “reopen” confirmation.
   The current matching Leader may perform that reopen itself and continue
   an already-received request; it need not send the work back to Operator.
@@ -50,7 +50,10 @@ Use the existing reopen and submission operations, not an invented auto-reopen
 option or a new delivery Task. Reopening and saving input have separate receipts;
 inspect current state after a failure and retain the original request identity.
 Only a real missing authority, resource or unresolved execution boundary calls
-for escalation. Do not reopen for a query, implicitly restore cancelled intent,
+for escalation. Simple queries and ordinary reads stay completed. Tracked
+same-result diagnosis, evidence handoff or necessary coordination can instead
+follow the shared post-completion boundary; diagnosis remains read-only.
+Do not implicitly restore cancelled intent,
 use archived workspaces, restart a separate execution stop, or claim rejected
 input was saved.
 

@@ -9,6 +9,9 @@ import { createTaskEvent } from "../../dist/event/taskEvent.js";
 import { runTaskCommand, sendTaskMessageCommand } from "../../dist/commands/taskCommands.js";
 import { readTaskContext, readTaskContextDelta } from "../../dist/context/taskContext.js";
 import { wakeMessages } from "../../dist/interaction/notificationPresentation.js";
+import { createTaskMessage } from "../../dist/message/message.js";
+import { createTaskWake } from "../../dist/scheduler/taskWake.js";
+import { contextContentDigest } from "../../dist/context/contextSnapshot.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
 import { FileSchedulerStoreAdapter } from "../../dist/controller/fileSchedulerStoreAdapter.js";
 import { createDurableJob, startDurableJob, completeDurableJob, touchDurableJobHeartbeat } from "../../dist/job/durableJob.js";
@@ -176,4 +179,44 @@ test("focused wake respects exact references; timestamps remain historical disco
   assert.deepEqual(wakeMessages(wake, messages).map(m => m.id), ["message-3"]);
   assert.deepEqual(wakeMessages(wake, messages, true).map(m => m.id),
     ["message-1", "message-2", "message-3"]);
+});
+
+test("focused wake supplies bounded complete ordinary inputs without importing history or claiming handling", t => {
+  const store = fixture(t);
+  const messages = ["Keep this exact original.", "文".repeat(2000),
+    ...Array.from({ length: 4 }, () => "x".repeat(3000)), "Unrelated same-time input."]
+    .map((body, i) => createTaskMessage(`message-${i + 1}`, "task-1", body,
+      "user", { type: "user" }, now));
+  messages.splice(-1, 0, createTaskMessage("message-8", "task-1", "Execution completed.",
+    "role-result", { type: "role", roleName: "worker" }, now,
+    { resultRef: { type: "agent-run-result", runId: "run-1" } }));
+  messages.forEach(message => store.saveMessage("task-1", message));
+  const wake = createTaskWake({ id: "wake-1", taskId: "task-1", reasons: ["user-message"],
+    fromCursor: "2026-10-14T23:59:59Z", toCursor: now.toISOString(), now,
+    refs: messages.slice(0, -1).map(m => ({ type: "message", taskId: "task-1", id: m.id })) });
+  store.saveTaskWake("task-1", wake);
+  const shown = command(store, ["wake", "show", "task-1", "wake-1"]);
+  assert.equal(shown.messages.length, 7);
+  const first = shown.messages[0];
+  assert.deepEqual(first.value, messages[0]);
+  assert.equal(first.contentOmitted, false);
+  assert.equal(first.read, undefined, "Complete original is not another required-read pointer.");
+  assert.equal(first.refreshRead, "task message show task-1/message-1",
+    "Current source can still be refreshed explicitly without hiding its identity.");
+  assert.equal(first.ref.digest, contextContentDigest(messages[0]));
+  assert.equal(first.ref.revision, messages[0].createdAt);
+  assert.equal(shown.messages[1].contentOmitted, true, "Oversized UTF-8 body stays behind its exact read.");
+  assert.equal(shown.messages[1].value, undefined);
+  assert.equal(shown.messages[1].read, "task message show task-1/message-2");
+  assert.equal(shown.messages[1].refreshRead, undefined);
+  assert.ok(shown.messages.slice(2).some(m => m.contentOmitted), "Aggregate inline budget is bounded too.");
+  assert.ok(shown.messages.reduce((n, m) => n + (m.value ? Buffer.byteLength(JSON.stringify(m.value)) : 0), 0) <= 8192);
+  const result = shown.messages.find(m => m.id === "message-8");
+  assert.equal(result.contentOmitted, true, "A short completion notice is not its original report.");
+  assert.equal(result.value, undefined);
+  assert.equal(result.resultRef.runId, "run-1");
+  assert.equal(result.read, "task message show task-1/message-8", "Reports still require original result lookup.");
+  assert.equal(store.getTaskWake("task-1", "wake-1").inbox, undefined, "Reading does not claim or ACK.");
+  assert.ok(command(store, ["wake", "show", "task-1", "wake-1", "--history"])
+    .messages.every(m => m.value === undefined), "Diagnostic history is not an original-body bundle.");
 });

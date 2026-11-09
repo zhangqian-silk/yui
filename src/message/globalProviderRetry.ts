@@ -12,6 +12,17 @@ export function settleGlobalRetryInput(
   binding: ProviderRuntimeBinding | null | undefined,
   now: Date
 ): void {
+  const settlement = globalRetryInputSettlement(store, roleName, binding, now);
+  if (settlement !== undefined) store.updateGlobalRoleMessage(settlement);
+}
+
+/** Read-only proposal; callers applying it must recheck under their transaction. */
+export function globalRetryInputSettlement(
+  store: Readonly<{ listGlobalRoleMessages(roleName: string): GlobalRoleMessage[] }>,
+  roleName: string,
+  binding: ProviderRuntimeBinding | null | undefined,
+  now: Date
+): GlobalRoleMessage | undefined {
   const retry = binding?.retry;
   if (retry === undefined || retry.input.kind !== "message" || retry.input.roleName !== roleName
     || !["cancelled", "exhausted", "needs-attention"].includes(retry.status)
@@ -19,6 +30,6 @@ export function settleGlobalRetryInput(
   const messageId = retry.input.messageId;
   const message = store.listGlobalRoleMessages(roleName).find(m => m.id === messageId);
   if (message === undefined || message.delivery !== undefined || message.notDelivered !== undefined) return;
-  store.updateGlobalRoleMessage(markGlobalRoleMessageNotDelivered(message,
-    `provider-retry-${retry.status}: ${retry.reason ?? retry.failureRef}`, now));
+  return markGlobalRoleMessageNotDelivered(message,
+    `provider-retry-${retry.status}: ${retry.reason ?? retry.failureRef}`, now);
 }

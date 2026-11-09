@@ -48,6 +48,9 @@ const IMMEDIATE_KINDS: ReadonlySet<string> = new Set([
   // to debounce. All existing busy/ownership/delivery checks still apply.
   "job-agent-input",
   "task-created",
+  // Expose explicit project changes promptly when ordinary busy/inbox gates
+  // permit; this notification is not a prerequisite for configuration adoption.
+  "task-project-added",
   "execution-started",
   "session-replaced",
   "force-wake",

@@ -1,4 +1,5 @@
 import type { AgentRun } from "../agentRun/agentRun.js";
+import { projectKnowledgeContext, projectPolicyContext } from "./projectContext.js";
 import { providerRetrySummary } from "../runtime/providerRetry.js";
 import type { TaskStore } from "../storage/taskStore.js";
 import { operationalTaskRecords } from "../task/taskRecordRetirement.js";
@@ -151,8 +152,9 @@ function candidateReviewContext(
     return [materialize("L3", "candidate", identity, candidate)];
   }
   const sourceRunId = candidate.source.runId;
-  const snapshots = store.listContextSnapshots(candidate.taskId).filter(snapshot =>
-    snapshot.scope === "workitem" && snapshot.scopeRef === `candidate:${identity}`);
+  const snapshots = store.queryContextSnapshots(candidate.taskId, {
+    scope: "workitem", scopeRef: `candidate:${identity}`, limit: 2
+  });
   if (snapshots.length !== 1) {
     throw new Error(`Frozen candidate report is unavailable: ${identity}. Inspect source Run ${candidate.taskId}/${sourceRunId}; for a new Review use newly authorized delivery with a newly captured Candidate. Historical Snapshots are not rewritten.`);
   }
@@ -255,11 +257,9 @@ export function freezeRunContextSnapshot(
     ])).values()].sort((left, right) => (
       contextRefIdentity(left.ref).localeCompare(contextRefIdentity(right.ref))
     ));
-    const previous = store.listContextSnapshots(run.taskId)
-      .filter((candidate) => candidate.scope === baseline.scope
-        && candidate.scopeRef === baseline.scopeRef)
-      .sort((left, right) => left.sequence - right.sequence)
-      .at(-1);
+    const previous = store.queryContextSnapshots(run.taskId, {
+      scope: baseline.scope, scopeRef: baseline.scopeRef, limit: 1, descending: true
+    })[0];
     const snapshot = createContextSnapshot({
       id: store.nextContextSnapshotId(run.taskId),
       taskId: run.taskId,
@@ -284,10 +284,9 @@ export function freezeRunContextSnapshot(
       : "task";
   const scopeRef = run.reviewRoundId ?? run.workItemId;
   const materialized = mergeRequiredContext(collectAuthorizedContext(store, run), requiredResources, requiredPolicy);
-  const previous = store.listContextSnapshots(run.taskId)
-    .filter((candidate) => candidate.scope === scope && candidate.scopeRef === scopeRef)
-    .sort((left, right) => left.sequence - right.sequence)
-    .at(-1);
+  const previous = store.queryContextSnapshots(run.taskId, {
+    scope, scopeRef, limit: 1, descending: true
+  })[0];
   const snapshot = createContextSnapshot({
     id: store.nextContextSnapshotId(run.taskId),
     taskId: run.taskId,
@@ -340,14 +339,13 @@ export function freezeWorkItemExecutionAssignmentContextSnapshot(
   for (const binding of task.projectBindings) {
     const project = store.getProject(binding.projectId);
     if (project === null) throw new Error(`AgentRun Project not found: ${binding.projectId}.`);
-    const { knowledge, ...projectPolicy } = project;
-    materialized.push(materialize("L1", "project-policy", project.id, projectPolicy));
-    for (const entry of knowledge.filter(({ status }) => status === "active")) {
+    materialized.push(materialize("L1", "project-policy", project.id, projectPolicyContext(project)));
+    for (const entry of project.knowledge.filter(({ status }) => status === "active")) {
       materialized.push(materialize(
         "L1",
         "project-knowledge",
         `${project.id}:${entry.id}`,
-        { projectId: project.id, ...entry }
+        projectKnowledgeContext(project.id, entry)
       ));
     }
   }
@@ -387,12 +385,9 @@ export function freezeReviewStageContextSnapshot(
   }>,
   now: Date
 ): ContextSnapshot {
-  const existing = store.listContextSnapshots(input.taskId)
-    .filter((candidate) => candidate.scope === "stage"
-      && candidate.scopeRef === input.executionGroupId
-      && candidate.parentRef === undefined)
-    .sort((left, right) => left.sequence - right.sequence)
-    .at(0);
+  const existing = store.queryContextSnapshots(input.taskId, {
+    scope: "stage", scopeRef: input.executionGroupId, rootOnly: true, limit: 1
+  })[0];
   if (existing !== undefined) return validateContextSnapshot(existing);
 
   const round = store.getReviewRound(input.taskId, input.reviewRoundId);
@@ -521,9 +516,11 @@ export function runContextEntry(pack: AgentRunContextPack) {
   const { skillPackages: _packages, pointers: _pointers, deltaRefs, liveTaskState, input, ...identity } = pack;
   const { directive, ...inputIdentity } = input;
   const { items, ...pointerPage } = runContextPointerPage(pack, { limit: 16 });
+  const directiveSummary = directive === undefined ? undefined : summaryText(directive);
   return {
     ...identity, input: { ...inputIdentity, ...(directive === undefined ? {} : {
-      directiveSummary: summaryText(directive), directiveOmitted: true
+      ...(directiveSummary === directive ? { directive, directiveOmitted: false }
+        : { directiveSummary, directiveOmitted: true })
     }) }, pointers: items, pointerPage,
     deltaRefs: deltaRefs.slice(0, 16), deltaRefsTotal: deltaRefs.length,
     inventory: { ...pack.inventory, complete: pointerPage.complete },
@@ -536,9 +533,16 @@ export function runContextEntry(pack: AgentRunContextPack) {
     },
     reads: {
       inbox: "yui inbox list --view current --json",
-      refs: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view refs`,
+      ...(items.length > 0 ? {
+        expand: `yui task run context expand ${pack.identity.taskId}/${pack.identity.runId} --context-ref <store/refId> [--context-ref <store/refId> ...] --mode full --json`
+      } : {}),
+      ...(!pointerPage.complete ? {
+        refs: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view refs`
+      } : {}),
       full: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view full`,
-      input: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view input`,
+      ...(directiveSummary !== directive ? {
+        input: `yui task run context ${pack.identity.taskId}/${pack.identity.runId} --view input`
+      } : {}),
       live: `yui task context ${pack.identity.taskId}`
     }
   };
@@ -566,7 +570,8 @@ function readLiveTaskState(store: TaskStore, taskId: string): AgentRunContextLiv
     }));
   return Object.freeze({
     providerRetries: Object.freeze(store.listRoleSessionSets(taskId).flatMap(set => set.providerBinding?.retry === undefined
-      ? [] : [{ roleName: set.owner.roleName, retry: providerRetrySummary(set.providerBinding) }])),
+      ? [] : [{ roleName: set.owner.roleName, retry: providerRetrySummary(set.providerBinding,
+        `yui task role session retry ${taskId} ${set.owner.roleName} show --json`) }])),
     activeRuns: Object.freeze(activeRuns),
     activeTaskReviews: Object.freeze(activeTaskReviews)
   });
@@ -582,6 +587,42 @@ export function expandRunContextRef(
   requireIdentity(refStore, "Context ref store");
   const run = requireExactRun(store, taskId, runId);
   const snapshot = readRunContextSnapshot(store, run);
+  return expandSnapshotRef(snapshot, refId, refStore);
+}
+
+/** Explicit originals from one already-authorized frozen Run, not live Task
+ * discovery. Read the snapshot once and reject the entire selection on drift. */
+export function expandRunContextRefs(
+  store: TaskStore,
+  taskId: string,
+  runId: string,
+  selectors: readonly (Pick<ContextRef, "store" | "refId"> & { digest?: string })[]
+) {
+  if (selectors.length < 1 || selectors.length > 8)
+    throw new Error("Run Context batch requires 1..8 exact references.");
+  const seen = new Set<string>();
+  for (const ref of selectors) {
+    requireIdentity(ref.store, "Context ref store");
+    requireIdentity(ref.refId, "Context ref id");
+    if (ref.digest !== undefined && !/^[a-f0-9]{64}$/.test(ref.digest))
+      throw new Error("An explicit Run Context digest must be exact.");
+    const key = JSON.stringify([ref.store, ref.refId]);
+    if (seen.has(key)) throw new Error("Duplicate Run Context batch reference.");
+    seen.add(key);
+  }
+  const snapshot = readRunContextSnapshot(store, requireExactRun(store, taskId, runId));
+  const items = selectors.map(ref => {
+    const expanded = expandSnapshotRef(snapshot, ref.refId, ref.store);
+    if (ref.digest !== undefined && expanded.ref.digest !== ref.digest)
+      throw new Error(`Run Context reference digest does not match its frozen Snapshot: ${ref.store}/${ref.refId}.`);
+    return expanded;
+  });
+  return { taskId, runId, items };
+}
+
+function expandSnapshotRef(
+  snapshot: ContextSnapshot, refId: string, refStore: string
+): Readonly<{ ref: ContextRef; value: unknown; digest: string }> {
   const authorized = snapshot.refs.filter((ref) => (
     ref.refId === refId && ref.store === refStore
   ));
@@ -779,14 +820,13 @@ function collectAuthorizedContext(
   for (const binding of task.projectBindings) {
     const project = store.getProject(binding.projectId);
     if (project === null) throw new Error(`AgentRun Project not found: ${binding.projectId}.`);
-    const { knowledge, ...projectPolicy } = project;
-    result.push(materialize("L1", "project-policy", project.id, projectPolicy));
-    for (const entry of knowledge.filter(({ status }) => status === "active")) {
+    result.push(materialize("L1", "project-policy", project.id, projectPolicyContext(project)));
+    for (const entry of project.knowledge.filter(({ status }) => status === "active")) {
       result.push(materialize(
         "L1",
         "project-knowledge",
         `${project.id}:${entry.id}`,
-        { projectId: project.id, ...entry }
+        projectKnowledgeContext(project.id, entry)
       ));
     }
   }
@@ -1003,7 +1043,9 @@ function materialize(layer: ContextRef["layer"], store: string, refId: string, v
       summary: (store === "project-knowledge"
         ? [title, `version: ${record.version}`, ...(record.scope === undefined ? [] : [`scope: ${record.scope}`]),
           ...(record.expiresWhen === undefined ? [] : [`expiresWhen: ${record.expiresWhen}`])].join("; ")
-        : title).slice(0, 400)
+        : store === "task-message" && typeof record.body === "string"
+          ? summaryText(`Excerpt: ${record.body}`, 160)
+          : title).slice(0, 400)
     }),
     value
   });

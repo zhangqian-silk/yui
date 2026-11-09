@@ -19,6 +19,7 @@ import { createTask } from "../../dist/task/task.js";
 import { createConfiguredAgent } from "../../dist/agent/agent.js";
 import { createGlobalRole, createRoleAgentBinding } from "../../dist/role/role.js";
 import { sanitizedTestEnv } from "../helpers/sanitizedEnv.mjs";
+import { runOperatorCommand } from "../../dist/commands/operatorCommands.js";
 
 /**
  * task-32 §2.3 keyed submission idempotency, driven end to end through the public
@@ -180,10 +181,17 @@ test("distinct keys on the same Task are independent submissions", (t) => {
 test("a task-less operator submit is idempotent across the create boundary", (t) => {
   const store = newStore(t);
   provisionLeader(store, store.workspaceRoot);
-  submitOperatorMessage("brand new requirement", undefined, store,
-    { environment: userEnv, now }, "discuss", "key-1");
-  submitOperatorMessage("brand new requirement", undefined, store,
-    { environment: userEnv, now }, "discuss", "key-1");
+  const args = ["submit", "brand new requirement", "--intent", "discuss", "--request-id", "key-1"];
+  const first = runOperatorCommand(args, store, { environment: userEnv, now });
+  const replay = runOperatorCommand(args, store, { environment: userEnv, now });
+  assert.equal(first.kind, "output");
+  assert.equal(first.data.message.id, replay.data.message.id);
+  assert.deepEqual(first.data.submission, replay.data.submission);
+  assert.equal(first.data.submission.saved.messageId, first.data.message.id);
+  assert.equal(first.data.submission.saved.taskId, first.data.taskId);
+  assert.equal(first.data.message.body, undefined, "Receipt does not echo the original requirement");
+  assert.match(first.output, /Created Draft task/);
+  assert.match(replay.output, /Saved message/);
 
   // Only one Draft was created; the retry replayed into the same one.
   const drafts = store.listTasks().filter((task) => task.status === "draft");

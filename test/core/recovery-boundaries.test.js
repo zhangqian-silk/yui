@@ -29,7 +29,7 @@ import { resolveManagedTaskCaller, resolveManagedTaskReader } from "../../dist/r
 import { pendingCompletionMessages } from "../../dist/task/completionReadiness.js";
 import { codexInteractiveStartupParameters } from "../../dist/runtime/codexInteractiveHost.js";
 import { resolveAgentAdapter } from "../../dist/executor/agentAdapter.js";
-import { operatorOfflineCommand, taskDiagnosticTarget } from "../../dist/cli/managedDiagnostics.js";
+import { operatorOfflineCommand, isTaskReadCommand } from "../../dist/cli/managedDiagnostics.js";
 import { publishStructuredProviderTerminal } from "../../dist/controller/structuredProviderObservation.js";
 import { FileRuntimeEventInbox } from "../../dist/controller/runtimeEventInbox.js";
 import { classifyRuntimeHealth, createRuntimeProjection, projectRuntimeObservation, runtimeDisplayStatus } from "../../dist/runtime/runtimeProjection.js";
@@ -209,6 +209,13 @@ test("the current Leader can reopen only its own completed intent without replay
   const completion = store.listEvents("task-1").find(event => event.type === "task.completed");
   const messages = store.listMessages("task-1");
   const session = store.getTaskRoleSessionSet("task-1", "leader");
+  const revision = store.getStateRevision();
+  readTaskContext(store, "task-1", leader);
+  assert.equal(store.getStateRevision(), revision, "A completed-result question needs no lifecycle effect.");
+  const question = () => runTaskInputCommand(["request", "task-1",
+    "--question", "A tracked same-result diagnosis needs an unavailable external fact",
+    "--choice", "provide=Provide the fact"], store, { now: () => later, environment: leader });
+  assert.throws(question, /completed/);
   assert.throws(() => reopen("task-1", { ...leader, YUI_NATIVE_SESSION_ID: "stale" }), /current native Session/);
   store.saveTask({ ...store.getTask("task-1"), id: "task-2" });
   assert.throws(() => reopen("task-2"), /matching Leader/);
@@ -222,6 +229,10 @@ test("the current Leader can reopen only its own completed intent without replay
   assert.equal(store.listEvents("task-1").find(event => event.type === "task.reopened").payload.by, "leader");
   assert.equal(store.getWorkMailbox({ kind: "role", taskId: "task-1", roleName: "leader" }), null);
   assert.deepEqual(store.listRuns("task-1"), []);
+  question();
+  assert.equal(store.listInputRequests("task-1").length, 1);
+  assert.equal(store.getInputRequest("task-1", "input-1").requester.nativeSessionId,
+    leader.YUI_NATIVE_SESSION_ID, "Reopen enables coordination, not a new identity.");
 
   store.saveTask(retireTask(store.getTask("task-1"), { by: "user", summary: "Do not restore" }, later));
   assert.throws(() => reopen(), /user or Operator authority/);
@@ -303,7 +314,8 @@ test("Session replacement preserves durable intent and releases only its own eng
 
   const wake = store.getTaskWake("task-1", "wake-1");
   const shown = command(["wake", "show", "task-1", wake.id]);
-  assert.equal(shown.data.messages[0].read, "task message show task-1/message-1");
+  assert.equal(shown.data.messages[0].refreshRead, "task message show task-1/message-1");
+  assert.equal(shown.data.messages[0].value.body, "Original user requirement must survive");
   assert.equal(command(["message", "show", "task-1/message-1"]).data.body, "Original user requirement must survive");
   store.saveTaskRoleSessionSet(recordRoleAgentSession(createRoleSessionSet(
     { scope: "task", taskId: "task-1", roleName: "worker" }, "codex", later
@@ -318,12 +330,31 @@ test("Session replacement preserves durable intent and releases only its own eng
     YUI_SESSION_SCOPE: "task", YUI_TASK_ID: "task-1", YUI_ROLE: "worker",
     YUI_NATIVE_SESSION_ID: "worker-current", YUI_WORKSPACE: unaffected.effective.workspace.root
   };
+  store.saveManagedWorkspace(createManagedWorkspace({
+    owner: { type: "integration-attempt", taskId: "task-1", integrationAttemptId: "integration-99" },
+    root: join(unaffected.effective.workspace.root, "outside-frozen-assignment"), entries: []
+  }, later));
   const workerContext = readTaskContext(store, "task-1", workerEnvironment);
+  const workerWorkspaces = workerContext.records.filter(r => r.ref.store === "managed-workspace");
+  assert.equal(workerWorkspaces[0]?.ref.refId, "task-1/worker",
+    "The exact Run workspace overlay precedes historical workspace discovery");
+  assert.ok(workerWorkspaces.some(r => r.ref.refId === "integration-attempt:task-1:integration-99"),
+    "Ordinary workspace evidence is readable without granting execution in it");
   const messages = workerContext.records.filter(r => r.ref.store === "task-message")
     .map(r => inspectTaskContext(store, "task-1", r.ref, workerEnvironment).value);
   assert.ok(messages.some(message => message.body === "Original user requirement must survive"),
   "The original shared user amendment is readable even though it arrived after the frozen Assignment.");
-  assert.ok(!messages.some(message => message.body === "Leader-only coordination"));
+  assert.ok(messages.some(message => message.body === "Leader-only coordination"),
+    "Another Assignment's coordination is evidence, not an input assigned to this Worker");
+  const hidden = store.listMessages("task-1").find(message => message.body === "Leader-only coordination");
+  const sharedRef = workerContext.records.find(r =>
+    r.ref.store === "task-message" && r.ref.refId !== hidden.id).ref;
+  const revision = store.getStateRevision();
+  assert.throws(() => runTaskCommand(["context", "inspect", "task-1", "--refs",
+    JSON.stringify([sharedRef, { store: "task-message", refId: hidden.id, digest: "0".repeat(64) }])],
+  store, { environment: workerEnvironment }), /changed|digest|stale/i,
+  "Readable evidence still requires exact version binding; stale batches return no partial results");
+  assert.equal(store.getStateRevision(), revision);
 });
 
 test("Runless questions survive replacement and a successor can manage the original question", t => {
@@ -447,7 +478,11 @@ test("remote Operator startup applies its own workspace, Role instructions and s
     ["controller", "restart"], ["task", "context", "task-1"],
     ["task", "role", "session", "inspect", "task-1", "leader"]
   ]) assert.equal(operatorOfflineCommand(args), true);
-  assert.equal(taskDiagnosticTarget(["task", "role", "session", "new", "task-1", "leader"]), undefined);
+  assert.equal(isTaskReadCommand(["task", "role", "session", "new", "task-1", "leader"]), false);
+  assert.equal(isTaskReadCommand(["task", "role", "session", "retry", "task-2", "leader", "show"]), true);
+  assert.equal(isTaskReadCommand(["task", "role", "session", "retry", "task-2", "leader", "enable"]), false);
+  assert.equal(isTaskReadCommand(["task", "artifact", "save", "task-2", "x", "body"]), false);
+  assert.equal(isTaskReadCommand(["task", "base", "status", "task-2", "--refresh"]), false);
   assert.equal(operatorOfflineCommand(["task", "complete", "task-1"]), false);
 });
 

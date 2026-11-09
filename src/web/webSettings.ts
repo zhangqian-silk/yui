@@ -249,24 +249,30 @@ export function createWebSettings(store: TaskStore, options: {
       throw new WebRequestRejected("Save the Agent selection alone, then read its supported settings.");
     }
     // The same complete candidate and transactional recheck as the CLI.
-    const mutation = id.startsWith("profile/")
+    const mutation: ReturnType<typeof previewGlobalRoleAgentConfigurationMutation> = id.startsWith("profile/")
       ? previewProfileAgentConfigurationMutation(["update", id.slice(8), ...args], store)
-      : id.startsWith("role/") && !changes.some(c => c.key === "activeAgentId")
-        ? previewGlobalRoleAgentConfigurationMutation(["update", id.slice(5), ...args], store,
+      : id.startsWith("role/")
+        ? previewGlobalRoleAgentConfigurationMutation(changes.some(c => c.key === "activeAgentId")
+          ? ["bind", id.slice(5), text(changes.find(c => c.key === "activeAgentId")!.value)]
+          : ["update", id.slice(5), ...args], store,
           { yuiHome: store.rootDirectory() }) : undefined;
-    let validated: Awaited<ReturnType<typeof options.catalogs.resolve>> | undefined;
-    if (mutation) {
-      const agent = store.getConfiguredAgent(mutation.agentId);
+    const candidates = mutation === undefined ? [] : [mutation, ...(mutation.related ?? [])];
+    const checked = await Promise.all(candidates.map(async candidate => {
+      const agent = store.getConfiguredAgent(candidate.agentId);
       if (!agent) throw new WebRequestRejected("Configured Agent not found.");
-      validated = await options.catalogs.resolve({ agent, cwd: mutation.cwd, config: mutation.config });
-      validateAgentLaunchConfiguration(validated.catalog, mutation.config);
-    }
+      const validated = await options.catalogs.resolve({ agent, cwd: candidate.cwd, config: candidate.config });
+      validateAgentLaunchConfiguration(validated.catalog, candidate.config);
+      return { candidate, validated };
+    }));
     const validation = {
       validateAgentConfiguration: (candidate: NonNullable<typeof mutation>) => {
-        if (!mutation || JSON.stringify(candidate) !== JSON.stringify(mutation) || !validated) {
+        const match = checked.find(entry => entry.candidate.agentId === candidate.agentId
+          && entry.candidate.cwd === candidate.cwd
+          && JSON.stringify(entry.candidate.config) === JSON.stringify(candidate.config));
+        if (!match) {
           throw new Error("Agent configuration changed after capability validation. Read it again.");
         }
-        validateAgentLaunchConfiguration(validated.catalog, candidate.config);
+        validateAgentLaunchConfiguration(match.validated.catalog, candidate.config);
       }
     };
     mutationEntered = true;
@@ -345,6 +351,8 @@ const ROLE_FIELDS: Record<string, { set: string; clear?: string; many?: boolean 
   model: { set: "--model", clear: "--clear-model" }, effort: { set: "--effort", clear: "--clear-effort" },
   "permission.strategy": { set: "--permission-strategy" }, "permission.sandbox": { set: "--sandbox" },
   "permission.approval": { set: "--approval" }, "permission.mode": { set: "--permission-mode" },
+  "permission.excludeTmpdirEnvVar": { set: "--exclude-tmpdir-env-var", clear: "--clear-exclude-tmpdir-env-var" },
+  "permission.excludeSlashTmp": { set: "--exclude-slash-tmp", clear: "--clear-exclude-slash-tmp" },
   "permission.allowedTools": { set: "--allowed-tool", clear: "--clear-allowed-tools", many: true },
   "permission.disallowedTools": { set: "--disallowed-tool", clear: "--clear-disallowed-tools", many: true },
   search: { set: "--search", clear: "--clear-search" },
