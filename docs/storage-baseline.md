@@ -2,7 +2,12 @@
 
 # Storage baseline 1.0
 
-Current storage is 1.34. The 1.33 → 1.34 transition separates frozen Context
+Current storage is 1.35. The 1.34 → 1.35 transition admits optional
+`migrationBackupKeep` configuration and schema-1 success receipts for new migration
+backups. Existing configuration bytes and historical backups are unchanged; the
+schema transition itself never deletes files.
+
+The 1.33 → 1.34 transition separates frozen Context
 metadata from immutable resource content. SQLite retains identity, scope,
 sequence and fixed references; `task-data/<task-id>/context-values/<digest>.json`
 holds the exact values, deduplicated only within that Task. Snapshot digests,
@@ -24,6 +29,53 @@ migration backup and rollback mechanism is unchanged.
 Upgrade admission uses the same boundary plus SQLite integrity checking;
 each migration still validates the data it transforms. This is not automatic
 repair or a guarantee that damaged core database/configuration can run.
+
+### Migration backup retention
+
+```sh
+yui config resources show
+yui config describe resources
+yui config resources set migration-backup-keep 3
+yui config resources clear migration-backup-keep
+```
+
+`migration-backup-keep` accepts integers from 1 to 1000, default 3. A count means
+backup **sets**, not individual database/WAL/SHM files. Saving or clearing the
+setting never deletes anything and needs no restart. It takes effect only after
+the next required storage migration succeeds and passes control-record and SQLite
+integrity validation, under the existing `upgrade`/`update` maintenance fence.
+Dry-run, update preflight, already-current storage, backup failure and migration
+or validation failure never prune. No background cleaner is installed, and old
+backups are never deleted first to make room for a new backup.
+
+New successful backups receive `<backup>.retention.json`, binding their canonical
+Home path, Home ID, creation timestamp and exact file identity. Only unchanged,
+owned, single-link regular files with a matching receipt can be removed.
+Candidates are ordered by the validated creation timestamp, not storage-version
+strings or modification times. Historical `pre-storage-v…-<timestamp>.db` names
+without receipts are reported as protected: naming alone cannot establish
+ownership or distinguish success from failed recovery material. First enabling
+the feature therefore does **not** reclaim pre-existing excess backups or infer
+success receipts. Unknown files, manual backups, directories, links, shared
+backup roots and another Home's data are never adopted.
+
+The current migration backup is always protected. To reserve another successful
+backup for a separate recovery, place a `<backup>.pin` marker before using it and
+keep it until that recovery finishes. Failed/unreceipted backups need no marker.
+Any `-wal`, `-shm` or `-journal` sidecar protects the entire set, rather than
+unlinking SQLite pieces. Observed open files and an incomplete process inventory
+also prevent deletion. Maintenance serializes Yui writers; do not open or alter
+backup sets with an external tool during maintenance. Identity, fence and
+sidecar checks are repeated immediately before deletion.
+
+Protected sets can exceed the limit; output explains why. Both commands report
+retained/deleted counts, exact deleted paths, protection reasons and cleanup
+warnings (`upgrade --json` also exposes `report.backupRetention`). An unreadable
+inventory reports the retained count as unknown. Cleanup errors never turn a
+validated migration into failure or trigger rollback/replay. Retry occurs only
+at a later successful migration. A crash after database deletion can leave an
+inert receipt, which is ignored; incomplete/mismatched receipts protect surviving
+files. This is database migration retention, not whole-Home or Task backup.
 
 ### Offline scoped repair
 

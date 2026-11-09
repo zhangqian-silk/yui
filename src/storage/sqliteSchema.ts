@@ -394,6 +394,16 @@ const MINOR_UPGRADES: readonly StorageMinorUpgrade[] = Object.freeze([{
   targetChecksum: CURRENT_SCHEMA_CHECKSUM,
   sql: "",
   dataMigration: "task-content"
+}, {
+  fromVersion: "1.34",
+  toVersion: "1.35",
+  name: "migration-backup-retention",
+  introducedIn: "next",
+  sourceChecksum: CURRENT_SCHEMA_CHECKSUM,
+  targetChecksum: CURRENT_SCHEMA_CHECKSUM,
+  // Optional config and success receipts for new migration backups. Historical
+  // backups remain unclaimed. No deletion or guessed receipts in the migration.
+  sql: ""
 }]);
 
 export function storageMinorUpgradePlan(from: StorageVersion): readonly StorageMinorUpgrade[] | null {

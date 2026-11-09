@@ -2,7 +2,7 @@
 
 Read this before changing persistent records, schema or the update handshake.
 
-Yui Home has one authoritative **major.minor** storage version, currently 1.34.
+Yui Home has one authoritative **major.minor** storage version, currently 1.35.
 It is independent of software releases, record schema tags and business
 revisions. `storage_schema` identifies the format and schema checksum. New
 Homes initialize the complete current schema directly.
@@ -68,3 +68,15 @@ cleanup and full Task deletion require separate explicit operations. Verify
 that upgrading old Homes preserves existing process data. The current
 `task process-cleanup` removes only archived-Task telemetry details after
 preview confirmation; it is not full Task deletion or file cleanup.
+
+Migration backup retention is a separate, synchronous tail after a successful
+and validated migration, under the existing maintenance fence, never a schema
+transform or background collector. Default keep is 3 (configurable 1–1000).
+Preserve the current backup, failed/unreceipted historical material, explicit
+`.pin` recovery references, SQLite sidecar sets, changed identities, links and
+unverified/open-process references. Only exact Home-bound success receipts
+permit deletion. First enablement does not adopt old names. Propagate the same
+counts, protections and cleanup warnings through both upgrade and update;
+cleanup failure must not restore/replay a committed migration. Exercise normal
+selection with deterministic process observations and verify actual descriptor
+protection in platform tests. Never test against a real Home's backups.

@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { runUpdateCommand } from "../../dist/cli/updateCommand.js";
+import { renderUpdateResult, runUpdateCommand } from "../../dist/cli/updateCommand.js";
+import { runUpdate } from "../../dist/cli/updateOrchestrator.js";
 import { activatedControllerEntrypoint, createUpdatePorts } from "../../dist/cli/updatePorts.js";
 import { findCommandNode } from "../../dist/cli/commandCatalog.js";
 
@@ -123,6 +124,48 @@ test("target preflight admits only contiguous same-major storage upgrades", ()=>
   assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
   from=1;to=1;
   assert.equal(ports.preflight(staged,"/unused/home").status,"blocked");
+});
+
+test("update preserves successful migration retention warnings without replay or abort", () => {
+  const backupRetention = {
+    keep: 3, retained: 4, deleted: ["/unused/home/backups/old.db"],
+    protected: [{ path: "/unused/home/backups/recovery.db", reason: "explicit recovery pin" }],
+    warnings: [{ path: "/unused/home/backups/old.db.retention.json", message: "permission denied" }]
+  };
+  const stdout = Buffer.from(JSON.stringify({ ok: true, data: {
+    outcome: "upgraded", report: { backupPath: "/unused/home/backups/current.db", backupRetention }
+  } }));
+  const nativePorts = createUpdatePorts({}, () => ({ pid: 1,
+    output: [null, stdout, Buffer.alloc(0)], stdout, stderr: Buffer.alloc(0), status: 0, signal: null }));
+  const staged = { binaryPath: "/unused/yui", version: "2.29.1" };
+  const migration = nativePorts.migrateStorage(staged, "/unused/home");
+  assert.deepEqual(migration.backupRetention, backupRetention);
+  let migrations = 0;
+  let failVerification = false;
+  const ports = {
+    stage: () => staged,
+    preflight: () => ({ status: "migration-ready", stepCount: 1 }),
+    activateBinary: () => {},
+    migrateStorage: () => { migrations++; return migration; },
+    beginControllerHandover: () => () => {},
+    controllerStatus: () => ({ running: false }),
+    stopController: () => ({ stopped: false }),
+    startController: () => {},
+    restoreController: () => {},
+    verify: () => { if (failVerification) throw new Error("health check failed"); },
+    cleanup: () => {}
+  };
+  const result = runUpdate(ports, { home: "/unused/home" });
+  assert.equal(result.outcome, "updated");
+  assert.deepEqual(result.backupRetention, backupRetention);
+  assert.match(renderUpdateResult(result), /Cleanup warning \(migration succeeded\).*permission denied/);
+  assert.equal(migrations, 1);
+  failVerification = true;
+  const failure = runUpdate(ports, { home: "/unused/home" });
+  assert.equal(failure.phase, "post-verify");
+  assert.deepEqual(failure.backupRetention, backupRetention);
+  assert.match(renderUpdateResult(failure), /explicit recovery pin/);
+  assert.equal(migrations, 2, "Each separate update invokes migration once; cleanup warnings never replay it.");
 });
 
 test("Controller entrypoint resolution requires real files in a supported install layout", t=>{

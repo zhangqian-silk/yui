@@ -4,6 +4,7 @@ import { runUpdate, type UpdatePorts, type UpdateResult } from "./updateOrchestr
 import { isConcreteVersion } from "../domain/validation.js";
 import { usageError } from "../errors/cliError.js";
 import type { HostUpgradeResult } from "../controller/hostUpgrade.js";
+import { renderBackupRetention } from "../output/backupRetentionPresentation.js";
 
 export type { UpdateSpawner } from "./updatePorts.js";
 
@@ -88,6 +89,7 @@ export function renderUpdateResult(result: UpdateResult): string {
   })();
   return [
     rendered,
+    ...renderBackupRetention(result.backupRetention),
     ...(result.outcome === "updated" ? [
       result.controllerStarted ? "Controller: target startup verified." : "Controller: not started by this update.",
       "Hosts: graceful switching is separate from installation; accepted input is never replayed.",
