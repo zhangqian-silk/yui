@@ -66,8 +66,9 @@ export async function executeGitCommand(
   options: Readonly<{
     budget?: GitCommandBudget;
     maxBuffer?: number;
+    maxStdoutBytes?: number;
     environment?: NodeJS.ProcessEnv;
-    input?: string;
+    input?: string | Buffer;
     /** Keep only the stderr tail for potentially large remote progress logs. */
     stderrTail?: boolean;
   }> = {}
@@ -132,13 +133,14 @@ export async function executeGitCommand(
       sizes.stderr = Math.min(limit, tail.length);
       return;
     }
-    const remaining = maxBuffer - sizes[stream];
+    const limit = stream === "stdout" ? options.maxStdoutBytes ?? maxBuffer : maxBuffer;
+    const remaining = limit - sizes[stream];
     if (remaining > 0) {
       chunks[stream].push(chunk.subarray(0, remaining));
       sizes[stream] += Math.min(chunk.length, remaining);
     }
     if (chunk.length > remaining && failure === undefined) {
-      failure = Object.assign(new Error(`${stream} maxBuffer length exceeded (${maxBuffer} bytes).`),
+      failure = Object.assign(new Error(`${stream} maxBuffer length exceeded (${limit} bytes).`),
         { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
       terminate();
     }

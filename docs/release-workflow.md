@@ -51,6 +51,25 @@ merely to avoid a version decision. Package versions remain distinct from protoc
 and persistent-storage contracts: their compatibility checks and required migrations
 are unchanged, and the storage rules below do not authorize a package release.
 
+### 2.30.0 compatibility and migration notes
+
+Workspace inspection and acceptance can now read staged index listings up to 32 MiB.
+Filter checks pass tracked filenames to Git as NUL-delimited bytes, including names
+outside UTF-8. Initialized submodules still receive their own safety check.
+
+Agent and Role/Profile settings now distinguish native Agent configuration from
+optional model services. Existing native Agents can keep their current setup.
+The Web settings and `yui models guide` explain how to configure optional
+metabridge and CLIProxyAPI endpoints. See [Model components](model-components.md).
+
+Use the normal upgrade path from storage **1.34 → 1.35 → 1.36**. After a validated
+migration, Yui retains the newest three eligible migration backup sets by default.
+Set `migration-backup-keep` to choose a different count. Historical backups
+without ownership receipts remain protected. The next migration archives the
+previous coupled model connection and separates its module and endpoint records.
+Agent bindings and service management require explicit configuration. See
+[Storage baseline](storage-baseline.md).
+
 ### 2.29.0 compatibility and migration notes
 
 Storage advances **1.32 → 1.33 → 1.34** through the centralized upgrade path.

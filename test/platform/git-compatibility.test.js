@@ -114,6 +114,51 @@ test("an unborn linked branch preserves inventory and lock observations", async 
   });
 });
 
+test("large index inspection checks the exact bytes of tracked paths and recurses into initialized submodules", async t => {
+  const path = mkdtempSync(join(tmpdir(), "yui-large-index-"));
+  t.after(() => rmSync(path, { recursive: true, force: true }));
+  const env = sanitizedTestEnv({ GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.invalid",
+    GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.invalid" });
+  const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { env, encoding: "utf8" }).trim();
+  git(path, "init", "-q");
+  writeFileSync(join(path, "tracked.txt"), "base");
+  git(path, "add", "tracked.txt");
+  const workspace = new NodeGitWorkspace();
+
+  // Populate the index without materializing thousands of working tree files.
+  const prefix = ("directory".repeat(12) + "/").repeat(3);
+  const paths = Array.from({ length: 3000 }, (_, i) => prefix + i);
+  const names = Buffer.from(paths.join("\0") + "\0", "utf8");
+  const blob = git(path, "rev-parse", ":tracked.txt");
+  const entries = Buffer.from(paths.map(name => `100644 ${blob}\t${name}\0`).join(""));
+  assert.ok(entries.length > 1024 * 1024);
+  const update = (args, data) => execFileSync("git", ["-C", path, "update-index", "-z", ...args],
+    { env, input: data });
+  update(["--index-info"], entries);
+  update(["--skip-worktree", "--stdin"], names);
+  git(path, "commit", "-q", "-m", "large index");
+  assert.equal(await workspace.inspectClean(path), true);
+
+  // Index-only paths can contain bytes that cannot round-trip through UTF-8 argv.
+  const rawName = Buffer.from([0x7a, 0x09, 0x0a, 0xff, 0]);
+  update(["--index-info"], Buffer.concat([Buffer.from(`100644 ${blob}\t`), rawName]));
+  writeFileSync(join(path, ".gitattributes"), '"z\\t\\n\\377" filter=probe\n');
+  git(path, "config", "filter.probe.process", "false");
+  await assert.rejects(workspace.inspectClean(path), /Git status may execute a selected filter/);
+  git(path, "config", "--unset", "filter.probe.process");
+
+  const child = join(path, "submodule");
+  mkdirSync(child);
+  git(child, "init", "-q");
+  writeFileSync(join(child, "file"), "nested");
+  git(child, "add", "file");
+  git(child, "commit", "-qm", "nested");
+  git(path, "update-index", "--add", "--cacheinfo", `160000,${git(child, "rev-parse", "HEAD")},submodule`);
+  writeFileSync(join(child, ".gitattributes"), "file filter=nested\n");
+  git(child, "config", "filter.nested.clean", "false");
+  await assert.rejects(workspace.inspectClean(path), /Git status may execute a selected filter.*nested/);
+});
+
 test("minimum Git check stops an unsupported clone before creating its destination", async t => {
   const root = mkdtempSync(join(tmpdir(), "yui-git-preflight-"));
   const path = process.env.PATH;

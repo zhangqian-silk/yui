@@ -1,3 +1,4 @@
+import { isUtf8 } from "node:buffer";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -1749,17 +1750,23 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     return this.#readStatusGit(path, ["status", "--porcelain=v1", "--untracked-files=all"]);
   }
 
-  async #readStatusGit(path: string, args: readonly string[]): Promise<string> {
+  async #readStatusGit(
+    path: string, args: readonly string[],
+    options: Readonly<{ input?: Buffer; maxStdoutBytes?: number; encoding?: BufferEncoding }> = {}
+  ): Promise<string> {
     return this.#git(["--no-optional-locks", "-c", "core.fsmonitor=",
       "-c", "protocol.allow=never", "-c", "protocol.file.allow=never",
-      "-C", path, ...args], { environment: { GIT_NO_LAZY_FETCH: "1" } });
+      "-C", path, ...args], { ...options, environment: { GIT_NO_LAZY_FETCH: "1" } });
   }
 
   async #assertStatusProgramsAbsent(path: string): Promise<void> {
     const configuration = await this.#readStatusGit(path, ["config", "--list", "--null", "--includes"]);
     const filters = externalProgramConfigViolations(configuration)
       .filter(key => key.startsWith("filter.") && (key.endsWith(".clean") || key.endsWith(".process")));
-    const files = (await this.#readStatusGit(path, ["ls-files", "--stage", "-z"])).split("\0");
+    // One byte per code unit keeps Git pathnames lossless through splitting,
+    // deduplication and check-attr stdin. Only the index listing has this budget.
+    const files = (await this.#readStatusGit(path, ["ls-files", "--stage", "-z"],
+      { maxStdoutBytes: 32 * 1024 * 1024, encoding: "latin1" })).split("\0");
     if (filters.length > 0) {
       // Merely having native LFS configured globally is not a violation. Only
       // filters selected by tracked regular files' effective attributes can run
@@ -1768,8 +1775,9 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       const tracked = [...new Set(files.filter(line => line.startsWith("100"))
         .map(line => line.slice(line.indexOf("\t") + 1)))];
       for (let offset = 0; offset < tracked.length; offset += 128) {
-        const attributes = (await this.#readStatusGit(path, ["check-attr", "-z", "filter", "--",
-          ...tracked.slice(offset, offset + 128)])).split("\0");
+        const input = Buffer.from(tracked.slice(offset, offset + 128).join("\0") + "\0", "latin1");
+        const attributes = (await this.#readStatusGit(path, ["check-attr", "-z", "--stdin", "filter"],
+          { input })).split("\0");
         for (let index = 2; index < attributes.length; index += 3) {
           if (!configured.has(attributes[index]!.toLowerCase())) continue;
           cleanupFailure("git-status-requires-filter", "Git status may execute a selected filter program; read-only inspection will not run it.",
@@ -1781,15 +1789,23 @@ export class NodeGitWorkspace implements GitWorkspacePort {
     // Status also examines initialized submodules. Inspect their configuration
     // before asking Git to recurse; uninitialized gitlinks execute nothing.
     for (const record of files.filter(line => line.startsWith("160000 "))) {
-      const child = join(path, record.slice(record.indexOf("\t") + 1));
-      assertContained(path, child);
-      const gitEntry = await lstat(join(child, ".git")).catch(error => {
+      const rawPath = record.slice(record.indexOf("\t") + 1);
+      // A Latin-1 view preserves the path separators for the containment check.
+      assertContained(path, join(path, rawPath));
+      const name = Buffer.from(rawPath, "latin1");
+      const entryPath = Buffer.concat([Buffer.from(path + "/"), Buffer.from(join(rawPath, ".git"), "latin1")]);
+      const gitEntry = await lstat(entryPath).catch(error => {
         if (isErrno(error, "ENOENT")) return undefined;
         throw error;
       });
       if (gitEntry === undefined) continue;
+      if (!isUtf8(name)) {
+        cleanupFailure("workspace-identity-mismatch", "Initialized submodule path cannot be represented in Git arguments.",
+          "UTF-8 submodule path", "non-UTF-8 path", "unknown");
+      }
+      const child = join(path, name.toString("utf8"));
       if (await realpath(child) !== child
-        || (await this.#readStatusGit(child, ["rev-parse", "--show-toplevel"])).trimEnd() !== child) {
+        || gitOutputLine(await this.#readStatusGit(child, ["rev-parse", "--show-toplevel"])) !== child) {
         cleanupFailure("workspace-identity-mismatch", "Submodule identity cannot be safely inspected.",
           "owned submodule directory", "different or symbolic root");
       }
@@ -1799,7 +1815,8 @@ export class NodeGitWorkspace implements GitWorkspacePort {
 
   async #git(
     args: readonly string[],
-    options: Readonly<{ input?: string; environment?: NodeJS.ProcessEnv; budget?: GitCommandBudget }> = {}
+    options: Readonly<{ input?: string | Buffer; environment?: NodeJS.ProcessEnv; budget?: GitCommandBudget;
+      maxStdoutBytes?: number; encoding?: BufferEncoding }> = {}
   ): Promise<string> {
     const localBudget = this.#localBudget();
     const program = supportedGit(localBudget.totalMs);
@@ -1810,7 +1827,7 @@ export class NodeGitWorkspace implements GitWorkspacePort {
       stderrTail: options.budget?.inactivityMs !== undefined,
       ...(options.environment === undefined ? {} : { environment: { ...process.env, ...options.environment } })
     });
-    return result.stdout.toString("utf8");
+    return result.stdout.toString(options.encoding ?? "utf8");
   }
 
   async #gitSucceeds(args: readonly string[]): Promise<boolean> {
